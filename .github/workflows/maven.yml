@@ -5,9 +5,17 @@ name: Java CI with Maven
 
 on:
   push:
-    branches: [ master, master-jdk17, master-jdk25 ]
-  # pull_request:
-  #   branches: [ master ]
+    branches: [ main, master, master-jdk17, master-jdk25 ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'yudao-ui/**'
+  pull_request:
+    branches: [ main, master ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'yudao-ui/**'
   workflow_dispatch:
 
 jobs:
