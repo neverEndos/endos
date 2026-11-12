@@ -1,10 +1,12 @@
 # yudao-mini 开发测试中间件（PostgreSQL / Redis / RabbitMQ / MinIO）
 # 使用方法见同目录 README.md
+# 镜像版本与 WeKnora 使用的中间件保持一致，详见 README「镜像版本」。
 name: yudao-infra
 
 services:
   postgres:
-    image: postgres:17-alpine
+    # ParadeDB v0.25.11-pg17：PostgreSQL 17 + pgvector + pg_search（ParadeDB）
+    image: paradedb/paradedb:v0.25.11-pg17
     container_name: yudao-infra-postgres
     restart: unless-stopped
     environment:
@@ -24,12 +26,13 @@ services:
       start_period: 10s
 
   redis:
-    image: redis:7.4-alpine
+    image: redis:7.0-alpine
     container_name: yudao-infra-redis
     restart: unless-stopped
     environment:
       TZ: Asia/Shanghai
-    # 开发者确认：沿用项目默认，不设置 requirepass（局域网内无密码）
+    # 开发者确认：沿用项目默认，不设置 requirepass（局域网内无密码）。
+    # 注意：plain Redis 7.0 不包含 RediSearch / 向量检索模块。
     command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "${REDIS_PORT:-6379}:6379"
@@ -61,7 +64,30 @@ services:
       retries: 5
       start_period: 30s
 
+  minio:
+    # pgsty/minio 镜像，固定 RELEASE tag；镜像内同时自带 minio 与 mc
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+    container_name: yudao-infra-minio
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    command: ["server", "/data", "--console-address", ":9001"]
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
 volumes:
   pgdata:
   redisdata:
   rabbitmqdata:
+  miniodata:
