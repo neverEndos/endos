@@ -61,8 +61,8 @@ jobs:
           password: ${{ secrets.WEBSITE_FTP_PASSWORD }}
           local-dir: ./docs/.vitepress/dist/
 
-  deploy-antd-ftp:
-    name: Deploy Push Antd Ftp
+  deploy-antdv-next-ftp:
+    name: Deploy Push Antdv Next Ftp
     if: github.actor != 'dependabot[bot]' && !contains(github.event.head_commit.message, '[skip ci]') && github.repository == 'vbenjs/vue-vben-admin'
     runs-on: ubuntu-latest
     steps:
@@ -74,15 +74,15 @@ jobs:
       - name: Sed Config Base
         shell: bash
         run: |
-          sed -i  "s#VITE_COMPRESS\s*=.*#VITE_COMPRESS = gzip#g" ./apps/web-antd/.env.production
-          sed -i  "s#VITE_PWA\s*=.*#VITE_PWA = true#g" ./apps/web-antd/.env.production
-          cat ./apps/web-antd/.env.production
+          sed -i  "s#VITE_COMPRESS\s*=.*#VITE_COMPRESS = gzip#g" ./apps/web-antdv-next/.env.production
+          sed -i  "s#VITE_PWA\s*=.*#VITE_PWA = true#g" ./apps/web-antdv-next/.env.production
+          cat ./apps/web-antdv-next/.env.production
 
       - name: Setup Node
         uses: ./.github/actions/setup-node
 
       - name: Build
-        run: pnpm run build:antd
+        run: pnpm run build:antdv-next
 
       - name: Sync files
         uses: SamKirkland/FTP-Deploy-Action@v4.4.0
@@ -90,78 +90,14 @@ jobs:
           server: ${{ secrets.PRO_FTP_HOST }}
           username: ${{ secrets.WEB_ANTD_FTP_ACCOUNT }}
           password: ${{ secrets.WEB_ANTD_FTP_PASSWORD }}
-          local-dir: ./apps/web-antd/dist/
-
-  deploy-ele-ftp:
-    name: Deploy Push Element Ftp
-    if: github.actor != 'dependabot[bot]' && !contains(github.event.head_commit.message, '[skip ci]') && github.repository == 'vbenjs/vue-vben-admin'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Sed Config Base
-        shell: bash
-        run: |
-          sed -i  "s#VITE_COMPRESS\s*=.*#VITE_COMPRESS = gzip#g" ./apps/web-ele/.env.production
-          sed -i  "s#VITE_PWA\s*=.*#VITE_PWA = true#g" ./apps/web-ele/.env.production
-          cat ./apps/web-ele/.env.production
-
-      - name: Setup Node
-        uses: ./.github/actions/setup-node
-
-      - name: Build
-        run: pnpm run build:ele
-
-      - name: Sync files
-        uses: SamKirkland/FTP-Deploy-Action@v4.4.0
-        with:
-          server: ${{ secrets.PRO_FTP_HOST }}
-          username: ${{ secrets.WEB_ELE_FTP_ACCOUNT }}
-          password: ${{ secrets.WEB_ELE_FTP_PASSWORD }}
-          local-dir: ./apps/web-ele/dist/
-
-  deploy-naive-ftp:
-    name: Deploy Push Naive Ftp
-    if: github.actor != 'dependabot[bot]' && !contains(github.event.head_commit.message, '[skip ci]') && github.repository == 'vbenjs/vue-vben-admin'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Sed Config Base
-        shell: bash
-        run: |
-          sed -i  "s#VITE_COMPRESS\s*=.*#VITE_COMPRESS = gzip#g" ./apps/web-naive/.env.production
-          sed -i  "s#VITE_PWA\s*=.*#VITE_PWA = true#g" ./apps/web-naive/.env.production
-          cat ./apps/web-naive/.env.production
-
-      - name: Setup Node
-        uses: ./.github/actions/setup-node
-
-      - name: Build
-        run: pnpm run build:naive
-
-      - name: Sync files
-        uses: SamKirkland/FTP-Deploy-Action@v4.4.0
-        with:
-          server: ${{ secrets.PRO_FTP_HOST }}
-          username: ${{ secrets.WEB_NAIVE_FTP_ACCOUNT }}
-          password: ${{ secrets.WEB_NAIVE_FTP_PASSWORD }}
-          local-dir: ./apps/web-naive/dist/
+          local-dir: ./apps/web-antdv-next/dist/
 
   rerun-on-failure:
     name: Rerun on failure
     needs:
       - deploy-playground-ftp
       - deploy-docs-ftp
-      - deploy-antd-ftp
-      - deploy-ele-ftp
-      - deploy-naive-ftp
+      - deploy-antdv-next-ftp
     if: failure() && fromJSON(github.run_attempt) < 10
     runs-on: ubuntu-latest
     steps:

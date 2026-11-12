@@ -45,20 +45,25 @@ mvn clean package -pl yudao-server -am -Dmaven.test.skip=true
 
 ## 2. 准备前端产物
 
-前端是独立仓库，这里不构建前端源码。打包前确认前端生产环境配置：
+vben 管理后台源码位于 `yudao-ui/yudao-ui-admin-vben`，默认应用为 `apps/web-antdv-next`。打包前确认前端生产环境配置：
 
 - 浏览器访问地址使用 Nginx 的同源地址，例如 `http://localhost:8080`，不要写 `yudao-server`、`127.0.0.1:48080` 等容器名或后端端口
-- API 路径为 `/admin-api`：`yudao-ui-admin-vue3` 为 `.env.prod` 的 `VITE_BASE_URL` + `VITE_API_URL`；`yudao-ui-admin-vben` 为 `apps/web-*/.env.production` 的 `VITE_BASE_URL`、`VITE_GLOB_API_URL`
+- API 路径为 `/admin-api`：`apps/web-antdv-next/.env.production` 中的 `VITE_BASE_URL`、`VITE_GLOB_API_URL`
 - 前端 `VITE_APP_CAPTCHA_ENABLE` 与 `.env` 中的 `YUDAO_CAPTCHA_ENABLE` 一致
 
-将打包产物目录中的内容（包含 `index.html`）复制到 `script/docker-compose/web/dist/`，在**源码根目录**执行：
+在 `yudao-ui/yudao-ui-admin-vben` 目录执行：
+
+```shell
+pnpm install --frozen-lockfile
+pnpm build:antdv-next
+```
+
+构建产物为 `apps/web-antdv-next/dist`。将产物目录中的内容（包含 `index.html`）复制到 `script/docker-compose/web/dist/`，在**源码根目录**执行：
 
 ```shell
 mkdir -p script/docker-compose/web/dist
-cp -R /path/to/前端打包产物目录/. script/docker-compose/web/dist/
+cp -R yudao-ui/yudao-ui-admin-vben/apps/web-antdv-next/dist/. script/docker-compose/web/dist/
 ```
-
-例如 `yudao-ui-admin-vue3` 执行 `pnpm build:prod` 后为 `dist-prod`；`yudao-ui-admin-vben` 执行 `pnpm build:antd` 后为 `apps/web-antd/dist`。
 
 ## 3. 配置环境变量
 
