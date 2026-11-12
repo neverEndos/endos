@@ -1,7 +1,6 @@
 #!groovy
 // yudao-server 的 Jenkins 部署流水线：Maven 打包 Jar，再通过 SSH 部署到一台 Linux 服务器
 //
-// 使用说明见《Jenkins 部署》文档：https://doc.iocoder.cn/deployment-jenkins/
 // 1. Jenkins 新建「Pipeline（流水线）」类型的 Job，选择「Pipeline script from SCM」，Script Path 填写 script/jenkins/Jenkinsfile
 // 2. Jenkins 中配置 Tools（jdk25、maven3），以及两个凭据（yudao-deploy-ssh、yudao-deploy-known-hosts）
 // 3. 服务器上提前创建 <DEPLOY_BASE_DIR>/yudao-server 目录，并放入运行时配置 app.env（数据库、Redis 的地址与密码）

@@ -184,7 +184,6 @@ public class OAuth2TokenServiceImpl implements OAuth2TokenService {
                 .setRefreshToken(refreshTokenDO.getRefreshToken())
                 .setExpiresTime(LocalDateTime.now().plusSeconds(clientDO.getAccessTokenValiditySeconds()));
         // 优先从 refreshToken 获取租户编号，避免 ThreadLocal 被污染时导致 tenantId 为 null
-        // 可能关联的 issue：https://t.zsxq.com/JIi5G
         Long tenantId = refreshTokenDO.getTenantId();
         if (tenantId == null) {
             tenantId = TenantContextHolder.getTenantId();

@@ -22,7 +22,6 @@ import java.util.Locale;
  * 注意：仅大小写不同的多个 key，会合并为一个，保留后写入的 key 和值
  *
  * @author 芋道源码
- * @see <a href="https://t.zsxq.com/kPvqm">星球讨论：Map 查询结果的跨数据库兼容问题</a>
  */
 public class CaseInsensitiveResultMap<V> extends LinkedCaseInsensitiveMap<V> {
 

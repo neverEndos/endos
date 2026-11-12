@@ -4,7 +4,7 @@ import type { SystemSmsTemplateApi } from '#/api/system/sms/template';
 
 import { onMounted, ref } from 'vue';
 
-import { confirm, DocAlert, Page, useVbenModal } from '@vben/common-ui';
+import { confirm, Page, useVbenModal } from '@vben/common-ui';
 import { downloadFileFromBlobPart, isEmpty } from '@vben/utils';
 
 import { message } from 'antdv-next';
@@ -147,9 +147,6 @@ onMounted(async () => {
 
 <template>
   <Page auto-content-height>
-    <template #doc>
-      <DocAlert title="短信配置" url="https://doc.iocoder.cn/sms/" />
-    </template>
 
     <FormModal @success="handleRefresh" />
     <SendModal />

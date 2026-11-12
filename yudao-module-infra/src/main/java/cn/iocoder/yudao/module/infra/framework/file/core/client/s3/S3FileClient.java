@@ -59,7 +59,7 @@ public class S3FileClient extends AbstractFileClient<S3FileClientConfig> {
         URI presignerEndpoint = URI.create(buildPresignerEndpoint());
         S3Configuration serviceConfiguration = S3Configuration.builder() // Path-style 访问
                 .pathStyleAccessEnabled(Boolean.TRUE.equals(config.getEnablePathStyleAccess()))
-                .chunkedEncodingEnabled(false) // 禁用分块编码，参见 https://t.zsxq.com/kBy57
+                .chunkedEncodingEnabled(false) // 禁用分块编码
                 .build();
         client = S3Client.builder()
                 .credentialsProvider(credentialsProvider)

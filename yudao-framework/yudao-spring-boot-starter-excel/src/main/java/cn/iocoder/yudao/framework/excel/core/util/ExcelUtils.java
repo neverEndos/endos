@@ -29,8 +29,8 @@ public class ExcelUtils {
     /**
      * Long 转 String 的转换器，避免 Long 类型丢失精度
      *
-     * 参考 https://t.zsxq.com/a0w1V 帖子：Fesod 写入 xlsx 时，按 supportExcelTypeKey 为 null 查找全局转换器，
-     * 所以需要返回 null，否则 registerConverter 的 LongStringConverter 不生效。关联 https://github.com/apache/fesod/issues/648
+     * Fesod 写入 xlsx 时，按 supportExcelTypeKey 为 null 查找全局转换器，所以需要返回 null，
+     * 否则 registerConverter 的 LongStringConverter 不生效。关联 https://github.com/apache/fesod/issues/648
      */
     private static final Converter<Long> LONG_STRING_CONVERTER = new LongStringConverter() {
 
@@ -93,7 +93,6 @@ public class ExcelUtils {
         if (file == null || file.isEmpty()) {
             return Collections.emptyList();
         }
-        // 参考 https://t.zsxq.com/zM77F 帖子，增加 try 处理，兼容 windows 场景
         try (InputStream inputStream = file.getInputStream()) {
             return FesodSheet.read(inputStream, head, null)
                     .autoCloseStream(false) // 不要自动关闭，交给 Servlet 自己处理
@@ -151,7 +150,6 @@ public class ExcelUtils {
         if (file == null || file.isEmpty()) {
             return Collections.emptyList();
         }
-        // 参考 https://t.zsxq.com/zM77F 帖子，增加 try 处理，兼容 windows 场景
         try (InputStream inputStream = file.getInputStream()) {
             return FesodSheet.read(inputStream)
                     .autoCloseStream(false) // 不要自动关闭，交给 Servlet 自己处理

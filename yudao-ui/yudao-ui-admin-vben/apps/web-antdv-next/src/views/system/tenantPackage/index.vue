@@ -4,7 +4,7 @@ import type { SystemTenantPackageApi } from '#/api/system/tenant-package';
 
 import { ref } from 'vue';
 
-import { confirm, DocAlert, Page, useVbenModal } from '@vben/common-ui';
+import { confirm, Page, useVbenModal } from '@vben/common-ui';
 import { isEmpty } from '@vben/utils';
 
 import { message } from 'antdv-next';
@@ -118,9 +118,6 @@ const [Grid, gridApi] = useVbenVxeGrid({
 
 <template>
   <Page auto-content-height>
-    <template #doc>
-      <DocAlert title="SaaS 多租户" url="https://doc.iocoder.cn/saas-tenant/" />
-    </template>
 
     <FormModal @success="handleRefresh" />
     <Grid table-title="租户套餐列表">

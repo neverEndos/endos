@@ -5,7 +5,7 @@ import type { InfraJobApi } from '#/api/infra/job';
 import { ref } from 'vue';
 import { useRouter } from 'vue-router';
 
-import { confirm, DocAlert, Page, useVbenModal } from '@vben/common-ui';
+import { confirm, Page, useVbenModal } from '@vben/common-ui';
 import { InfraJobStatusEnum } from '@vben/constants';
 import { downloadFileFromBlobPart, isEmpty } from '@vben/utils';
 
@@ -201,11 +201,6 @@ const [Grid, gridApi] = useVbenVxeGrid({
 
 <template>
   <Page auto-content-height>
-    <template #doc>
-      <DocAlert title="定时任务" url="https://doc.iocoder.cn/job/" />
-      <DocAlert title="异步任务" url="https://doc.iocoder.cn/async-task/" />
-      <DocAlert title="消息队列" url="https://doc.iocoder.cn/message-queue/" />
-    </template>
 
     <FormModal @success="handleRefresh" />
     <DetailModal />

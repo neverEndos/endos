@@ -6,8 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        感谢对项目的支持与关注。在提出问题之前，请确保你已查看相关开发或使用文档：
-        - https://doc.iocoder.cn/
+        感谢对项目的支持与关注。
   - type: dropdown
     id: version
     attributes:

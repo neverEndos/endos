@@ -679,8 +679,7 @@
                 </exclusions>
             </dependency>
 
-            <!-- 对齐 Tika 与 WxJava 的 BouncyCastle 依赖，避免 bcprov 与 bcpkix/bcutil 版本不一致。
-                 反馈：https://t.zsxq.com/pCVBo -->
+            <!-- 对齐 Tika 与 WxJava 的 BouncyCastle 依赖，避免 bcprov 与 bcpkix/bcutil 版本不一致。 -->
             <dependency>
                 <groupId>org.bouncycastle</groupId>
                 <artifactId>bcprov-jdk18on</artifactId>

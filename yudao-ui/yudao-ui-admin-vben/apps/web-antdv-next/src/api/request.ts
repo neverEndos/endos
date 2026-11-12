@@ -136,7 +136,6 @@ function createRequestClient(baseURL: string, options?: RequestClientOptions) {
     },
   });
 
-  // add by 芋艿：对应 https://t.zsxq.com/SHqWw 反馈
   // 处理 Blob 响应中的业务错误（如 401）：后端把「账号未登录」包成 HTTP 200 + body {code: 401, msg: ...}，
   // download 强制 responseType: 'blob' 后被 axios 包成 application/json 的 Blob，defaultResponseInterceptor 走
   // responseReturn === 'body' 分支直接返回，绕过了 authenticateResponseInterceptor 的 401 token 刷新；
@@ -220,7 +219,7 @@ function createRequestClient(baseURL: string, options?: RequestClientOptions) {
       }
       if (error?.data?.code === 901 || responseData.code === 901) {
         message.error(
-          `${errorMessage || msg}，参考 https://doc.iocoder.cn/ 教程搭建本地环境`,
+          `${errorMessage || msg}`,
         );
         return;
       }

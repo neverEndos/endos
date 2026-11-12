@@ -3,7 +3,7 @@ import type { SystemUserApi } from '#/api/system/user';
 
 import { computed, onMounted, ref, watchEffect } from 'vue';
 
-import { DocAlert, Page } from '@vben/common-ui';
+import { Page } from '@vben/common-ui';
 import { IconifyIcon } from '@vben/icons';
 import { useAccessStore } from '@vben/stores';
 import { formatDate } from '@vben/utils';
@@ -186,12 +186,6 @@ onMounted(async () => {
 
 <template>
   <Page>
-    <template #doc>
-      <DocAlert
-        title="WebSocket 实时通信"
-        url="https://doc.iocoder.cn/websocket/"
-      />
-    </template>
 
     <div class="mt-4 flex flex-col gap-4 md:flex-row">
       <!-- 左侧：建立连接、发送消息 -->

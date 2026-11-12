@@ -109,7 +109,6 @@ public class YudaoMybatisAutoConfiguration {
     @Bean
     public SmartInitializingSingleton jacksonTypeHandlerInitializer(ObjectProvider<ObjectMapper> objectMappers) {
         // 特殊：所有单例初始化后，设置 Jackson3TypeHandler 的 ObjectMapper，优先唯一或 @Primary 的 ObjectMapper，否则使用 JsonUtils 的
-        // 原因：避免延迟初始化未设置、多个 ObjectMapper 时取到不支持 LocalDateTime 的，且不在创建 SqlSessionFactory 时获取 ObjectMapper。https://t.zsxq.com/KmPNU
         return () -> Jackson3TypeHandler.setObjectMapper(objectMappers.getIfUnique(JsonUtils::getObjectMapper));
     }
 

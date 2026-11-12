@@ -24,7 +24,6 @@ public abstract class AbstractFileClient<Config extends FileClientConfig> implem
      * 原始的文件配置
      *
      * 原因：{@link #config} 可能被子类所修改，无法用于判断配置是否变更
-     * @link <a href="https://t.zsxq.com/29wkW">相关案例</a>
      */
     private Config originalConfig;
 

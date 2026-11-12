@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import { onMounted, ref } from 'vue';
 
-import { DocAlert, IFrame, Page } from '@vben/common-ui';
+import { IFrame, Page } from '@vben/common-ui';
 
 import { getConfigKey } from '#/api/infra/config';
 
@@ -24,9 +24,6 @@ onMounted(async () => {
 
 <template>
   <Page auto-content-height>
-    <template #doc>
-      <DocAlert title="接口文档" url="https://doc.iocoder.cn/api-doc/" />
-    </template>
 
     <IFrame v-if="!loading" :src="src" />
   </Page>

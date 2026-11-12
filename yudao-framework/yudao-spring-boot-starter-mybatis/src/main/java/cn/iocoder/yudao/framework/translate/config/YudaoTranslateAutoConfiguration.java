@@ -8,7 +8,6 @@ import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.context.annotation.Bean;
 
-// 解决 Easy-Trans 自动配置顺序问题，详见 https://t.zsxq.com/nX3vi
 @AutoConfiguration(after = {
         EasyTransMybatisPlusConfig.class,
         TransServiceConfig.class

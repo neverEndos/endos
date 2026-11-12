@@ -4,7 +4,7 @@ import type { SystemMenuApi } from '#/api/system/menu';
 
 import { ref } from 'vue';
 
-import { confirm, DocAlert, Page, useVbenModal } from '@vben/common-ui';
+import { confirm, Page, useVbenModal } from '@vben/common-ui';
 import { CommonStatusEnum } from '@vben/constants';
 import { IconifyIcon } from '@vben/icons';
 
@@ -120,13 +120,6 @@ const [Grid, gridApi] = useVbenVxeGrid({
 
 <template>
   <Page auto-content-height>
-    <template #doc>
-      <DocAlert
-        title="功能权限"
-        url="https://doc.iocoder.cn/resource-permission"
-      />
-      <DocAlert title="菜单路由" url="https://doc.iocoder.cn/vue3/route/" />
-    </template>
 
     <FormModal @success="handleRefresh" />
     <Grid table-title="菜单列表">

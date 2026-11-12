@@ -6,8 +6,6 @@
 
 Seata Server 的启动、配置、验证及使用限制，请阅读项目文档《分布式事务》，本文只列出材料及分支适用范围：
 
-- 单体项目 ruoyi-vue-pro：<https://doc.iocoder.cn/distributed-transaction/>
-- 微服务项目 yudao-cloud：<https://cloud.iocoder.cn/distributed-transaction/>
 
 ## 1. 材料清单
 
