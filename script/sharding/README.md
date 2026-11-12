@@ -6,8 +6,6 @@
 
 安装、配置、启动验证及使用限制，请阅读项目文档《分库分表》，本文只列出材料及分支适用范围：
 
-- 单体项目 ruoyi-vue-pro：<https://doc.iocoder.cn/sharding/>
-- 微服务项目 yudao-cloud：<https://cloud.iocoder.cn/sharding/>
 
 ## 1. 材料清单
 

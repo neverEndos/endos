@@ -132,7 +132,6 @@ public class ApiEncryptFilter extends ApiRequestFilter {
     @SuppressWarnings("PatternVariableCanBeUsed")
     private ApiEncrypt getApiEncrypt(HttpServletRequest request) {
         try {
-            // 特殊：兼容 SpringBoot 2.X 版本会报错的问题 https://t.zsxq.com/kqyiB
             if (!ServletRequestPathUtils.hasParsedRequestPath(request)) {
                 ServletRequestPathUtils.parseAndCache(request);
             }

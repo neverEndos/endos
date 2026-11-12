@@ -8,8 +8,6 @@
 
 接入步骤、验证方式及使用限制，请阅读项目文档《限流熔断》，本文只列出材料及分支适用范围：
 
-- 单体项目 ruoyi-vue-pro：<https://doc.iocoder.cn/server-protection/>
-- 微服务项目 yudao-cloud：<https://cloud.iocoder.cn/server-protection/>
 
 ## 1. 材料清单
 
