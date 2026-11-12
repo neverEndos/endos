@@ -84,7 +84,7 @@ const SOCIAL_ROUTE_KEY = 'socialRoute';
  * 获得第三方登录（社交登录、社交绑定）的回调地址
  *
  * 1. params 需要整体 encode 一次，否则钉钉回调会丢失参数，配合 getUrlValue() 使用
- * 2. hash 路由时，回调地址不能带 #，否则 code、state 会被拼接到 # 之后，导致回调参数丢失（https://t.zsxq.com/QY7xI）。
+ * 2. hash 路由时，回调地址不能带 #，否则 code、state 会被拼接到 # 之后，导致回调参数丢失。
  *    所以回调到 # 之前的页面，并通过 socialRoute 参数记录目标路由，配合 restoreSocialRoute() 使用
  *
  * @param href 目标路由的 href，即 router.resolve(path).href。history 路由为 /base/path，hash 路由为 #/path

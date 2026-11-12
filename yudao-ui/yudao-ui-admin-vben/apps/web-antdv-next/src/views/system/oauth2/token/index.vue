@@ -4,7 +4,7 @@ import type { SystemOAuth2TokenApi } from '#/api/system/oauth2/token';
 
 import { ref } from 'vue';
 
-import { confirm, DocAlert, Page } from '@vben/common-ui';
+import { confirm, Page } from '@vben/common-ui';
 import { isEmpty } from '@vben/utils';
 
 import { message } from 'antdv-next';
@@ -101,12 +101,6 @@ const [Grid, gridApi] = useVbenVxeGrid({
 
 <template>
   <Page auto-content-height>
-    <template #doc>
-      <DocAlert
-        title="OAuth 2.0（SSO 单点登录）"
-        url="https://doc.iocoder.cn/oauth2/"
-      />
-    </template>
 
     <Grid table-title="令牌列表">
       <template #toolbar-tools>

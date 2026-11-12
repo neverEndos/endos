@@ -2,7 +2,7 @@
 import type { VxeTableGridOptions } from '#/adapter/vxe-table';
 import type { InfraApiAccessLogApi } from '#/api/infra/api-access-log';
 
-import { DocAlert, Page, useVbenModal } from '@vben/common-ui';
+import { Page, useVbenModal } from '@vben/common-ui';
 import { downloadFileFromBlobPart } from '@vben/utils';
 
 import { ACTION_ICON, TableAction, useVbenVxeGrid } from '#/adapter/vxe-table';
@@ -69,9 +69,6 @@ const [Grid, gridApi] = useVbenVxeGrid({
 
 <template>
   <Page auto-content-height>
-    <template #doc>
-      <DocAlert title="系统日志" url="https://doc.iocoder.cn/system-log/" />
-    </template>
 
     <DetailModal @success="handleRefresh" />
     <Grid table-title="API 访问日志列表">

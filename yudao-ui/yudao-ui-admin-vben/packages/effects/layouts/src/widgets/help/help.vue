@@ -75,12 +75,6 @@ const [Modal, modalApi] = useVbenModal({
 
         <VbenButtonGroup class="basis-1/3" :gap="2" border size="large">
           <p class="w-24 p-2">开发文档:</p>
-          <VbenButton
-            variant="link"
-            @click="openWindow('https://doc.iocoder.cn/quick-start/')"
-          >
-            项目文档
-          </VbenButton>
           <VbenButton variant="link" @click="openWindow('https://antdv.com/')">
             antdv 文档
           </VbenButton>

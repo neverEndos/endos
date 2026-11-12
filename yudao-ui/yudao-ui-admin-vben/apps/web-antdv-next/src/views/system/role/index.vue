@@ -4,7 +4,7 @@ import type { SystemRoleApi } from '#/api/system/role';
 
 import { ref } from 'vue';
 
-import { confirm, DocAlert, Page, useVbenModal } from '@vben/common-ui';
+import { confirm, Page, useVbenModal } from '@vben/common-ui';
 import { downloadFileFromBlobPart, isEmpty } from '@vben/utils';
 
 import { message } from 'antdv-next';
@@ -148,13 +148,6 @@ const [Grid, gridApi] = useVbenVxeGrid({
 
 <template>
   <Page auto-content-height>
-    <template #doc>
-      <DocAlert
-        title="功能权限"
-        url="https://doc.iocoder.cn/resource-permission"
-      />
-      <DocAlert title="数据权限" url="https://doc.iocoder.cn/data-permission" />
-    </template>
 
     <FormModal @success="handleRefresh" />
     <AssignDataPermissionFormModel @success="handleRefresh" />

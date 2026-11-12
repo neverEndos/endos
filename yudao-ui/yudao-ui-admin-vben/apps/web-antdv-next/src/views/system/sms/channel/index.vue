@@ -4,7 +4,7 @@ import type { SystemSmsChannelApi } from '#/api/system/sms/channel';
 
 import { ref } from 'vue';
 
-import { confirm, DocAlert, Page, useVbenModal } from '@vben/common-ui';
+import { confirm, Page, useVbenModal } from '@vben/common-ui';
 import { isEmpty } from '@vben/utils';
 
 import { message } from 'antdv-next';
@@ -118,9 +118,6 @@ const [Grid, gridApi] = useVbenVxeGrid({
 
 <template>
   <Page auto-content-height>
-    <template #doc>
-      <DocAlert title="短信配置" url="https://doc.iocoder.cn/sms/" />
-    </template>
 
     <FormModal @success="handleRefresh" />
     <Grid table-title="短信渠道列表">

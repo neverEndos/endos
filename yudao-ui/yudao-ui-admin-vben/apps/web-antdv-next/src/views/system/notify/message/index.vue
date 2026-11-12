@@ -2,7 +2,7 @@
 import type { VxeTableGridOptions } from '#/adapter/vxe-table';
 import type { SystemNotifyMessageApi } from '#/api/system/notify/message';
 
-import { DocAlert, Page, useVbenModal } from '@vben/common-ui';
+import { Page, useVbenModal } from '@vben/common-ui';
 
 import { ACTION_ICON, TableAction, useVbenVxeGrid } from '#/adapter/vxe-table';
 import { getNotifyMessagePage } from '#/api/system/notify/message';
@@ -59,9 +59,6 @@ const [Grid, gridApi] = useVbenVxeGrid({
 
 <template>
   <Page auto-content-height>
-    <template #doc>
-      <DocAlert title="站内信" url="https://doc.iocoder.cn/notify/" />
-    </template>
 
     <DetailModal @success="handleRefresh" />
     <Grid table-title="站内信列表">
