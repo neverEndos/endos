@@ -2,7 +2,7 @@
 
 目标：用 Docker Compose V2 快速搭建一套可登录的体验环境，了解各组件之间的依赖关系。
 
-包含：`yudao-server` 后端、前端 Nginx、MySQL、Redis。仅用于入门体验与测试，不是生产高可用方案。
+包含：`yudao-server` 后端、前端 Nginx、PostgreSQL、Redis。仅用于入门体验与测试，不是生产高可用方案。
 
 ## 文件列表
 
@@ -20,12 +20,12 @@ script/docker-compose
 
 | 服务 | 镜像 | 说明 |
 | --- | --- | --- |
-| `mysql` | `mysql:8.4` | 首次启动导入 `sql/mysql/ruoyi-vue-pro.sql`、`sql/mysql/quartz.sql`，数据卷 `yudao-boot_mysql-data` |
+| `postgres` | `postgres:17-alpine` | 首次启动导入 `sql/postgresql/ruoyi-vue-pro.sql`、`sql/postgresql/quartz.sql`，数据卷 `yudao-boot_postgres-data` |
 | `redis` | `redis:7.4-alpine` | 开启密码与 AOF，数据卷 `yudao-boot_redis-data` |
 | `yudao-server` | `yudao-server:${IMAGE_TAG}` | 由 `yudao-server/Dockerfile` 构建，端口 48080，只在 Compose 网络内访问 |
 | `web` | `nginx:1.28-alpine` | 对宿主机开放 `${WEB_PORT}`（默认 8080） |
 
-容器之间通过服务名（`mysql`、`redis`、`yudao-server`）访问。MySQL、Redis、后端默认不映射到宿主机，不会与本机已有的 3306、6379、48080 冲突；需要时取消 `docker-compose.yml` 中对应 `ports` 的注释。
+容器之间通过服务名（`postgres`、`redis`、`yudao-server`）访问。PostgreSQL、Redis、后端默认不映射到宿主机，不会与本机已有的 5432、6379、48080 冲突；需要时取消 `docker-compose.yml` 中对应 `ports` 的注释。
 
 ## 前置条件
 
@@ -67,15 +67,15 @@ cd script/docker-compose
 cp .env.example .env
 ```
 
-按需修改 `.env`，至少替换 `MYSQL_ROOT_PASSWORD`、`MYSQL_PASSWORD`、`REDIS_PASSWORD` 三个示例密码。
+按需修改 `.env`，至少替换 `POSTGRES_PASSWORD`、`REDIS_PASSWORD` 两个示例密码。
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `WEB_PORT` | `8080` | 前端访问端口 |
 | `IMAGE_TAG` | `local` | 后端镜像 tag |
-| `MYSQL_DATABASE` | `ruoyi-vue-pro` | 数据库名 |
-| `MYSQL_ROOT_PASSWORD` | 示例值 | MySQL root 密码，仅供初始化与运维使用 |
-| `MYSQL_USER` / `MYSQL_PASSWORD` | `yudao` / 示例值 | 应用使用的账号，只拥有 `MYSQL_DATABASE` 库权限 |
+| `POSTGRES_DB` | `ruoyi-vue-pro` | 数据库名 |
+| `POSTGRES_USER` | `root` | 数据库账号 |
+| `POSTGRES_PASSWORD` | 示例值 | 数据库密码，仅供初始化与运维使用 |
 | `REDIS_PASSWORD` | 示例值 | Redis 密码 |
 | `SPRING_PROFILES_ACTIVE` | `dev` | 后端 profile |
 | `JAVA_OPTS` | `-Xms512m -Xmx512m ...` | JVM 参数 |
@@ -99,7 +99,7 @@ docker compose ps
 docker compose logs -f yudao-server
 ```
 
-首次启动时 MySQL 需要导入 SQL，`yudao-server` 会等到 MySQL、Redis 健康检查通过后再启动。日志出现 `Started YudaoServerApplication` 后访问：
+首次启动时 PostgreSQL 需要导入 SQL，`yudao-server` 会等到 PostgreSQL、Redis 健康检查通过后再启动。日志出现 `Started YudaoServerApplication` 后访问：
 
 - 管理后台：http://localhost:8080 （`WEB_PORT` 修改后对应调整）
 
@@ -127,19 +127,19 @@ docker compose restart web
 docker compose down
 ```
 
-**不要执行 `docker compose down -v`**，它会删除 `yudao-boot_mysql-data`、`yudao-boot_redis-data` 数据卷，数据库内容将全部丢失。
+**不要执行 `docker compose down -v`**，它会删除 `yudao-boot_postgres-data`、`yudao-boot_redis-data` 数据卷，数据库内容将全部丢失。
 
 ## 数据库初始化说明
 
-- SQL 只在 `mysql-data` 数据卷为空（首次启动）时执行一次；之后修改 SQL 文件、`.env` 中的 `MYSQL_*` 账号密码，都不会作用于已有数据库。
-- 首次导入中途失败（例如容器被强制停止），数据卷会处于半初始化状态，需要确认数据可丢弃后执行 `docker compose down`、`docker volume rm yudao-boot_mysql-data` 再重新启动。
+- SQL 只在 `postgres-data` 数据卷为空（首次启动）时执行一次；之后修改 SQL 文件、`.env` 中的 `POSTGRES_*` 账号密码，都不会作用于已有数据库。
+- 首次导入中途失败（例如容器被强制停止），数据卷会处于半初始化状态，需要确认数据可丢弃后执行 `docker compose down`、`docker volume rm yudao-boot_postgres-data` 再重新启动。
 - 已有数据卷升级到新版本时，SQL 不会自动执行。请先备份，再手动执行对应的升级 SQL，例如：
 
 ```shell
-docker compose exec -T mysql sh -c 'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE"' < /path/to/upgrade.sql
+docker compose exec -T postgres sh -c 'exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < /path/to/upgrade.sql
 ```
 
-- 使用外部 MySQL 时：自行导入 `sql/mysql/ruoyi-vue-pro.sql`、`sql/mysql/quartz.sql`，删除 `docker-compose.yml` 中的 `mysql` 服务及 `yudao-server` 对它的 `depends_on`，并把 `SPRING_DATASOURCE_DYNAMIC_DATASOURCE_MASTER_*`、`SLAVE_*` 改为外部地址；容器内的 `127.0.0.1` 指向容器自身，不是宿主机。
+- 使用外部 PostgreSQL 时：自行导入 `sql/postgresql/ruoyi-vue-pro.sql`、`sql/postgresql/quartz.sql`，删除 `docker-compose.yml` 中的 `postgres` 服务及 `yudao-server` 对它的 `depends_on`，并把 `SPRING_DATASOURCE_DYNAMIC_DATASOURCE_MASTER_*`、`SLAVE_*` 改为外部地址；容器内的 `127.0.0.1` 指向容器自身，不是宿主机。
 
 ## 其他分支同步替换点
 
@@ -151,4 +151,4 @@ docker compose exec -T mysql sh -c 'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "
 | JDK 17 + Spring Boot 3.x | `eclipse-temurin:17-jre` | `SPRING_DATA_REDIS_*`（`spring.data.redis.*`） |
 | JDK 25 + Spring Boot 4.x | `eclipse-temurin:25-jre` | `SPRING_DATA_REDIS_*`（`spring.data.redis.*`） |
 
-并核对该分支 `yudao-server/src/main/resources/application-*.yaml` 的数据源、Redis 配置项与 `sql/mysql` 下的 SQL 文件名。
+并核对该分支 `yudao-server/src/main/resources/application-*.yaml` 的数据源、Redis 配置项与 `sql/postgresql` 下的 SQL 文件名。
