@@ -147,7 +147,7 @@ java -jar yudao-server/target/yudao-server.jar
 - 也可以在 IDE 中直接运行 `cn.iocoder.yudao.server.YudaoServerApplication`。
 - 只编译某个模块可用：`mvn -pl yudao-module-system -am compile -Dmaven.test.skip=true`。
 
-当前分支没有单元测试套件。`yudao-server/src/test` 下的 `ProjectReactor.java` 是项目改名工具，不是测试；CI 同样使用 `-Dmaven.test.skip=true`。CI 配置见 [`.github/workflows/maven.yml`](.github/workflows/maven.yml)。
+当前分支没有单元测试套件。`yudao-server/src/test` 下的 `ProjectReactor.java` 是项目改名工具，不是测试；CI 同样使用 `-Dmaven.test.skip=true`。CI 配置见 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)。
 
 ## Docker Compose 体验环境
 
