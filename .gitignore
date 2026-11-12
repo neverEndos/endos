@@ -48,6 +48,12 @@ nbdist/
 ### JRebel ###
 rebel.xml
 
+### 环境变量文件 ###
+# .env.<spring-profile> 保存本地/环境专属配置，禁止提交；仅提交 .env.<profile>.example 模板
+.env
+.env.*
+!.env.*.example
+
 application-my.yaml
 
 /yudao-ui-app/unpackage/
