@@ -95,8 +95,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Type check
         run: pnpm check:type
-      - name: Build (antd)
-        run: pnpm build:antd
+      - name: Build (antdv-next)
+        run: pnpm build:antdv-next
 
   # 分支保护 required check：始终运行，汇总 changes/backend/frontend 的结果。
   # backend/frontend 被跳过说明该侧没有变更，视为通过。

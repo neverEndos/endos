@@ -10,33 +10,6 @@
       "env": { "NODE_ENV": "development" },
       "sourceMaps": true,
       "webRoot": "${workspaceFolder}/apps/web-antdv-next"
-    },
-    {
-      "type": "chrome",
-      "name": "yudao admin antd dev",
-      "request": "launch",
-      "url": "http://localhost:5666",
-      "env": { "NODE_ENV": "development" },
-      "sourceMaps": true,
-      "webRoot": "${workspaceFolder}/apps/web-antd"
-    },
-    {
-      "type": "chrome",
-      "name": "yudao admin ele dev",
-      "request": "launch",
-      "url": "http://localhost:5777",
-      "env": { "NODE_ENV": "development" },
-      "sourceMaps": true,
-      "webRoot": "${workspaceFolder}/apps/web-ele"
-    },
-    {
-      "type": "chrome",
-      "name": "yudao admin naive dev",
-      "request": "launch",
-      "url": "http://localhost:5888",
-      "env": { "NODE_ENV": "development" },
-      "sourceMaps": true,
-      "webRoot": "${workspaceFolder}/apps/web-naive"
     }
   ]
 }
