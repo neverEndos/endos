@@ -9,13 +9,13 @@ on:
     paths-ignore:
       - '**.md'
       - 'docs/**'
-      - 'yudao-ui/**'
+      # 前端源码已入库，需要触发 required build check，故不再忽略 'yudao-ui/**'
   pull_request:
     branches: [ main, master ]
     paths-ignore:
       - '**.md'
       - 'docs/**'
-      - 'yudao-ui/**'
+      # 前端源码已入库，需要触发 required build check，故不再忽略 'yudao-ui/**'
   workflow_dispatch:
 
 jobs:
