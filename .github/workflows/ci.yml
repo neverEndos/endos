@@ -1,0 +1,137 @@
+# 前后端分离校验：按路径条件只执行受影响的检查，统一由 build gate 汇总分支保护 required check。
+# 参考：https://docs.github.com/actions/use-cases-and-examples/building-and-testing/building-and-testing-java-with-maven
+
+name: CI
+
+on:
+  push:
+    branches: [ main, master, master-jdk17, master-jdk25 ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  # 始终运行：检测本次变更涉及后端还是前端，供后续 job 按需执行。
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'pom.xml'
+              - 'yudao-dependencies/**'
+              - 'yudao-framework/**'
+              - 'yudao-module-*/**'
+              - 'yudao-server/**'
+              - 'sql/**'
+              - '.github/workflows/**'
+            frontend:
+              - 'yudao-ui/**'
+              - '.github/workflows/**'
+
+  # 后端：仅在后端相关文件变更或手动触发时执行 Maven 打包。
+  backend:
+    name: Backend (Maven)
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # 读取根 pom.xml 的 properties/java.version（1.8 -> 8），缺失或无效时直接失败
+      - name: Resolve JDK version
+        id: jdk
+        run: |
+          python3 -I - <<'EOF' >> "$GITHUB_OUTPUT"
+          import xml.etree.ElementTree as ET
+          ns = {'m': 'http://maven.apache.org/POM/4.0.0'}
+          v = (ET.parse('pom.xml').getroot().findtext('m:properties/m:java.version', namespaces=ns) or '').strip().removeprefix('1.')
+          if not v.isdigit():
+              raise SystemExit(f'根 pom.xml 的 properties/java.version 缺失或无效: {v!r}')
+          print(f'version={v}')
+          EOF
+      - name: Set up JDK ${{ steps.jdk.outputs.version }}
+        uses: actions/setup-java@v6
+        with:
+          java-version: ${{ steps.jdk.outputs.version }}
+          distribution: 'temurin'
+          cache: maven
+          cache-dependency-path: '**/pom.xml'
+      - name: Build with Maven
+        run: mvn -B package --file pom.xml -Dmaven.test.skip=true
+
+  # 前端：仅在前端相关文件变更或手动触发时执行类型检查与构建。
+  frontend:
+    name: Frontend (pnpm)
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: yudao-ui/yudao-ui-admin-vben
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: yudao-ui/yudao-ui-admin-vben/pnpm-lock.yaml
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Type check
+        run: pnpm check:type
+      - name: Build (antd)
+        run: pnpm build:antd
+
+  # 分支保护 required check：始终运行，汇总 changes/backend/frontend 的结果。
+  # backend/frontend 被跳过说明该侧没有变更，视为通过。
+  build:
+    name: build
+    needs: [ changes, backend, frontend ]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check job results
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          BACKEND_RESULT: ${{ needs.backend.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+        run: |
+          echo "changes=${CHANGES_RESULT}"
+          echo "backend=${BACKEND_RESULT}"
+          echo "frontend=${FRONTEND_RESULT}"
+
+          failed=0
+          if [ "${CHANGES_RESULT}" != "success" ]; then
+            echo "::error::changes job 未成功：${CHANGES_RESULT}"
+            failed=1
+          fi
+          for pair in "backend:${BACKEND_RESULT}" "frontend:${FRONTEND_RESULT}"; do
+            name="${pair%%:*}"
+            result="${pair#*:}"
+            case "${result}" in
+              success|skipped)
+                echo "${name} job 结果：${result}（通过）"
+                ;;
+              *)
+                echo "::error::${name} job 失败或被取消：${result}"
+                failed=1
+                ;;
+            esac
+          done
+          exit "${failed}"
