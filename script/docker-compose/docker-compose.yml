@@ -1,47 +1,42 @@
-# 芋道 Boot 单体版 Docker Compose 入门部署：yudao-server + 前端 Nginx + MySQL + Redis
+# 芋道 Boot 单体版 Docker Compose 入门部署：yudao-server + 前端 Nginx + PostgreSQL + Redis
 # 使用说明见同目录 README.md；需 Docker Compose V2.20.2 及以上（docker compose 命令）
 # 本文件中的相对路径，均相对于本文件所在目录，与执行命令时的当前目录无关
 
 name: yudao-boot
 
 services:
-  mysql:
-    image: mysql:8.4
+  postgres:
+    image: postgres:17-alpine
     restart: unless-stopped
-    command:
-      - --character-set-server=utf8mb4
-      - --collation-server=utf8mb4_unicode_ci
     environment:
       TZ: Asia/Shanghai
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-ruoyi-vue-pro}
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 .env 中设置 MYSQL_ROOT_PASSWORD}
-      MYSQL_USER: ${MYSQL_USER:-yudao}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请在 .env 中设置 MYSQL_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-ruoyi-vue-pro}
+      POSTGRES_USER: ${POSTGRES_USER:-root}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}
     volumes:
-      - mysql-data:/var/lib/mysql
-      # 仅在 mysql-data 卷为空（首次启动）时，按文件名顺序执行；SQL 文件不存在时直接报错，避免被创建成空目录
+      - postgres-data:/var/lib/postgresql/data
+      # 仅在 postgres-data 卷为空（首次启动）时，按文件名顺序执行；SQL 文件不存在时直接报错，避免被创建成空目录
       - type: bind
-        source: ../../sql/mysql/ruoyi-vue-pro.sql
+        source: ../../sql/postgresql/ruoyi-vue-pro.sql
         target: /docker-entrypoint-initdb.d/01-ruoyi-vue-pro.sql
         read_only: true
         bind:
           create_host_path: false
       - type: bind
-        source: ../../sql/mysql/quartz.sql
+        source: ../../sql/postgresql/quartz.sql
         target: /docker-entrypoint-initdb.d/02-quartz.sql
         read_only: true
         bind:
           create_host_path: false
-    # 默认不对宿主机开放；需要本机客户端连接时，取消注释（避免与本机已有 3306 冲突）
+    # 默认不对宿主机开放；需要本机客户端连接时，取消注释（避免与本机已有 5432 冲突）
     # ports:
-    #   - "127.0.0.1:13306:3306"
+    #   - "127.0.0.1:15432:5432"
     healthcheck:
-      # 首次初始化时 MySQL 临时实例不监听 TCP，因此 127.0.0.1 可连通即表示初始化完成
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
-      retries: 30
-      start_period: 60s
+      retries: 10
+      start_period: 30s
 
   redis:
     image: redis:7.4-alpine
@@ -70,12 +65,12 @@ services:
       SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-dev}
       JAVA_OPTS: ${JAVA_OPTS:--Xms512m -Xmx512m -Djava.security.egd=file:/dev/./urandom}
       # 数据库：主库、从库都要覆盖，否则会使用 application-${SPRING_PROFILES_ACTIVE}.yaml 中的 127.0.0.1
-      SPRING_DATASOURCE_DYNAMIC_DATASOURCE_MASTER_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-ruoyi-vue-pro}?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true&rewriteBatchedStatements=true
-      SPRING_DATASOURCE_DYNAMIC_DATASOURCE_MASTER_USERNAME: ${MYSQL_USER:-yudao}
-      SPRING_DATASOURCE_DYNAMIC_DATASOURCE_MASTER_PASSWORD: ${MYSQL_PASSWORD}
-      SPRING_DATASOURCE_DYNAMIC_DATASOURCE_SLAVE_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-ruoyi-vue-pro}?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true&rewriteBatchedStatements=true
-      SPRING_DATASOURCE_DYNAMIC_DATASOURCE_SLAVE_USERNAME: ${MYSQL_USER:-yudao}
-      SPRING_DATASOURCE_DYNAMIC_DATASOURCE_SLAVE_PASSWORD: ${MYSQL_PASSWORD}
+      SPRING_DATASOURCE_DYNAMIC_DATASOURCE_MASTER_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-ruoyi-vue-pro}
+      SPRING_DATASOURCE_DYNAMIC_DATASOURCE_MASTER_USERNAME: ${POSTGRES_USER:-root}
+      SPRING_DATASOURCE_DYNAMIC_DATASOURCE_MASTER_PASSWORD: ${POSTGRES_PASSWORD}
+      SPRING_DATASOURCE_DYNAMIC_DATASOURCE_SLAVE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-ruoyi-vue-pro}
+      SPRING_DATASOURCE_DYNAMIC_DATASOURCE_SLAVE_USERNAME: ${POSTGRES_USER:-root}
+      SPRING_DATASOURCE_DYNAMIC_DATASOURCE_SLAVE_PASSWORD: ${POSTGRES_PASSWORD}
       # Redis：Spring Boot 4.x 使用 spring.data.redis.*
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: 6379
@@ -84,7 +79,7 @@ services:
       YUDAO_CAPTCHA_ENABLE: ${YUDAO_CAPTCHA_ENABLE:-true}
       YUDAO_DEMO: "false"
     depends_on:
-      mysql:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -110,5 +105,5 @@ services:
       - yudao-server
 
 volumes:
-  mysql-data:
+  postgres-data:
   redis-data:

@@ -38,7 +38,7 @@
 | 接口文档 | springdoc 3.1.1 + Knife4j 4.5.0 |
 | Bean 转换 | MapStruct 1.7.0.Beta2 |
 | 代码简写 | Lombok 1.18.48 |
-| 数据库 | MySQL 8.x（初始化脚本由 MySQL 8.2 导出，Docker Compose 使用 `mysql:8.4`） |
+| 数据库 | PostgreSQL 17（初始化脚本位于 `sql/postgresql`，Docker Compose 使用 `postgres:17-alpine`） |
 | 缓存 | Redis 7.x（Docker Compose 使用 `redis:7.4-alpine`） |
 | 构建工具 | Maven 3.x（仓库未提供 Maven Wrapper） |
 
@@ -55,7 +55,7 @@ yudao-boot-mini
 ├── yudao-server             # 启动容器，聚合业务模块
 ├── yudao-ui/                # 前端仓库占位说明，不含可构建源码
 ├── script/                  # 部署脚本（Docker Compose 等）
-├── sql/                     # 各数据库初始化脚本与转换工具
+├── sql/                     # PostgreSQL 初始化脚本
 └── pom.xml
 ```
 
@@ -90,18 +90,18 @@ yudao-server
 默认数据库名为 `ruoyi-vue-pro`。初始化脚本本身不创建数据库，需要先手动创建，再按顺序导入：
 
 ```bash
-# 创建数据库
-mysql -uroot -p -e "CREATE DATABASE \`ruoyi-vue-pro\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+# 创建数据库（PostgreSQL）
+psql -U postgres -c "CREATE DATABASE \"ruoyi-vue-pro\";"
 
 # 先导入业务表，再导入 Quartz 表
-mysql -uroot -p ruoyi-vue-pro < sql/mysql/ruoyi-vue-pro.sql
-mysql -uroot -p ruoyi-vue-pro < sql/mysql/quartz.sql
+psql -U postgres -d ruoyi-vue-pro -f sql/postgresql/ruoyi-vue-pro.sql
+psql -U postgres -d ruoyi-vue-pro -f sql/postgresql/quartz.sql
 ```
 
-- 业务及基础设施表：[`sql/mysql/ruoyi-vue-pro.sql`](sql/mysql/ruoyi-vue-pro.sql)
-- 定时任务表：[`sql/mysql/quartz.sql`](sql/mysql/quartz.sql)
+- 业务及基础设施表：[`sql/postgresql/ruoyi-vue-pro.sql`](sql/postgresql/ruoyi-vue-pro.sql)
+- 定时任务表：[`sql/postgresql/quartz.sql`](sql/postgresql/quartz.sql)
 
-`sql/` 下还提供 dm、highgo、kingbase、oceanbase、opengauss、oracle、postgresql、sqlserver 等数据库目录；`sql/db2` 目前只有说明文档，尚未适配。测试数据库快速启动与 MySQL 转换工具见 [`sql/tools/README.md`](sql/tools/README.md)。
+仓库只维护 PostgreSQL 初始化脚本；其他数据库脚本及转换工具已移除。
 
 ### 3. 关键配置
 
@@ -125,7 +125,7 @@ spring:
 | 图片验证码 | `yudao.captcha.enable: false` |
 | 访问日志 | `yudao.access-log.enable: false` |
 
-[`application-dev.yaml`](yudao-server/src/main/resources/application-dev.yaml) 供 Docker Compose 等环境使用，端口同为 `48080`；其中的 MySQL / Redis 地址会被 Compose 的环境变量覆盖。
+[`application-dev.yaml`](yudao-server/src/main/resources/application-dev.yaml) 供 Docker Compose 等环境使用，端口同为 `48080`；其中的数据库 / Redis 地址会被 Compose 的环境变量覆盖。
 
 ### 4. 构建与启动
 
@@ -151,7 +151,7 @@ java -jar yudao-server/target/yudao-server.jar
 
 ## Docker Compose 体验环境
 
-[`script/docker-compose`](script/docker-compose/README.md) 提供 MySQL、Redis、后端与 Nginx 前端的单机体验编排，仅用于入门和测试，不是生产高可用方案。详细步骤与注意事项以该目录的 [README](script/docker-compose/README.md) 为准，主要流程如下：
+[`script/docker-compose`](script/docker-compose/README.md) 提供 PostgreSQL、Redis、后端与 Nginx 前端的单机体验编排，仅用于入门和测试，不是生产高可用方案。详细步骤与注意事项以该目录的 [README](script/docker-compose/README.md) 为准，主要流程如下：
 
 ```bash
 # 1. 在仓库根目录先打包后端
@@ -162,15 +162,15 @@ mvn clean package -pl yudao-server -am -Dmaven.test.skip=true
 
 # 3. 配置环境变量并启动
 cd script/docker-compose
-cp .env.example .env    # 至少修改 MySQL、Redis 的示例密码
+cp .env.example .env    # 至少修改 PostgreSQL、Redis 的示例密码
 docker compose up -d --build
 ```
 
 - 默认访问地址：`http://localhost:8080`（由 `WEB_PORT` 控制）。
-- 首次启动时，MySQL 按顺序导入 [`sql/mysql/ruoyi-vue-pro.sql`](sql/mysql/ruoyi-vue-pro.sql) 和 [`sql/mysql/quartz.sql`](sql/mysql/quartz.sql)；之后修改 SQL 文件不会作用于已有数据卷。
-- MySQL、Redis、后端默认不映射到宿主机端口，避免与本机的 3306、6379、48080 冲突。
+- 首次启动时，PostgreSQL 按顺序导入 [`sql/postgresql/ruoyi-vue-pro.sql`](sql/postgresql/ruoyi-vue-pro.sql) 和 [`sql/postgresql/quartz.sql`](sql/postgresql/quartz.sql)；之后修改 SQL 文件不会作用于已有数据卷。
+- PostgreSQL、Redis、后端默认不映射到宿主机端口，避免与本机的 5432、6379、48080 冲突。
 - 后端镜像由 [`yudao-server/Dockerfile`](yudao-server/Dockerfile) 构建。
-- **不要执行 `docker compose down -v`**，它会删除 MySQL、Redis 数据卷并清空数据库。停止环境使用 `docker compose down`。
+- **不要执行 `docker compose down -v`**，它会删除 PostgreSQL、Redis 数据卷并清空数据库。停止环境使用 `docker compose down`。
 - 前端是独立仓库，仓库内不构建前端源码；`web/dist` 需自行放入打包产物。
 
 ## 开发约定
