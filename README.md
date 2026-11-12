@@ -53,7 +53,7 @@ yudao-boot-mini
 ├── yudao-module-infra       # 基础设施模块
 ├── yudao-module-system      # 系统模块
 ├── yudao-server             # 启动容器，聚合业务模块
-├── yudao-ui/                # 前端仓库占位说明，不含可构建源码
+├── yudao-ui/                # 前端目录：vben 管理后台源码 + 其它 UI 的占位说明
 ├── script/                  # 部署脚本（Docker Compose 等）
 ├── sql/                     # PostgreSQL 初始化脚本
 └── pom.xml
@@ -171,7 +171,7 @@ docker compose up -d --build
 - PostgreSQL、Redis、后端默认不映射到宿主机端口，避免与本机的 5432、6379、48080 冲突。
 - 后端镜像由 [`yudao-server/Dockerfile`](yudao-server/Dockerfile) 构建。
 - **不要执行 `docker compose down -v`**，它会删除 PostgreSQL、Redis 数据卷并清空数据库。停止环境使用 `docker compose down`。
-- 前端是独立仓库，仓库内不构建前端源码；`web/dist` 需自行放入打包产物。
+- 前端 vben 管理后台源码位于 `yudao-ui/yudao-ui-admin-vben`，需先在该目录完成构建，再把 `apps/web-antd/dist` 复制到 `web/dist`。
 
 ## 开发约定
 
@@ -243,15 +243,15 @@ util/
 
 ## 前端说明
 
-本仓库不包含可构建的前端源码。`yudao-ui/` 下的目录主要是上游前端仓库的 README 占位：
+本仓库包含 `yudao-ui/yudao-ui-admin-vben`（vben 管理后台）的完整前端源码，可使用 pnpm 安装依赖并构建；其余 `yudao-ui/` 目录仍是上游前端仓库的 README 占位：
 
-- [`yudao-ui-admin-vue3`](yudao-ui/yudao-ui-admin-vue3/README.md)
-- [`yudao-ui-admin-vben`](yudao-ui/yudao-ui-admin-vben/README.md)
-- [`yudao-ui-admin-vue2`](yudao-ui/yudao-ui-admin-vue2/README.md)
-- [`yudao-ui-admin-uniapp`](yudao-ui/yudao-ui-admin-uniapp/README.md)
-- [`yudao-ui-mall-uniapp`](yudao-ui/yudao-ui-mall-uniapp/README.md)
+- [`yudao-ui-admin-vben`](yudao-ui/yudao-ui-admin-vben/README.md)：已包含 vben 管理后台源码，默认应用为 `apps/web-antd`。
+- [`yudao-ui-admin-vue3`](yudao-ui/yudao-ui-admin-vue3/README.md)：占位说明。
+- [`yudao-ui-admin-vue2`](yudao-ui/yudao-ui-admin-vue2/README.md)：占位说明。
+- [`yudao-ui-admin-uniapp`](yudao-ui/yudao-ui-admin-uniapp/README.md)：占位说明。
+- [`yudao-ui-mall-uniapp`](yudao-ui/yudao-ui-mall-uniapp/README.md)：占位说明。
 
-真实前端源码请使用各自 README 中指向的外部仓库。Docker Compose 环境同样需要先在前端仓库完成打包，再把产物复制到 `script/docker-compose/web/dist`。
+vben 源码来自上游外部仓库，仅保留与当前后端启用的 `system`、`infra` 模块对应的前端代码（`api` / `views` 下的其它业务模块已清理）。Docker Compose 环境需要先构建前端，再把产物复制到 `script/docker-compose/web/dist`。
 
 ## 许可证与致谢
 
