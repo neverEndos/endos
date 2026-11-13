@@ -35,6 +35,7 @@ class Cs1000ParseTest(unittest.TestCase):
         self.assertEqual(fields["temperature_c"], 25.0)
         self.assertEqual(fields["flow_state"], 11)
         self.assertEqual(fields["drive_pct"], 55)
+        self.assertEqual(parsed["raw_fields"], [100, 200, 300, 21, 22, 23, 24, 250, 11, 55])
 
     def test_negative_values(self):
         frame = measure_frame([-100, -1, 0, 0, 0, 0, 0, -25, 22, 0])
@@ -42,6 +43,9 @@ class Cs1000ParseTest(unittest.TestCase):
         self.assertEqual(fields["iso_4"], -10.0)
         self.assertEqual(fields["iso_6"], -0.1)
         self.assertEqual(fields["temperature_c"], -2.5)
+        parsed = cs1000.parse_measure(frame)
+        self.assertEqual(parsed["raw_fields"][0], -100)
+        self.assertEqual(parsed["raw_fields"][7], -25)
 
     def test_invalid_flow_state_marks_quality(self):
         frame = measure_frame([0] * 8 + [12, 50])

@@ -31,6 +31,7 @@ class Hlb1400LegacyTest(unittest.TestCase):
         self.assertEqual(fields["dc_change_pct"], 40.0)
         self.assertEqual(fields["saturation_pct"], 55)
         self.assertEqual(fields["temperature_c"], 25.0)
+        self.assertEqual(parsed["raw_fields"], [100, 200, 300, 400, 55, 250])
 
     def test_negative_values(self):
         parsed = hlb1400.parse_measure(
@@ -58,6 +59,7 @@ class Hlb1400ExtendedTest(unittest.TestCase):
         self.assertEqual(fields["raw_conductivity"], 111)
         self.assertEqual(fields["raw_dc"], 222)
         self.assertEqual(fields["raw_dac"], 333)
+        self.assertEqual(parsed["raw_fields"], [100, 200, 300, 55, 250, 111, 222, 333])
 
 
 class Hlb1400RejectTest(unittest.TestCase):
