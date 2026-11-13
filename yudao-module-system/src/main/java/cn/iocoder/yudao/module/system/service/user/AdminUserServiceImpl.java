@@ -35,7 +35,6 @@ import cn.iocoder.yudao.module.system.service.dept.PostService;
 import cn.iocoder.yudao.module.system.service.oauth2.OAuth2TokenService;
 import cn.iocoder.yudao.module.system.service.permission.PermissionService;
 import cn.iocoder.yudao.module.system.service.permission.RoleService;
-import cn.iocoder.yudao.module.system.service.tenant.TenantService;
 import com.google.common.annotations.VisibleForTesting;
 import com.mzt.logapi.context.LogRecordContext;
 import com.mzt.logapi.service.impl.DiffParseFunction;
@@ -84,9 +83,6 @@ public class AdminUserServiceImpl implements AdminUserService {
     @Resource
     private PasswordEncoder passwordEncoder;
     @Resource
-    @Lazy // 延迟，避免循环依赖报错
-    private TenantService tenantService;
-    @Resource
     @Lazy // 懒加载，避免循环依赖
     private OAuth2TokenService oauth2TokenService;
 
@@ -104,14 +100,7 @@ public class AdminUserServiceImpl implements AdminUserService {
     @LogRecord(type = SYSTEM_USER_TYPE, subType = SYSTEM_USER_CREATE_SUB_TYPE, bizNo = "{{#user.id}}",
             success = SYSTEM_USER_CREATE_SUCCESS)
     public Long createUser(UserSaveReqVO createReqVO) {
-        // 1.1 校验账户配合
-        tenantService.handleTenantInfo(tenant -> {
-            long count = userMapper.selectCount();
-            if (count >= tenant.getAccountCount()) {
-                throw exception(USER_COUNT_MAX, tenant.getAccountCount());
-            }
-        });
-        // 1.2 校验正确性
+        // 1. 校验正确性
         validateUserForCreateOrUpdate(null, createReqVO.getUsername(),
                 createReqVO.getMobile(), createReqVO.getEmail(), createReqVO.getDeptId(), createReqVO.getPostIds());
         // 2.1 插入用户
@@ -136,14 +125,7 @@ public class AdminUserServiceImpl implements AdminUserService {
         if (ObjUtil.notEqual(configApi.getConfigValueByKey(USER_REGISTER_ENABLED_KEY), "true")) {
             throw exception(USER_REGISTER_DISABLED);
         }
-        // 1.2 校验账户配合
-        tenantService.handleTenantInfo(tenant -> {
-            long count = userMapper.selectCount();
-            if (count >= tenant.getAccountCount()) {
-                throw exception(USER_COUNT_MAX, tenant.getAccountCount());
-            }
-        });
-        // 1.3 校验正确性
+        // 1.2 校验正确性
         validateUserForCreateOrUpdate(null, registerReqVO.getUsername(), null, null, null, null);
 
         // 2. 插入用户
@@ -320,7 +302,7 @@ public class AdminUserServiceImpl implements AdminUserService {
         }
         for (RoleDO role : roleService.getRoleList(roleIds)) {
             if (ObjectUtils.equalsAny(role.getCode(),
-                    RoleCodeEnum.SUPER_ADMIN.getCode(), RoleCodeEnum.TENANT_ADMIN.getCode())) {
+                    RoleCodeEnum.SUPER_ADMIN.getCode())) {
                 throw exception(errorCode);
             }
         }

@@ -2,7 +2,6 @@ package cn.iocoder.yudao.module.system.dal.redis.auth;
 
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.lang.Pair;
-import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.system.enums.auth.AuthQrcodeStatusEnum;
 import jakarta.annotation.Resource;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -108,10 +107,7 @@ public class AdminAuthQrcodeRedisDAO {
     }
 
     private static String formatKey(String qrcodeId) {
-        String key = String.format(AUTH_QRCODE, qrcodeId);
-        Long tenantId = TenantContextHolder.getTenantId();
-        // 与项目租户缓存一致，使用租户后缀隔离；关闭多租户时沿用普通 key。
-        return tenantId != null ? key + ":" + tenantId : key;
+        return String.format(AUTH_QRCODE, qrcodeId);
     }
 
 }

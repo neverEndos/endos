@@ -12,7 +12,7 @@ public interface RedisKeyConstants {
     /**
      * 扫码登录的临时记录
      * <p>
-     * KEY 格式：auth_qrcode:{qrcodeId}，有租户上下文时追加 :{tenantId}
+     * KEY 格式：auth_qrcode:{qrcodeId}
      * VALUE 数据类型：Hash，status、userId、secretHash；固定 180 秒过期
      */
     String AUTH_QRCODE = "auth_qrcode:%s";
