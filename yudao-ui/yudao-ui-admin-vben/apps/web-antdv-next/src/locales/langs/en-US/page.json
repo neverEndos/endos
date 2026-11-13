@@ -27,10 +27,6 @@
     "search": "Search",
     "more": "More"
   },
-  "tenant": {
-    "placeholder": "Please select tenant",
-    "success": "Switch tenant success"
-  },
   "mp": {
     "upload": {
       "invalidFormat": "Invalid {0} format!",
