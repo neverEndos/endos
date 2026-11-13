@@ -1,0 +1,3 @@
+# 本机部署配置（含板端地址与 sudo 密码），禁止提交
+deploy.env
+deploy.env.local
