@@ -758,3 +758,115 @@ systemctl status collector --no-pager
 | `deploy/systemd/kiosk.service` | 可选 kiosk 单元（依赖图形会话） |
 | `deploy/nginx/collector.conf` | Nginx 站点配置（静态 + API 反代） |
 | `deploy/.gitattributes` | 强制 deploy 目录以 LF 行尾检出（板端直接用） |
+| `deploy/release.sh` | 开发机部署入口（构建、上传、远端调用） |
+| `deploy/deploy.env.example` | 本机部署配置模板（复制为 deploy.env 后使用） |
+| `deploy/.gitignore` | 忽略本机 deploy.env（含密码，禁止提交） |
+| `deploy/scripts/lib/common.sh` | 板端脚本公共函数（日志、sudo、版本、软链接、健康检查） |
+| `deploy/scripts/bootstrap-board.sh` | 板端新板初始化（幂等） |
+| `deploy/scripts/deploy-backend.sh` | 板端后端 jar 版本化部署 |
+| `deploy/scripts/deploy-frontend.sh` | 板端前端 dist 版本化部署 |
+| `deploy/scripts/deploy-collector.sh` | 板端 collector 版本化部署 |
+| `deploy/scripts/update-all.sh` | 板端按顺序更新多个组件 |
+| `deploy/scripts/rollback.sh` | 板端按组件回滚 |
+
+## 16. 部署脚本（deploy/scripts）
+
+> **`init-db.sh` 暂未提供**（开发者待定）。数据库初始化仍按第 4 节手工执行：
+> 先在 PostgreSQL 主机建库，再导入 `sql/postgresql` 下的 system/infra 与
+> collector 脚本。部署脚本不会创建数据库或执行 SQL。
+
+本节脚本均满足同一条帮助约定：**不带任何参数（或 `-h` / `--help`）时只输出
+完整帮助并退出 0，不执行任何动作**；未知参数、缺少必要参数时打印帮助与错误、
+以非 0 退出。`--dry-run` 只打印动作，不改动系统。
+
+### 16.1 脚本清单
+
+| 脚本 | 运行位置 | 用途 |
+|---|---|---|
+| `deploy/release.sh` | 开发机 | 构建 + 上传 + 调用板端脚本；子命令 `bootstrap` / `backend` / `frontend` / `collector` / `all` / `rollback` |
+| `deploy/scripts/bootstrap-board.sh` | 板端 | 新板初始化（apt 包、目录、systemd、Nginx、enable 服务、清理旧版本） |
+| `deploy/scripts/deploy-backend.sh` | 板端 | jar 放入 `releases/<版本>`，切 jar 软链接，重启并等待 48080 |
+| `deploy/scripts/deploy-frontend.sh` | 板端 | dist 放入 `releases/<版本>`，切 `current`，`nginx -t` + reload，检查 200 |
+| `deploy/scripts/deploy-collector.sh` | 板端 | 代码放入 `releases/<版本>`，切 `current`，重启并检查 active |
+| `deploy/scripts/update-all.sh` | 板端 | 按 backend → frontend → collector 顺序调用上述三个脚本 |
+| `deploy/scripts/rollback.sh` | 板端 | 按组件切回上一版本（或 `--version` 指定版本）并做健康检查 |
+| `deploy/scripts/lib/common.sh` | 板端 | 日志、sudo、版本号、软链接、清理、健康检查公共函数 |
+
+### 16.2 快速上手
+
+首次在新板部署：
+
+```bash
+# 开发机，工作区根目录
+cp deploy/deploy.env.example deploy/deploy.env   # 填板端地址；sudo 密码可选
+./deploy/release.sh bootstrap                    # 上传模板并初始化板端
+./deploy/release.sh backend                      # 构建并部署后端
+./deploy/release.sh frontend                     # 构建并部署前端
+./deploy/release.sh collector                    # 打包并部署 collector
+```
+
+日常更新可以单独执行，也可以一条命令按顺序更新三个组件：
+
+```bash
+./deploy/release.sh backend                      # 仅后端
+./deploy/release.sh frontend --skip-build        # 复用已有 dist
+./deploy/release.sh collector
+./deploy/release.sh all                          # 共用同一版本号，依次更新
+./deploy/release.sh all --dry-run                # 只打印构建/上传/远端命令
+```
+
+回滚（默认回滚到板端当前版本的上一版本）：
+
+```bash
+./deploy/release.sh rollback frontend
+./deploy/release.sh rollback backend --version 20261113-1842-d785623e
+./deploy/release.sh rollback collector --dry-run
+```
+
+不经过开发机、直接在板端执行时：
+
+```bash
+# 上传脚本（示例；release.sh 会自动完成）
+tar -C deploy -czf - scripts | ssh alientek@192.168.0.105 \
+  'mkdir -p /tmp/yudao-deploy && tar -xzf - -C /tmp/yudao-deploy'
+
+# 板端（alientek，systemctl/nginx 动作内部使用 sudo）
+bash /tmp/yudao-deploy/scripts/deploy-backend.sh --jar /tmp/yudao-server.jar
+bash /tmp/yudao-deploy/scripts/deploy-frontend.sh --dist /tmp/dist
+bash /tmp/yudao-deploy/scripts/deploy-collector.sh --src /tmp/collector
+bash /tmp/yudao-deploy/scripts/update-all.sh --all --jar /tmp/j.jar --dist /tmp/dist --src /tmp/collector
+bash /tmp/yudao-deploy/scripts/rollback.sh collector --dry-run
+```
+
+### 16.3 版本号与保留策略
+
+- 后端/collector 默认版本：`YYYYMMDD-HHMM-<git sha 前 8 位>`；板端没有 git
+  仓库时后端退化为 jar 的 sha256 前 8 位，前端/collector 退化为时间戳。
+- `release.sh backend|frontend|collector` 每次在开发机生成版本号并回显；
+  `release.sh all` 生成一次版本号，三个组件共用，便于对应回滚。
+- `--keep N`（默认 3）控制 `releases/` 保留数量；只删除 `releases/` 下的一级
+  版本目录，`current` 软链接与 `/var/log/yudao/` 不会被清理。
+- 后端健康检查失败会自动切回上一版本并重启；collector 启动失败同样自动回滚。
+  前端健康检查失败不会自动回滚，请手工执行 `rollback.sh frontend`。
+
+### 16.4 deploy.env 与安全提示
+
+`deploy/release.sh` 启动时读取 `deploy/deploy.env`（存在时），CLI 参数优先：
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `BOARD_HOST` | `192.168.0.105` | 板端地址（`--host`） |
+| `BOARD_USER` | `alientek` | SSH 用户（`--user`） |
+| `BOARD_PORT` | `22` | SSH 端口（`--port`） |
+| `SSH_KEY` | `~/.ssh/id_rsa` | 本机私钥（`--key`） |
+| `BOARD_SUDO_PASSWORD` | 空 | 板端 sudo 密码（`--sudo-password`）；空则 `ssh -t` 交互输入 |
+
+- `deploy.env` 已被 `deploy/.gitignore` 忽略，**禁止提交**；模板只含占位值。
+- 配置了 `BOARD_SUDO_PASSWORD` 时，release.sh 通过 ssh 的 stdin 把密码送入远端
+  `sudo -S`，不会出现在远端命令行；但 `--sudo-password` 写在本地命令行仍会进入
+  shell 历史，推荐写入 `deploy.env`。
+- 远端脚本以 sudo 执行，部署产物会自动 `chown` 回 `alientek`，不影响后续
+  以普通用户手工维护。
+- 以上密码方式仅限开发/联调；生产环境应改用受限 sudoers 规则或人工输入。
+- 前端构建依赖 `pnpm`；后端构建依赖 `mvn` 与 JDK 25；开发机为 Windows Git
+  Bash 时脚本不依赖 `rsync`，使用 `scp` / `tar | ssh`。
