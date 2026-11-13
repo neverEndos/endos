@@ -304,7 +304,10 @@ SPRING_DATASOURCE_DYNAMIC_DRUID_MAX_POOL_PREPARED_STATEMENT_PER_CONNECTION_SIZE=
 ├── backend/
 │   ├── yudao-server.jar -> releases/<版本>/yudao-server.jar   # 软链接，systemd 指向这里
 │   └── releases/<版本>/yudao-server.jar
-├── collector/                            # main.py、poll.py、transport.py、hsi/
+├── collector/
+│   ├── current -> releases/<版本>/       # systemd 工作目录（目录软链接）
+│   └── releases/<版本>/                  # main.py、poll.py、transport.py、
+│                                          # storage.py、seed.py、hsi/、tests/、README.md
 └── web/
     ├── current -> releases/<版本>/       # Nginx 静态根（目录软链接）
     └── releases/<版本>/                  # dist 内容
@@ -324,7 +327,8 @@ sudo install -d -o alientek -g alientek -m 0755 \
   /opt/yudao/backend/releases \
   /opt/yudao/web \
   /opt/yudao/web/releases \
-  /opt/yudao/collector
+  /opt/yudao/collector \
+  /opt/yudao/collector/releases
 sudo install -d -o alientek -g alientek -m 0750 /var/log/yudao
 sudo install -d -o root -g root -m 0755 /etc/yudao
 ```
@@ -461,23 +465,49 @@ sudo systemctl reload nginx
 
 ## 9. 部署 collector
 
-当前 `collector/` 是 HSI 协议原型：只轮询、写 JSONL，不写数据库。
+collector 与后端/前端一致，采用“版本目录 + `current` 软链接”部署。
+`collector.service` 的 `WorkingDirectory` 与 `ExecStart` 均指向
+`/opt/yudao/collector/current`，升级时只需切换软链接并重启服务。
+
+版本命名与后端一致：`YYYYMMDD-HHMM-<git sha 前 8 位>`。开发机在仓库根目录先
+生成版本号，再把整个 `collector/` 目录（含 `hsi/`、`tests/`、`README.md`）上传到
+板端临时目录：
 
 ```bash
-# 开发机，仓库根目录
-ssh alientek@192.168.0.105 'mkdir -p /tmp/yudao-collector'
-scp collector/main.py collector/poll.py collector/transport.py \
-  collector/README.md alientek@192.168.0.105:/tmp/yudao-collector/
-scp -r collector/hsi alientek@192.168.0.105:/tmp/yudao-collector/
+# 开发机，源代码仓库根目录（或功能 worktree）
+VERSION=$(date +%Y%m%d-%H%M)-$(git rev-parse --short=8 HEAD)
+echo "collector 版本: $VERSION"
+ssh alientek@192.168.0.105 "mkdir -p /tmp/yudao-collector-$VERSION"
+scp -r collector alientek@192.168.0.105:/tmp/yudao-collector-$VERSION/
 ```
 
-板端：
+板端（`alientek` 用户，`/opt/yudao/collector` 已归属该用户）：
 
 ```bash
-cp -a /tmp/yudao-collector/. /opt/yudao/collector/
-ls /opt/yudao/collector/main.py
+VERSION=20261113-2059-7b6c3ac9   # 必须与开发机 echo 输出的版本一致
+install -d /opt/yudao/collector/releases/$VERSION
+cp -a /tmp/yudao-collector-$VERSION/collector/. \
+  /opt/yudao/collector/releases/$VERSION/
+ln -sfn releases/$VERSION /opt/yudao/collector/current
+ls -l /opt/yudao/collector/current
+ls /opt/yudao/collector/current/main.py
+```
+
+安装 systemd 单元并启动：
+
+```bash
+sudo install -m 0644 /tmp/yudao-deploy/systemd/collector.service /etc/systemd/system/
+sudo systemctl daemon-reload
 sudo systemctl enable --now collector
+systemctl status collector --no-pager
+systemctl show -p WorkingDirectory -p ExecStart collector
 ```
+
+从旧版平铺目录迁移时，先 `sudo systemctl stop collector`，把原平铺文件移入
+`releases/<版本>/`（或直接按上述流程上传新版本），创建 `current` 软链接后再删除
+平铺的 `main.py`、`poll.py`、`transport.py`、`storage.py`、`seed.py`、`hsi/`、
+`tests/`、`README.md` 与 `__pycache__`，只保留 `releases/` 与 `current`。
+JSONL 与日志仍在 `/var/log/yudao/`，不要随代码目录删除。
 
 `collector.service` 使用 `main.py` 的真实参数：
 
@@ -491,14 +521,19 @@ sudo systemctl enable --now collector
 | `--output` | `/var/log/yudao/collector-data.jsonl` | 每次启动覆盖 |
 | `--log` | `/var/log/yudao/collector.log` | 每次启动覆盖 |
 | `--flags` | `auto` | 依次探测 `1,3,5,7` 并回退 `0`（本现场实际为 `0`） |
+| `--db-retry-interval` | `60` | DB 不可用时的重连/重新种子间隔（秒） |
 
 注意：
 
 - 原型 README 的 `~/collector-proto/` 是手工运行目录；systemd 部署统一使用
-  `/opt/yudao/collector`，不要混淆。
+  `/opt/yudao/collector/current`，不要混淆。
+- DB 不可用时 collector 不会退出：继续写 JSONL（`channel_id` 为 null），并按
+  `--db-retry-interval` 自动重连、重新执行种子与解析映射；恢复后自动落库。
 - `--output` / `--log` 每次进程启动都会覆盖原文件；服务重启会丢失旧文件内容。
 - 若串口设备名变化，用 `systemctl edit collector` 增加 drop-in 覆盖
   `ExecStart`（或修改单元后 `daemon-reload`）。
+- 切换 `current` 后必须重启服务（systemd 已解析工作目录与启动命令），仅切软链接
+  不会让运行中的进程加载新代码。
 - 60 秒间隔尚未做长跑验证（见 `collector/README.md`），首期需持续观察成功率。
 
 ## 10. 健康检查
@@ -612,7 +647,38 @@ ln -sfn /opt/yudao/web/releases/$VERSION /opt/yudao/web/current
 sudo systemctl reload nginx
 ```
 
-### 12.4 回滚
+### 12.4 升级 collector
+
+```bash
+# 开发机：生成版本号并上传（命令同第 9 节）
+VERSION=$(date +%Y%m%d-%H%M)-$(git rev-parse --short=8 HEAD)
+ssh alientek@192.168.0.105 "mkdir -p /tmp/yudao-collector-$VERSION"
+scp -r collector alientek@192.168.0.105:/tmp/yudao-collector-$VERSION/
+
+# 板端：新版本放入 releases，切换 current 后重启
+VERSION=20261114-0900-abcdef12   # 按实际版本替换
+install -d /opt/yudao/collector/releases/$VERSION
+cp -a /tmp/yudao-collector-$VERSION/collector/. \
+  /opt/yudao/collector/releases/$VERSION/
+ln -sfn releases/$VERSION /opt/yudao/collector/current
+sudo systemctl restart collector
+systemctl status collector --no-pager
+systemctl show -p WorkingDirectory -p ExecStart collector
+```
+
+升级前建议先 `sudo systemctl stop collector` 再上传（串口同时只能被一个进程
+占用）；上传、切换后再 `systemctl start collector`。切换 `current` 后必须重启
+服务，运行中的进程不会自动加载新代码。
+
+旧版本目录保留策略：
+
+- 至少保留当前版本与一个上一版本，便于快速回滚；确认新版本稳定运行后再清理更早
+  的目录（板端 16GB eMMC，collector 目录本身只有几百 KB，通常无需急于清理）。
+- 清理时只删除 `/opt/yudao/collector/releases/<旧版本>`，不要删除 `current`
+  或 `/var/log/yudao/` 下的日志。
+- 若新版本有问题，切回旧目录并重启即可（见 12.5），无需重新上传旧代码。
+
+### 12.5 回滚
 
 ```bash
 # 后端：切回上一版本的 jar 并重启（以 20261113-1800 为例）
@@ -622,6 +688,12 @@ sudo systemctl restart yudao-server
 # 前端：切回上一版本目录并重载 Nginx
 ln -sfn /opt/yudao/web/releases/20261113-1800 /opt/yudao/web/current
 sudo systemctl reload nginx
+
+# collector：切回旧版本目录并重启（须先确认旧目录仍在 releases/ 下）
+ls -1 /opt/yudao/collector/releases
+ln -sfn releases/20261113-2059-7b6c3ac9 /opt/yudao/collector/current
+sudo systemctl restart collector
+systemctl status collector --no-pager
 ```
 
 建议至少保留一个上一版本目录；若数据库结构与代码版本绑定，回滚 jar 前先用
@@ -651,10 +723,11 @@ sudo systemctl reload nginx
 ## 14. 已知限制与风险
 
 1. **远程基础设施单点**：PostgreSQL/Redis 均在 `192.168.0.23`，网络或主机故障
-   会导致管理后台不可用；collector 当前版本不写数据库、也不做本地缓存，
-   断网期间采集数据丢失（开发者已接受首期该风险）。
-2. **无断网 spool**：collector 只写本地 JSONL，没有重传队列；后续接数据库时
-   需重新设计断网续传。
+   会导致管理后台不可用；collector 在 DB 不可用时继续采样并写 JSONL，按
+   `--db-retry-interval` 自动重连，但断连期间的数据不会补写数据库（开发者已
+   接受首期该风险）。
+2. **无断网 spool**：collector 没有本地重传队列；DB 不可用期间仅保留 JSONL，
+   恢复后从下一轮开始落库，断连期间的 raw 数据丢失。
 3. **无 swap**：当前板端未启用 swap。可选启用 1GB zram（`systemd-zram-generator`，
    安装后配置 `/etc/systemd/zram-generator.conf` 的 `[zram0] zram-size = 1024`
    并重启）；zram 会占用内存，是否启用需结合实际压力评估。
@@ -664,8 +737,9 @@ sudo systemctl reload nginx
    `root` 超级用户；仅限内网联调，上线前必须改为真实鉴权与独立数据库账号。
 6. **无 HTTPS**：Nginx 仅监听 80，建议限制在受信内网网段（防火墙只放行
    80/22 等必要端口）。
-7. **collector 为原型**：当前不写 `collector_*` 表；`--output`/`--log` 每次启动
-   覆盖；60 秒轮询尚未长跑验证；传感器可能处于自测随机模式。
+7. **collector 为原型**：已写 `collector_sample_raw` / `collector_device_status` /
+   `collector_heartbeat`；`--output`/`--log` 每次启动覆盖；60 秒轮询尚未长跑
+   验证；传感器可能处于自测随机模式。
 8. **collector 输出无轮转**：JSONL 与 Python 日志不会自动切割，需监控
    `/var/log/yudao` 占用。
 9. **前端生产配置**：`.env.production` 已改为板端相对路径；本地若需要旧的

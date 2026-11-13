@@ -1,6 +1,6 @@
 [Unit]
 Description=HSI Collector（CS1000 + HLB1400 轮询原型）
-Documentation=file:/opt/yudao/collector/README.md
+Documentation=file:/opt/yudao/collector/current/README.md
 After=network-online.target
 Wants=network-online.target
 
@@ -8,7 +8,7 @@ Wants=network-online.target
 Type=simple
 User=alientek
 Group=alientek
-WorkingDirectory=/opt/yudao/collector
+WorkingDirectory=/opt/yudao/collector/current
 EnvironmentFile=/etc/yudao/env.remote
 # 串口属于 dialout 组；用户 alientek 已在 dialout 组，这里再显式补充一次，
 # 避免因登录会话/组变更导致服务拿不到 /dev/ttyS4 权限。
@@ -20,7 +20,8 @@ SupplementaryGroups=dialout
 #   --output     JSONL 输出，进程每次启动会覆盖该文件
 #   --log        原型日志，进程每次启动会覆盖该文件
 #   --flags      auto：依次探测 1,3,5,7 并回退 0（本现场实际使用 0）
-ExecStart=/usr/bin/python3 /opt/yudao/collector/main.py \
+#   --db-retry-interval  DB 不可用时的重连/重新种子间隔（秒）
+ExecStart=/usr/bin/python3 /opt/yudao/collector/current/main.py \
     --port /dev/ttyS4 \
     --interval 60 \
     --duration 0 \
@@ -28,7 +29,8 @@ ExecStart=/usr/bin/python3 /opt/yudao/collector/main.py \
     --retries 1 \
     --output /var/log/yudao/collector-data.jsonl \
     --log /var/log/yudao/collector.log \
-    --flags auto
+    --flags auto \
+    --db-retry-interval 60
 # Python 收到 SIGTERM 后会关闭串口并正常退出；异常退出时重启
 Restart=on-failure
 RestartSec=5
