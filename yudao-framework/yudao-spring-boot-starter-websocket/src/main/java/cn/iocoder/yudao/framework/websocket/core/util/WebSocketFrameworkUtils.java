@@ -53,15 +53,4 @@ public class WebSocketFrameworkUtils {
         return loginUser != null ? loginUser.getUserType() : null;
     }
 
-    /**
-     * 获得当前用户的租户编号
-     *
-     * @param session Session
-     * @return 租户编号
-     */
-    public static Long getTenantId(WebSocketSession session) {
-        LoginUser loginUser = getLoginUser(session);
-        return loginUser != null ? loginUser.getTenantId() : null;
-    }
-
 }

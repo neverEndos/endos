@@ -1,6 +1,6 @@
 package cn.iocoder.yudao.module.system.seatademo;
 
-import cn.iocoder.yudao.framework.tenant.core.db.TenantBaseDO;
+import cn.iocoder.yudao.framework.mybatis.core.dataobject.BaseDO;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
@@ -20,7 +20,7 @@ import lombok.*;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class DemoSeataOrderDO extends TenantBaseDO {
+public class DemoSeataOrderDO extends BaseDO {
 
     /**
      * 订单编号
