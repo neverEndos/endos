@@ -1,0 +1,38 @@
+[Unit]
+Description=HSI Collector（CS1000 + HLB1400 轮询原型）
+Documentation=file:/opt/yudao/collector/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=alientek
+Group=alientek
+WorkingDirectory=/opt/yudao/collector
+EnvironmentFile=/etc/yudao/env.remote
+# 串口属于 dialout 组；用户 alientek 已在 dialout 组，这里再显式补充一次，
+# 避免因登录会话/组变更导致服务拿不到 /dev/ttyS4 权限。
+SupplementaryGroups=dialout
+# 参数与 collector/main.py 的真实 CLI 一致：
+#   --port       RS485 串口（HSI 总线，需 TIOCSRS485）
+#   --interval   轮询间隔（秒），60 为 collector/README.md 建议值
+#   --duration   0 表示一直运行（原型默认 600 秒后退出）
+#   --output     JSONL 输出，进程每次启动会覆盖该文件
+#   --log        原型日志，进程每次启动会覆盖该文件
+#   --flags      auto：依次探测 1,3,5,7 并回退 0（本现场实际使用 0）
+ExecStart=/usr/bin/python3 /opt/yudao/collector/main.py \
+    --port /dev/ttyS4 \
+    --interval 60 \
+    --duration 0 \
+    --timeout 1.0 \
+    --retries 1 \
+    --output /var/log/yudao/collector-data.jsonl \
+    --log /var/log/yudao/collector.log \
+    --flags auto
+# Python 收到 SIGTERM 后会关闭串口并正常退出；异常退出时重启
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

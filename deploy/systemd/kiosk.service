@@ -1,0 +1,32 @@
+[Unit]
+# 可选单元：仅当板端需要上电直接显示管理后台时才启用。
+# 依赖图形会话，必须在存在 X/Wayland 桌面会话的板子上使用；
+# 无桌面（multi-user.target）环境下不要启用本单元。
+Description=Yudao Kiosk（可选，依赖图形会话）
+After=graphical.target network-online.target yudao-server.service
+Wants=graphical.target network-online.target
+
+[Service]
+Type=simple
+User=alientek
+Group=alientek
+# 若桌面使用 X11，通常为 :0；Wayland 下 system 服务访问用户会话不稳定，
+# 建议改用 GNOME 自启动或 systemd --user 单元。
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/alientek/.Xauthority
+# Ubuntu 24.04 的 Chromium 可能来自 snap，先确认可执行文件：
+#   command -v chromium-browser chromium google-chrome
+# 按实际路径修改 ExecStart；地址为 Nginx 默认站点。
+ExecStart=/usr/bin/chromium-browser \
+    --kiosk \
+    --noerrdialogs \
+    --disable-infobars \
+    --incognito \
+    http://127.0.0.1/
+Restart=on-failure
+RestartSec=5
+
+[Install]
+# 不要 `systemctl enable kiosk`；需要时用 `systemctl start kiosk`
+# 或在桌面会话中配置自启动。
+WantedBy=graphical.target

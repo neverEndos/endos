@@ -1,0 +1,39 @@
+[Unit]
+Description=Yudao Server（板端 systemd 原生部署）
+Documentation=https://doc.iocoder.cn/
+# 依赖局域网 PostgreSQL/Redis，必须等网络就绪后再启动
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=alientek
+Group=alientek
+# WorkingDirectory 供 Spring 解析相对路径；远程配置由 EnvironmentFile 注入，
+# 不依赖仓库根目录的 .env.remote。
+WorkingDirectory=/opt/yudao/backend
+EnvironmentFile=/etc/yudao/env.remote
+# 4GB 内存旧板的保守 JVM 参数；新板 8GB 可适当提高 -Xmx。
+# 使用 SerialGC、固定板端时区与 UTF-8 编码，与本机实际部署保持一致。
+ExecStart=/usr/bin/java \
+    -Xms256m \
+    -Xmx768m \
+    -XX:MaxMetaspaceSize=256m \
+    -XX:+UseSerialGC \
+    -Duser.timezone=Asia/Shanghai \
+    -Dfile.encoding=UTF-8 \
+    -jar /opt/yudao/backend/yudao-server.jar \
+    --spring.profiles.active=remote
+# Spring Boot 收到 SIGTERM 后正常退出（143）；失败时自动重启
+Restart=on-failure
+RestartSec=10
+SuccessExitStatus=143
+TimeoutStopSec=60
+LimitNOFILE=65535
+
+# 日志：控制台输出进入 journald；文件日志由 LOGGING_FILE_NAME 指向 /var/log/yudao
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
