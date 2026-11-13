@@ -133,26 +133,49 @@ TARGET_DIR="$WEB_DIR/releases/$VERSION"
 info "前端部署版本：$VERSION"
 info "源 dist：$DIST"
 
-# ---------- 1. 复制到版本目录 ----------
+# 同版本重部署拒绝覆盖（current 指向的版本正在被 Nginx 使用）。
+CUR_TARGET=""
+CUR_VERSION=""
+if [ -L "$CURRENT" ]; then
+  CUR_TARGET="$(symlink_target_abs "$CURRENT" 2>/dev/null || true)"
+  if [ -n "$CUR_TARGET" ] && [ -e "$CUR_TARGET" ]; then
+    CUR_VERSION="$(basename "$CUR_TARGET")"
+  fi
+fi
+if [ "$VERSION" = "$CUR_VERSION" ]; then
+  die "版本 $VERSION 已是当前版本，拒绝覆盖；请使用新的 --version 或先回滚"
+fi
+
+# ---------- 1. 复制到临时目录并原子切换 ----------
+STAGE_DIR="$TARGET_DIR.tmp.$$"
 if [ -d "$TARGET_DIR" ]; then
-  warn "版本目录已存在，将覆盖：$TARGET_DIR"
+  warn "版本目录已存在（非当前版本），将替换：$TARGET_DIR"
 fi
 if is_dry_run; then
+  printf '[dry-run]'
+  printf ' %q' rm -rf "$STAGE_DIR"
+  printf '\n'
+  printf '[dry-run]'
+  printf ' %q' install -d "$STAGE_DIR"
+  printf '\n'
+  printf '[dry-run]'
+  printf ' %q' cp -a "$DIST/." "$STAGE_DIR/"
+  printf '\n'
   printf '[dry-run]'
   printf ' %q' rm -rf "$TARGET_DIR"
   printf '\n'
   printf '[dry-run]'
-  printf ' %q' install -d "$TARGET_DIR"
-  printf '\n'
-  printf '[dry-run]'
-  printf ' %q' cp -a "$DIST/." "$TARGET_DIR/"
+  printf ' %q' mv -Tf "$STAGE_DIR" "$TARGET_DIR"
   printf '\n'
 else
+  trap 'rm -rf "$STAGE_DIR" 2>/dev/null || true' EXIT
+  rm -rf "$STAGE_DIR"
+  install -d "$STAGE_DIR"
+  cp -a "$DIST/." "$STAGE_DIR/"
+  fix_owner "$STAGE_DIR"
+  [ -f "$STAGE_DIR/index.html" ] || die "复制后缺少 index.html，部署中止"
   rm -rf "$TARGET_DIR"
-  install -d "$TARGET_DIR"
-  cp -a "$DIST/." "$TARGET_DIR/"
-  fix_owner "$TARGET_DIR"
-  [ -f "$TARGET_DIR/index.html" ] || die "复制后缺少 index.html，部署中止"
+  mv -Tf "$STAGE_DIR" "$TARGET_DIR"
 fi
 
 # ---------- 2. 切换软链接 ----------

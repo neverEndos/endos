@@ -137,20 +137,33 @@ TARGET_JAR="$TARGET_DIR/yudao-server.jar"
 info "后端部署版本：$VERSION"
 info "源 jar：$JAR"
 
-# 记录上一版本，供健康检查失败时回滚
+# 记录当前（上一）版本，供健康检查失败时回滚；同版本重部署拒绝覆盖。
+CUR_TARGET=""
+CUR_VERSION=""
 PREV_TARGET=""
 if [ -L "$LINK" ]; then
-  PREV_TARGET="$(symlink_target_abs "$LINK" 2>/dev/null || true)"
-  [ -n "$PREV_TARGET" ] && [ -e "$PREV_TARGET" ] || PREV_TARGET=""
+  CUR_TARGET="$(symlink_target_abs "$LINK" 2>/dev/null || true)"
+  if [ -n "$CUR_TARGET" ] && [ -e "$CUR_TARGET" ]; then
+    PREV_TARGET="$CUR_TARGET"
+    CUR_VERSION="$(basename "$(dirname "$CUR_TARGET")")"
+  fi
+fi
+if [ "$VERSION" = "$CUR_VERSION" ]; then
+  die "版本 $VERSION 已是当前版本，拒绝覆盖；请使用新的 --version 或先回滚"
 fi
 
-# ---------- 1. 复制到版本目录 ----------
+# ---------- 1. 复制到版本目录（临时文件 + 原子替换） ----------
 if [ -d "$TARGET_DIR" ]; then
-  warn "版本目录已存在，将覆盖：$TARGET_DIR"
+  warn "版本目录已存在（非当前版本），将替换：$TARGET_DIR"
 fi
+TMP_JAR="$TARGET_JAR.tmp.$$"
 run install -d "$TARGET_DIR"
-run install -m 0644 "$JAR" "$TARGET_JAR"
-if ! is_dry_run; then
+if is_dry_run; then
+  run install -m 0644 "$JAR" "$TMP_JAR"
+  run mv -Tf "$TMP_JAR" "$TARGET_JAR"
+else
+  install -m 0644 "$JAR" "$TMP_JAR"
+  mv -Tf "$TMP_JAR" "$TARGET_JAR"
   fix_owner "$TARGET_DIR"
 fi
 
@@ -158,9 +171,36 @@ fi
 info "切换软链接：$LINK -> releases/$VERSION/yudao-server.jar"
 switch_symlink "releases/$VERSION/yudao-server.jar" "$LINK"
 
+rollback_backend() {
+  local reason="$1"
+  if [ -z "$PREV_TARGET" ]; then
+    error "$reason；没有可回滚的上一版本，请人工检查 journalctl -u yudao-server"
+    return 1
+  fi
+  warn "$reason，自动回滚到上一版本：$PREV_TARGET"
+  switch_symlink "$PREV_TARGET" "$LINK"
+  if ! run_sudo systemctl restart yudao-server; then
+    error "回滚到上一版本后重启失败，请人工检查 journalctl -u yudao-server"
+    return 1
+  fi
+  if wait_port 127.0.0.1 48080 240; then
+    info "已回滚到上一版本：$PREV_TARGET"
+    return 0
+  fi
+  error "回滚到上一版本后 48080 仍未监听"
+  return 1
+}
+
 # ---------- 3. 重启 ----------
 info "重启 yudao-server"
-run_sudo systemctl restart yudao-server
+if ! is_dry_run && ! run_sudo systemctl restart yudao-server; then
+  error "yudao-server 重启命令失败"
+  rollback_backend "新版本 $VERSION 重启失败" || true
+  exit 1
+fi
+if is_dry_run; then
+  run_sudo systemctl restart yudao-server
+fi
 
 # ---------- 4. 健康检查 ----------
 if [ "$HEALTHCHECK" -eq 1 ]; then

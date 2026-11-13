@@ -36,6 +36,9 @@ bootstrap-board.sh —— 新板初始化（幂等，在板端以 sudo 执行）
                         deploy/env.example 模板并提示后续手工填写。
   --keep-releases N     清理各组件 releases 目录，仅保留最近 N 个版本（默认 3）。
                         只删除 releases 下的版本目录，绝不删除 current 软链接。
+  --allow-mock          允许在 YUDAO_SECURITY_MOCK_ENABLE=true 时启动后端。
+                        仅限完全离线的演示环境；默认遇到 mock=true 会拒绝启动
+                        后端并给出错误，避免误把跳过鉴权的环境暴露到局域网。
   -h, --help            显示本帮助并退出 0。
 
 作用与副作用：
@@ -45,6 +48,10 @@ bootstrap-board.sh —— 新板初始化（幂等，在板端以 sudo 执行）
     /var/log/yudao（alientek 所有）、/etc/yudao（root 所有）。
   - 安装 systemd 单元 yudao-server.service、collector.service。
     kiosk.service 不自动安装（依赖图形会话，按需手工启用）。
+  - 安装环境变量文件后读取 YUDAO_SECURITY_MOCK_ENABLE；为 true 且未传
+    --allow-mock 时只初始化其余组件，拒绝启动/启用 yudao-server 并以非 0 退出。
+  - 通过 --env-file 上传的临时文件（/tmp/yudao-deploy/env.remote.upload）
+    在安装结束后（成功或失败）由 EXIT trap 清理。
   - 安装 /etc/nginx/conf.d/collector.conf，禁用 Nginx 默认站点。
   - enable nginx / yudao-server / collector；产物存在时才启动，
     缺少 jar/dist/main.py 时只 enable 并提示，不会启动空服务。
@@ -69,8 +76,18 @@ EOF
 
 RUN=0
 SKIP_PACKAGES=0
+ALLOW_MOCK=0
 ENV_SRC=""
 KEEP_RELEASES=3
+UPLOADED_ENV_PATH="${YUDAO_UPLOAD_ENV_PATH:-/tmp/yudao-deploy/env.remote.upload}"
+
+# 上传的 env 副本含数据库/Redis 密码；无论安装成功或失败都从 /tmp 清理。
+cleanup_uploaded_env() {
+  if [ -n "${ENV_SRC:-}" ] && [ "$ENV_SRC" = "$UPLOADED_ENV_PATH" ]; then
+    rm -f "$ENV_SRC" 2>/dev/null || warn "无法清理上传的临时 env：$ENV_SRC"
+  fi
+}
+trap cleanup_uploaded_env EXIT
 
 if [ "$#" -eq 0 ]; then
   usage
@@ -93,6 +110,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --skip-packages)
       SKIP_PACKAGES=1
+      shift
+      ;;
+    --allow-mock)
+      ALLOW_MOCK=1
       shift
       ;;
     --env-file)
@@ -278,6 +299,40 @@ else
   warn "未找到 $ENV_FILE，也没有 deploy/env.example 模板；服务可能无法连接数据库"
 fi
 
+# ---------- 5.1 mock 鉴权门禁 ----------
+# mock=true 会跳过真实鉴权；除非开发者显式 --allow-mock，否则不启动后端。
+BLOCK_BACKEND=0
+BLOCKED=0
+MOCK_VALUE=""
+if [ -f "$ENV_FILE" ]; then
+  if is_dry_run; then
+    MOCK_VALUE="$(grep -E '^YUDAO_SECURITY_MOCK_ENABLE=' "$ENV_FILE" 2>/dev/null \
+      | tail -n 1 | cut -d= -f2- | tr -d '[:space:]' || true)"
+  else
+    MOCK_VALUE="$(sudo_run grep -E '^YUDAO_SECURITY_MOCK_ENABLE=' "$ENV_FILE" 2>/dev/null \
+      | tail -n 1 | cut -d= -f2- | tr -d '[:space:]' || true)"
+  fi
+fi
+case "$MOCK_VALUE" in
+  true|TRUE|True|1|yes|YES|on|ON)
+    if [ "$ALLOW_MOCK" -eq 1 ]; then
+      warn "YUDAO_SECURITY_MOCK_ENABLE=true 且显式 --allow-mock：跳过真实鉴权，仅限离线演示"
+    else
+      BLOCK_BACKEND=1
+      BLOCKED=1
+      error "拒绝启动 yudao-server：$ENV_FILE 中 YUDAO_SECURITY_MOCK_ENABLE=true"
+      error "mock 会跳过真实鉴权，禁止在局域网可达的环境启用；请改为 false"
+      error "确需离线演示请显式追加 --allow-mock（其余组件仍会正常初始化）"
+    fi
+    ;;
+  ""|false|FALSE|False|0|no|NO|off|OFF)
+    info "YUDAO_SECURITY_MOCK_ENABLE=${MOCK_VALUE:-未设置（默认 false）}"
+    ;;
+  *)
+    warn "无法识别的 YUDAO_SECURITY_MOCK_ENABLE=$MOCK_VALUE，按未开启处理"
+    ;;
+esac
+
 # ---------- 6. 时区 / 串口检查（只告警） ----------
 if command -v timedatectl >/dev/null 2>&1; then
   TZ_VALUE="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
@@ -322,7 +377,11 @@ ensure_service() {
   fi
 }
 
-ensure_service yudao-server "$BACKEND_DIR/yudao-server.jar" "后端 jar"
+if [ "$BLOCK_BACKEND" -eq 1 ]; then
+  error "已跳过 yudao-server 的 enable/启动（mock 鉴权未放行）"
+else
+  ensure_service yudao-server "$BACKEND_DIR/yudao-server.jar" "后端 jar"
+fi
 ensure_service collector "$COLLECTOR_DIR/current/main.py" "collector current/main.py"
 
 # ---------- 8. 清理旧版本（保留 current） ----------
@@ -347,6 +406,10 @@ prune_releases "$BACKEND_DIR/releases" "$KEEP_RELEASES" "$BACKEND_CUR"
 prune_releases "$WEB_DIR/releases" "$KEEP_RELEASES" "$WEB_CUR"
 prune_releases "$COLLECTOR_DIR/releases" "$KEEP_RELEASES" "$COLLECTOR_CUR"
 
+if [ "$BLOCKED" -eq 1 ] && ! is_dry_run; then
+  error "板端初始化未完全完成：yudao-server 因 mock 鉴权被拒绝启动"
+  exit 1
+fi
 info "板端初始化完成（dry-run=$DRY_RUN）"
 if ! is_dry_run; then
   info "建议检查：systemctl status nginx yudao-server collector --no-pager"

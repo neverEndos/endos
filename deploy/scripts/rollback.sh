@@ -25,7 +25,9 @@ rollback.sh —— 板端按组件回滚
   collector             回滚 /opt/yudao/collector/current 软链接
 
 选项：
-  --version V           回滚到指定版本；默认取当前版本之前的最近版本
+  --version V           回滚到指定版本；默认取严格小于当前版本的最近版本
+  --health-wait <秒>    collector 稳定窗口（默认 30 秒）；期间服务须保持 active，
+                        且 journal 不得出现 PollError/轮询器无法启动/Traceback
   --dry-run             只打印将切换的版本与重启动作，不实际切换
   -h, --help            显示本帮助并退出 0
 
@@ -35,7 +37,7 @@ rollback.sh —— 板端按组件回滚
   - frontend：切换 current 软链接，sudo nginx -t + reload，
     请求 http://127.0.0.1/ 要求 200（最长 30 秒）；
   - collector：切换 current 软链接，sudo systemctl restart collector，
-    等待服务 active（最长 30 秒）。
+    执行 --health-wait 秒稳定窗口检查（服务 active、journal 无启动错误）。
   - 健康检查失败时以非 0 退出，不会自动继续尝试更早版本。
 
 前置条件：
@@ -46,9 +48,11 @@ rollback.sh —— 板端按组件回滚
   bash deploy/scripts/rollback.sh frontend
   bash deploy/scripts/rollback.sh backend --version 20261113-1842-d785623e
   bash deploy/scripts/rollback.sh collector --dry-run
+  bash deploy/scripts/rollback.sh collector --health-wait 30
 
 说明：
-  - “上一版本”按 releases 目录名（时间戳）排序取当前版本之前的一个；
+  - “上一版本”取 releases 中**严格小于当前版本**的最大版本名；即使存在比当前
+    更新的版本（例如 V3）也会跳过；没有上一版本时直接报错退出；
   - 数据库结构若与版本绑定，回滚后端前请先评估数据兼容性。
 EOF
 }
@@ -64,6 +68,7 @@ esac
 
 COMP=""
 TARGET_VERSION=""
+HEALTH_WAIT=30
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -75,6 +80,11 @@ while [ "$#" -gt 0 ]; do
     --version)
       [ "$#" -ge 2 ] || { usage >&2; die "--version 缺少参数"; }
       TARGET_VERSION="$2"
+      shift 2
+      ;;
+    --health-wait)
+      [ "$#" -ge 2 ] || { usage >&2; die "--health-wait 缺少参数"; }
+      HEALTH_WAIT="$2"
       shift 2
       ;;
     --dry-run)
@@ -96,6 +106,10 @@ done
 if [ -n "$TARGET_VERSION" ]; then
   valid_version "$TARGET_VERSION" || { usage >&2; die "非法版本号：$TARGET_VERSION"; }
 fi
+case "$HEALTH_WAIT" in
+  ""|*[!0-9]*) usage >&2; die "--health-wait 必须是正整数：$HEALTH_WAIT" ;;
+esac
+[ "$HEALTH_WAIT" -ge 1 ] || { usage >&2; die "--health-wait 至少为 1"; }
 
 export DRY_RUN
 
@@ -128,7 +142,7 @@ info "当前 $COMP 版本：$CUR_VERSION"
 
 if [ -z "$TARGET_VERSION" ]; then
   if ! TARGET_VERSION="$(previous_release "$RELEASES" "$CUR_VERSION")"; then
-    die "没有找到当前版本之前的可回滚版本（$RELEASES 中只有 $CUR_VERSION）"
+    die "没有可回滚的上一版本：$RELEASES 中不存在严格小于 $CUR_VERSION 的版本"
   fi
 fi
 
@@ -152,15 +166,8 @@ esac
 info "计划回滚 $COMP：$CUR_VERSION -> $TARGET_VERSION"
 info "切换软链接：$LINK -> $SWITCH_TARGET"
 
-# 回滚是“切软链接 + 重启/重载”，dry-run 时仅打印
-if is_dry_run; then
-  printf '[dry-run]'
-  printf ' %q' ln -sfn "$SWITCH_TARGET" "$LINK"
-  printf '\n'
-else
-  ln -sfn "$SWITCH_TARGET" "$LINK"
-  [ -L "$LINK" ] || die "软链接切换失败：$LINK"
-fi
+# 回滚是“切软链接 + 重启/重载”；切换使用临时软链接 + mv -Tf 原子替换。
+switch_symlink "$SWITCH_TARGET" "$LINK"
 
 case "$COMP" in
   backend)
@@ -187,12 +194,14 @@ case "$COMP" in
     ;;
   collector)
     info "重启 collector（会先停止旧进程，释放 /dev/ttyS4）"
+    ROLLBACK_SINCE="$(date '+%Y-%m-%d %H:%M:%S')"
     run_sudo systemctl restart collector
     if is_dry_run; then
-      info "[dry-run] 跳过等待 collector 进入 active"
+      info "[dry-run] 跳过 collector 稳定窗口检查"
     else
-      wait_service_active collector 30 || die "回滚后 collector 未进入 active"
-      info "collector 回滚健康检查通过：服务 active"
+      collector_stable_check collector "$HEALTH_WAIT" "$ROLLBACK_SINCE" \
+        || die "回滚后 collector 稳定窗口检查失败"
+      info "collector 回滚健康检查通过"
     fi
     ;;
 esac

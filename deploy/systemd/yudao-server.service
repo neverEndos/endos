@@ -15,6 +15,7 @@ WorkingDirectory=/opt/yudao/backend
 EnvironmentFile=/etc/yudao/env.remote
 # 4GB 内存旧板的保守 JVM 参数；新板 8GB 可适当提高 -Xmx。
 # 使用 SerialGC、固定板端时区与 UTF-8 编码，与本机实际部署保持一致。
+# 只监听回环地址 127.0.0.1：Nginx 是唯一对外入口，禁止局域网直连 48080。
 ExecStart=/usr/bin/java \
     -Xms256m \
     -Xmx768m \
@@ -23,7 +24,8 @@ ExecStart=/usr/bin/java \
     -Duser.timezone=Asia/Shanghai \
     -Dfile.encoding=UTF-8 \
     -jar /opt/yudao/backend/yudao-server.jar \
-    --spring.profiles.active=remote
+    --spring.profiles.active=remote \
+    --server.address=127.0.0.1
 # Spring Boot 收到 SIGTERM 后正常退出（143）；失败时自动重启
 Restart=on-failure
 RestartSec=10

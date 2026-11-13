@@ -75,7 +75,10 @@ rollback 参数/选项：
 
 bootstrap 选项：
   --skip-packages        传给 bootstrap-board.sh，跳过 apt 安装
-  --env-file <本地路径>  上传并安装为板端 /etc/yudao/env.remote
+  --env-file <本地路径>  上传（0600）并安装为板端 /etc/yudao/env.remote；
+                         安装后清理 /tmp 上传副本
+  --allow-mock          允许 env 中 YUDAO_SECURITY_MOCK_ENABLE=true 时启动后端
+                         （仅限离线演示；默认拒绝启动）
   --keep-releases N      板端各组件 releases 保留版本数（默认 3）
 
 构建与上传细节：
@@ -94,6 +97,10 @@ bootstrap 选项：
 
 安全提示：
   - 不要提交 deploy.env；不要把真实密码写进仓库或脚本；
+  - deploy.env 只作为当前 shell 变量读取（不使用 set -a 导出），
+    BOARD_SUDO_PASSWORD 不会进入 mvn/pnpm 构建进程环境；
+  - --env-file 上传后立即 chmod 600，bootstrap 安装结束（成功或失败）即删除
+    /tmp/yudao-deploy/env.remote.upload；
   - 板端 sudo 密码只用于开发联调，生产环境应使用受限 sudoers 规则；
   - 远端脚本通过 sudo 执行，部署产物会自动 chown 回 alientek。
 
@@ -116,10 +123,10 @@ die_usage() {
 
 # ---------- 配置 ----------
 if [ -f "$DEPLOY_ENV_FILE" ]; then
+  # 只作为当前 shell 的变量读取，不用 set -a 导出：BOARD_SUDO_PASSWORD 等
+  # 敏感值绝不能进入 mvn/pnpm 等子进程的环境。
   # shellcheck disable=SC1090
-  set -a
   . "$DEPLOY_ENV_FILE"
-  set +a
 fi
 
 BOARD_HOST="${BOARD_HOST:-192.168.0.105}"
@@ -313,6 +320,17 @@ upload_file() {
   scp "${SCP_OPTS[@]}" "$src" "$TARGET:$dst"
 }
 
+# 上传含密码的文件：scp 后立即 chmod 600，避免 /tmp 下被其他本机用户读取。
+upload_private_file() {
+  local src="$1" dst="$2"
+  upload_file "$src" "$dst"
+  if is_dry_run; then
+    info "[dry-run] ssh $TARGET 'chmod 600 $dst'"
+    return 0
+  fi
+  ssh "${SSH_OPTS[@]}" "$TARGET" "chmod 600 $(printf '%q' "$dst")"
+}
+
 upload_dir() {
   local src="$1" dst="$2" label="$3" tgz size
   if [ ! -d "$src" ]; then
@@ -369,7 +387,9 @@ build_backend() {
   fi
   require_cmd mvn
   info "构建后端 jar（mvn）"
-  ( cd "$REPO_ROOT" && mvn -B clean package -pl yudao-server -am -Dmaven.test.skip=true )
+  # 显式从构建进程环境移除 sudo 密码，避免泄露给 Maven 及其子进程。
+  ( unset BOARD_SUDO_PASSWORD
+    cd "$REPO_ROOT" && env -u BOARD_SUDO_PASSWORD mvn -B clean package -pl yudao-server -am -Dmaven.test.skip=true )
 }
 
 ensure_backend_artifact() {
@@ -396,7 +416,9 @@ build_frontend() {
   PNPM_BIN="$(find_pnpm)"
   [ -n "$PNPM_BIN" ] || die "未找到 pnpm，请先安装（npm i -g pnpm）"
   info "构建前端 dist（pnpm build）"
-  ( cd "$FRONTEND_APP" && "$PNPM_BIN" build )
+  # 同上：构建进程不得看到 sudo 密码。
+  ( unset BOARD_SUDO_PASSWORD
+    cd "$FRONTEND_APP" && env -u BOARD_SUDO_PASSWORD "$PNPM_BIN" build )
 }
 
 ensure_frontend_artifact() {
@@ -610,11 +632,13 @@ cmd_bootstrap() {
   parse_common_args "$@"
   set -- ${REMAIN[@]+"${REMAIN[@]}"}
   SKIP_PACKAGES=0
+  ALLOW_MOCK=0
   ENV_LOCAL=""
   KEEP_RELEASES=3
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --skip-packages) SKIP_PACKAGES=1; shift ;;
+      --allow-mock) ALLOW_MOCK=1; shift ;;
       --env-file) [ "$#" -ge 2 ] || die_usage "--env-file 缺少参数"; ENV_LOCAL="$2"; shift 2 ;;
       --keep-releases) [ "$#" -ge 2 ] || die_usage "--keep-releases 缺少参数"; KEEP_RELEASES="$2"; shift 2 ;;
       *) die_usage "bootstrap 未知参数：$1" ;;
@@ -629,14 +653,19 @@ cmd_bootstrap() {
   REMOTE_ENV=""
   if [ -n "$ENV_LOCAL" ]; then
     REMOTE_ENV="$REMOTE_STAGE/env.remote.upload"
-    upload_file "$ENV_LOCAL" "$REMOTE_ENV"
+    upload_private_file "$ENV_LOCAL" "$REMOTE_ENV"
   fi
 
   local -a remote_args=(--run --keep-releases "$KEEP_RELEASES")
   [ "$SKIP_PACKAGES" -eq 1 ] && remote_args+=(--skip-packages)
+  [ "$ALLOW_MOCK" -eq 1 ] && remote_args+=(--allow-mock)
   [ -n "$REMOTE_ENV" ] && remote_args+=(--env-file "$REMOTE_ENV")
-  remote_bash_sudo bootstrap-board.sh "${remote_args[@]}"
-  info "bootstrap 请求已完成"
+  local status=0
+  remote_bash_sudo bootstrap-board.sh "${remote_args[@]}" || status=$?
+  # 板端脚本自身也会清理；这里再兜底一次，失败时同样删除上传的密码副本。
+  [ -n "$REMOTE_ENV" ] && cleanup_remote "$REMOTE_ENV"
+  info "bootstrap 请求已完成（退出码 $status）"
+  return "$status"
 }
 
 validate_keep() {

@@ -40,13 +40,24 @@ PostgreSQL 与 Redis 使用局域网基础设施（`192.168.0.23`），板端不
 collector（板端 alientek）── /dev/ttyS4（RS485 / HSI）── sensors
 ```
 
+网络边界与鉴权（安全加固，2026-11 起强制）：
+
+- `yudao-server.service` 的 `ExecStart` 固定带 `--server.address=127.0.0.1`，
+  48080 只在板端回环地址监听；局域网无法直连 48080，Nginx（80）是唯一入口。
+- `deploy/env.example` 的 `YUDAO_SECURITY_MOCK_ENABLE` 默认 `false`。mock 会
+  跳过真实鉴权，只允许完全离线的演示环境显式开启；`bootstrap-board.sh` 检测到
+  `true` 且未传 `--allow-mock` 时会拒绝启动后端服务并给出错误。
+- 验证端口边界：`ss -lnt` 中 48080 必须是 `127.0.0.1:48080`，不能出现
+  `0.0.0.0:48080` 或 `*:48080`；从其他主机访问 `http://192.168.0.105:48080`
+  应连接失败。
+
 ### 1.2 资源预算（含旧板实测值）
 
 | 组件 | 实测/估算 | 说明 |
 |---|---|---|
 | Ubuntu 24.04 基础系统 | 约 500–700MB（估算） | 含 systemd、journald、SSH 等 |
 | yudao-server（JVM） | **启动完成后 RSS 约 540MB（旧板实测）** | `-Xms256m -Xmx768m -XX:MaxMetaspaceSize=256m -XX:+UseSerialGC` |
-| collector（Python 3.12） | **RSS 约 15MB（旧板实测）** | 纯标准库，无第三方运行时 |
+| collector（Python 3.12） | **RSS 约 15MB（旧板实测）** | 串口/协议用标准库；落库用 apt 包 `python3-psycopg2` |
 | Nginx | < 30MB（估算） | 静态文件 + 反代 |
 | 剩余余量 | 约 1.5–2GB | 4GB 旧板的文件缓存与峰值余量 |
 
@@ -93,7 +104,8 @@ python3 --version      # 期望 3.12.x
 
 - `postgresql-client` 提供 `psql`、`pg_isready`，用于建库后的连通性检查；
   Ubuntu 24.04 仓库版本通常为 PostgreSQL 16，仅作客户端使用（见 12.1 的版本提醒）。
-- `python3-psycopg2` 为 collector 后续接入 PostgreSQL 预留；当前原型只用标准库。
+- `python3-psycopg2` 是 collector 落库（raw/设备状态/心跳）的运行时依赖；
+  串口与协议解析本身只使用标准库。
 - 若 `apt-cache policy openjdk-25-jre-headless` 显示不可安装，先修正 apt 源，
   不要用低版本 JDK 替代（项目要求 JDK 25）。
 
@@ -243,8 +255,9 @@ psql -h 192.168.0.23 -p 5432 -U root -d yudao_board \
 - `collector.sql` 开头同样 `DROP` 并重建 15 张 collector 表与相关序列，
   执行即清空采集器已有数据；日常升级一般不需要重新导入。
 - `collector_sample_raw` 为按天 RANGE 分区表，脚本内置示例日分区与
-  `DEFAULT` 分区；后续分区由维护任务按 `collector_retention_policy`
-  提前创建。
+  `DEFAULT` 分区；collector 启动及每 60 轮会按
+  `collector_retention_policy.partition_lead_days`（默认 3）预创建未来日分区，
+  失败只告警，`DEFAULT` 分区正常应保持为空。权限不足时需运维手工建分区。
 - 导入完成后可用 `\dt public.collector_*` 检查 15 张表是否齐全。
 
 ### 4.3 Quartz 说明
@@ -371,7 +384,7 @@ jar 时用的可选路径）。
 | `YUDAO_REDIS_HOST` / `PORT` | `192.168.0.23` / `6379` | 远程 Redis |
 | `SPRING_DATA_REDIS_DATABASE` | `1` | 覆盖 YAML 中写死的 `database: 0`，无需改代码 |
 | `YUDAO_REDIS_PASSWORD` | 空 | 无密码 Redis；YAML 的 password 行默认注释 |
-| `YUDAO_SECURITY_MOCK_ENABLE` | `true` | **内网联调跳过鉴权**，上线前必须改 `false` |
+| `YUDAO_SECURITY_MOCK_ENABLE` | `false` | **默认关闭**；mock=true 会跳过真实鉴权，仅限完全离线的演示环境，且 bootstrap 未收到 `--allow-mock` 时会拒绝启动后端 |
 | `YUDAO_CAPTCHA_ENABLE` | `false` | 与前端 `VITE_APP_CAPTCHA_ENABLE=false` 对齐 |
 | `YUDAO_ACCESS_LOG_ENABLE` | `false` | 关闭访问日志，降低板端写入压力 |
 | `LOGGING_FILE_NAME` | `/var/log/yudao/yudao-server.log` | 覆盖 `${user.home}/logs` 默认路径 |
@@ -520,8 +533,12 @@ JSONL 与日志仍在 `/var/log/yudao/`，不要随代码目录删除。
 | `--retries` | `1` | 单次采集失败后的重试次数 |
 | `--output` | `/var/log/yudao/collector-data.jsonl` | 每次启动覆盖 |
 | `--log` | `/var/log/yudao/collector.log` | 每次启动覆盖 |
-| `--flags` | `auto` | 依次探测 `1,3,5,7` 并回退 `0`（本现场实际为 `0`） |
+| `--flags` | `auto` | 优先用 `connection_config.rs485Flags`，否则依次探测 `1,3,5,7` 并回退 `0`（本现场实际为 `0`） |
 | `--db-retry-interval` | `60` | DB 不可用时的重连/重新种子间隔（秒） |
+| `--partition-every` | `60` | 每 60 轮预创建一次未来日分区（默认行为） |
+
+未显式传入 `--require-sensors`，因此单颗传感器无应答时服务仍会启动并在轮询中
+跳过该传感器（宽松策略）；需要严格全量在线时在单元中追加 `--require-sensors`。
 
 注意：
 
@@ -546,13 +563,16 @@ ss -ltnp | grep ':48080'
 journalctl -u yudao-server -n 100 --no-pager
 tail -n 50 /var/log/yudao/yudao-server.log
 
-# 验证码接口为 @PermitAll，能同时验证后端与 Redis 连通性
+# 通过 Nginx（唯一对外入口）验证后端：验证码接口为 @PermitAll，
+# 同时验证 Nginx 反代、后端与 Redis 连通性
 curl -s -o /dev/null -w '%{http_code}\n' \
   -H 'tenant-id: 1' -H 'Content-Type: application/json' -d '{}' \
-  -X POST http://127.0.0.1:48080/admin-api/system/captcha/get
+  -X POST http://127.0.0.1/admin-api/system/captcha/get
 ```
 
-期望：`java` 进程监听 48080，接口返回 `200`，日志无数据库/Redis 连接异常。
+期望：`ss -lnt` 显示 `127.0.0.1:48080`（**不是** `0.0.0.0:48080`），
+接口返回 `200`，日志无数据库/Redis 连接异常。不要用
+`http://127.0.0.1:48080` 作为日常健康检查入口，避免掩盖反代问题。
 
 可选（需安装 `redis-tools`）：确认 OAuth2 token 写入 db 1，而不是 db 0：
 
@@ -733,8 +753,10 @@ systemctl status collector --no-pager
    并重启）；zram 会占用内存，是否启用需结合实际压力评估。
 4. **4GB 内存**：不建议同时运行 GNOME/kiosk 与后端/collector；验证期建议无桌面。
    kiosk 单元仅在具备图形会话时使用。
-5. **安全**：`YUDAO_SECURITY_MOCK_ENABLE=true` 会跳过真实鉴权，且数据库使用
-   `root` 超级用户；仅限内网联调，上线前必须改为真实鉴权与独立数据库账号。
+5. **安全**：`YUDAO_SECURITY_MOCK_ENABLE` 默认 `false`，后端只监听
+   `127.0.0.1:48080`，Nginx 是唯一入口；但仍使用数据库 `root` 超级用户。
+   开启 mock 会跳过真实鉴权，只允许完全离线的演示环境；
+   `bootstrap-board.sh` 未收到 `--allow-mock` 时会拒绝启动后端。
 6. **无 HTTPS**：Nginx 仅监听 80，建议限制在受信内网网段（防火墙只放行
    80/22 等必要端口）。
 7. **collector 为原型**：已写 `collector_sample_raw` / `collector_device_status` /
@@ -787,7 +809,7 @@ systemctl status collector --no-pager
 | `deploy/scripts/bootstrap-board.sh` | 板端 | 新板初始化（apt 包、目录、systemd、Nginx、enable 服务、清理旧版本） |
 | `deploy/scripts/deploy-backend.sh` | 板端 | jar 放入 `releases/<版本>`，切 jar 软链接，重启并等待 48080 |
 | `deploy/scripts/deploy-frontend.sh` | 板端 | dist 放入 `releases/<版本>`，切 `current`，`nginx -t` + reload，检查 200 |
-| `deploy/scripts/deploy-collector.sh` | 板端 | 代码放入 `releases/<版本>`，切 `current`，重启并检查 active |
+| `deploy/scripts/deploy-collector.sh` | 板端 | 代码放入 `releases/<版本>`，切 `current`，重启并执行 `--health-wait` 稳定窗口检查 |
 | `deploy/scripts/update-all.sh` | 板端 | 按 backend → frontend → collector 顺序调用上述三个脚本 |
 | `deploy/scripts/rollback.sh` | 板端 | 按组件切回上一版本（或 `--version` 指定版本）并做健康检查 |
 | `deploy/scripts/lib/common.sh` | 板端 | 日志、sudo、版本号、软链接、清理、健康检查公共函数 |
@@ -797,7 +819,7 @@ systemctl status collector --no-pager
 首次在新板部署：
 
 ```bash
-# 开发机，工作区根目录
+# 开发机，源代码仓库根目录（功能 worktree 根，即 yudao-boot-mini/）
 cp deploy/deploy.env.example deploy/deploy.env   # 填板端地址；sudo 密码可选
 ./deploy/release.sh bootstrap                    # 上传模板并初始化板端
 ./deploy/release.sh backend                      # 构建并部署后端
@@ -846,7 +868,12 @@ bash /tmp/yudao-deploy/scripts/rollback.sh collector --dry-run
   `release.sh all` 生成一次版本号，三个组件共用，便于对应回滚。
 - `--keep N`（默认 3）控制 `releases/` 保留数量；只删除 `releases/` 下的一级
   版本目录，`current` 软链接与 `/var/log/yudao/` 不会被清理。
-- 后端健康检查失败会自动切回上一版本并重启；collector 启动失败同样自动回滚。
+- 三个部署脚本都会**拒绝同版本重部署**（避免覆盖正在运行的版本）；新内容先写
+  临时目录/临时文件，再切换软链接（临时软链接 + `mv -Tf`）与版本目录。
+- 后端健康检查失败会自动切回上一版本并重启；collector 重启命令失败或
+  `--health-wait`（默认 30 秒）稳定窗口检查失败（服务退出、journal 出现
+  `PollError`/`轮询器无法启动`/`Traceback`、主进程消失）同样自动回滚。
+  `rollback.sh collector` 也执行同一稳定窗口检查。
   前端健康检查失败不会自动回滚，请手工执行 `rollback.sh frontend`。
 
 ### 16.4 deploy.env 与安全提示
@@ -865,6 +892,11 @@ bash /tmp/yudao-deploy/scripts/rollback.sh collector --dry-run
 - 配置了 `BOARD_SUDO_PASSWORD` 时，release.sh 通过 ssh 的 stdin 把密码送入远端
   `sudo -S`，不会出现在远端命令行；但 `--sudo-password` 写在本地命令行仍会进入
   shell 历史，推荐写入 `deploy.env`。
+- `deploy.env` 只作为当前 shell 变量读取，**不使用 `set -a` 导出**；构建时还会
+  `env -u BOARD_SUDO_PASSWORD`，避免 sudo 密码进入 `mvn`/`pnpm` 子进程环境。
+- `release.sh bootstrap --env-file` 上传 env 后立即 `chmod 600`；板端
+  `bootstrap-board.sh` 在安装结束（成功或失败）时删除
+  `/tmp/yudao-deploy/env.remote.upload`，release.sh 还会再兜底清理一次。
 - 远端脚本以 sudo 执行，部署产物会自动 `chown` 回 `alientek`，不影响后续
   以普通用户手工维护。
 - 以上密码方式仅限开发/联调；生产环境应改用受限 sudoers 规则或人工输入。
