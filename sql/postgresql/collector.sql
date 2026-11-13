@@ -1219,4 +1219,3 @@ INSERT INTO public.collector_retention_policy (
 -- 16.3 聚合水位：主键为 (agg_type, channel_id)，按通道分别记录。
 -- 空库尚无设备/通道，故不预置 hour/day 行；通道创建或首个配置版本发布后，
 -- 由聚合任务为每个数值型通道初始化 (hour, channel_id) 与 (day, channel_id) 水位。
-</content>
