@@ -1,7 +1,6 @@
 ### 请求 /login 接口 => 成功
 POST {{baseUrl}}/system/auth/login
 Content-Type: application/json
-tenant-id: {{adminTenantId}}
 tag: Yunai.local
 
 {
@@ -14,7 +13,6 @@ tag: Yunai.local
 ### 请求 /login 接口【加密 AES】 => 成功
 POST {{baseUrl}}/system/auth/login
 Content-Type: application/json
-tenant-id: {{adminTenantId}}
 tag: Yunai.local
 X-API-ENCRYPT: true
 
@@ -23,7 +21,6 @@ WvSX9MOrenyGfBhEM0g1/hHgq8ocktMZ9OwAJ6MOG5FUrzYF/rG5JF1eMptQM1wT73VgDS05l/37WeRt
 ### 请求 /login 接口【加密 RSA】 => 成功
 POST {{baseUrl}}/system/auth/login
 Content-Type: application/json
-tenant-id: {{adminTenantId}}
 tag: Yunai.local
 X-API-ENCRYPT: true
 
@@ -32,7 +29,6 @@ e7QZTork9ZV5CmgZvSd+cHZk3xdUxKtowLM02kOha+gxHK2H/daU8nVBYS3+bwuDRy5abf+Pz1QJJGVA
 ### 请求 /login 接口 => 成功（无验证码)
 POST {{baseUrl}}/system/auth/login
 Content-Type: application/json
-tenant-id: {{adminTenantId}}
 
 {
   "username": "admin",
@@ -42,10 +38,8 @@ tenant-id: {{adminTenantId}}
 ### 请求 /get-permission-info 接口 => 成功
 GET {{baseUrl}}/system/auth/get-permission-info
 Authorization: Bearer {{token}}
-tenant-id: {{adminTenantId}}
 
 ### 请求 /list-menus 接口 => 成功
 GET {{baseUrl}}/system/list-menus
 Authorization: Bearer {{token}}
 #Authorization: Bearer a6aa7714a2e44c95aaa8a2c5adc2a67a
-tenant-id: {{adminTenantId}}
