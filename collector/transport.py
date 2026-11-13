@@ -75,10 +75,7 @@ class SerialRS485Transport:
         attrs[4] = speed  # ispeed
         attrs[5] = speed  # ospeed
         attrs[2] &= ~(
-            termios.PARENB
-            | termios.PARSTOP
-            | termios.CSTOPB
-            | getattr(termios, "CRTSCTS", 0)
+            termios.PARENB | termios.CSTOPB | getattr(termios, "CRTSCTS", 0)
         )
         attrs[2] |= termios.CS8 | termios.CREAD | termios.CLOCAL
         attrs[0] &= ~(termios.IXON | termios.IXOFF | termios.IXANY)
