@@ -232,7 +232,7 @@ CREATE TABLE public.infra_api_access_log (
     create_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted smallint DEFAULT 0 NOT NULL,
+    deleted smallint DEFAULT 0 NOT NULL
 );
 
 
@@ -454,7 +454,7 @@ CREATE TABLE public.infra_api_error_log (
     create_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted smallint DEFAULT 0 NOT NULL,
+    deleted smallint DEFAULT 0 NOT NULL
 );
 
 
@@ -1974,7 +1974,7 @@ CREATE TABLE public.system_dept (
     create_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted smallint DEFAULT 0 NOT NULL,
+    deleted smallint DEFAULT 0 NOT NULL
 );
 
 
@@ -2360,7 +2360,7 @@ CREATE TABLE public.system_login_log (
     create_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted smallint DEFAULT 0 NOT NULL,
+    deleted smallint DEFAULT 0 NOT NULL
 );
 
 
@@ -3163,7 +3163,7 @@ CREATE TABLE public.system_notice (
     create_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted smallint DEFAULT 0 NOT NULL,
+    deleted smallint DEFAULT 0 NOT NULL
 );
 
 
@@ -3276,7 +3276,7 @@ CREATE TABLE public.system_notify_message (
     create_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted smallint DEFAULT 0 NOT NULL,
+    deleted smallint DEFAULT 0 NOT NULL
 );
 
 
@@ -3568,7 +3568,7 @@ CREATE TABLE public.system_oauth2_access_token (
     create_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted smallint DEFAULT 0 NOT NULL,
+    deleted smallint DEFAULT 0 NOT NULL
 );
 
 
@@ -3705,7 +3705,7 @@ CREATE TABLE public.system_oauth2_approve (
     create_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted smallint DEFAULT 0 NOT NULL,
+    deleted smallint DEFAULT 0 NOT NULL
 );
 
 
@@ -4025,7 +4025,7 @@ CREATE TABLE public.system_oauth2_code (
     create_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted smallint DEFAULT 0 NOT NULL,
+    deleted smallint DEFAULT 0 NOT NULL
 );
 
 
@@ -4162,7 +4162,7 @@ CREATE TABLE public.system_oauth2_refresh_token (
     create_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted smallint DEFAULT 0 NOT NULL,
+    deleted smallint DEFAULT 0 NOT NULL
 );
 
 
@@ -4292,7 +4292,7 @@ CREATE TABLE public.system_operate_log (
     create_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted smallint DEFAULT 0 NOT NULL,
+    deleted smallint DEFAULT 0 NOT NULL
 );
 
 
@@ -4463,7 +4463,7 @@ CREATE TABLE public.system_post (
     create_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted smallint DEFAULT 0 NOT NULL,
+    deleted smallint DEFAULT 0 NOT NULL
 );
 
 
@@ -4581,7 +4581,7 @@ CREATE TABLE public.system_role (
     create_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted smallint DEFAULT 0 NOT NULL,
+    deleted smallint DEFAULT 0 NOT NULL
 );
 
 
@@ -4702,7 +4702,7 @@ CREATE TABLE public.system_role_menu (
     create_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted smallint DEFAULT 0 NOT NULL,
+    deleted smallint DEFAULT 0 NOT NULL
 );
 
 
@@ -4942,7 +4942,7 @@ CREATE TABLE public.system_sms_code (
     create_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted smallint DEFAULT 0 NOT NULL,
+    deleted smallint DEFAULT 0 NOT NULL
 );
 
 
@@ -5479,7 +5479,7 @@ CREATE TABLE public.system_social_client (
     create_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted smallint DEFAULT 0 NOT NULL,
+    deleted smallint DEFAULT 0 NOT NULL
 );
 
 
@@ -5619,7 +5619,7 @@ CREATE TABLE public.system_social_user (
     create_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted smallint DEFAULT 0 NOT NULL,
+    deleted smallint DEFAULT 0 NOT NULL
 );
 
 
@@ -5749,7 +5749,7 @@ CREATE TABLE public.system_social_user_bind (
     create_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted smallint DEFAULT 0 NOT NULL,
+    deleted smallint DEFAULT 0 NOT NULL
 );
 
 
@@ -5866,7 +5866,7 @@ CREATE TABLE public.system_user_post (
     create_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted smallint DEFAULT 0 NOT NULL,
+    deleted smallint DEFAULT 0 NOT NULL
 );
 
 
@@ -5957,7 +5957,7 @@ CREATE TABLE public.system_user_role (
     create_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
-    deleted smallint DEFAULT 0 NOT NULL,
+    deleted smallint DEFAULT 0 NOT NULL
 );
 
 
@@ -6059,7 +6059,7 @@ CREATE TABLE public.system_users (
     create_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted smallint DEFAULT 0 NOT NULL,
+    deleted smallint DEFAULT 0 NOT NULL
 );
 
 
