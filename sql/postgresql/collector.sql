@@ -13,6 +13,8 @@
  4. 业务时间统一使用 timestamp(3) without time zone，语义为 Asia/Shanghai 本地墙钟时间。
  5. 本脚本支持重复执行：开头会删除并重建下述 15 张 collector 表与 10 个序列，
     执行将清空采集器已有数据，请在确认后执行。
+ 6. 数值有限性约束显式排除 NaN 与正负 Infinity（数值类型没有可用的内置有限性判断
+    函数）；配置版本 snapshot 必须为 JSON 对象，checksum 必须为 64 位小写十六进制字符串。
 */
 
 SET client_encoding = 'UTF8';
@@ -323,14 +325,40 @@ CREATE TABLE public.collector_channel (
     CONSTRAINT chk_collector_channel_code CHECK (length(channel_code) > 0),
     CONSTRAINT chk_collector_channel_enabled CHECK (enabled IN (0, 1)),
     CONSTRAINT chk_collector_channel_value_type CHECK (value_type = 'number'),
-    CONSTRAINT chk_collector_channel_scale CHECK (is_finite(scale)),
-    CONSTRAINT chk_collector_channel_offset CHECK (is_finite(value_offset)),
-    CONSTRAINT chk_collector_channel_deadband CHECK (is_finite(deadband) AND deadband >= 0),
-    CONSTRAINT chk_collector_channel_threshold_finite CHECK (
-        (threshold_low IS NULL OR is_finite(threshold_low))
-        AND (threshold_high IS NULL OR is_finite(threshold_high))
+    CONSTRAINT chk_collector_channel_scale CHECK (
+        scale <> 'Infinity'::float8
+        AND scale <> '-Infinity'::float8
+        AND scale <> 'NaN'::float8
     ),
-    CONSTRAINT chk_collector_channel_alarm_deadband CHECK (is_finite(alarm_deadband) AND alarm_deadband >= 0),
+    CONSTRAINT chk_collector_channel_offset CHECK (
+        value_offset <> 'Infinity'::float8
+        AND value_offset <> '-Infinity'::float8
+        AND value_offset <> 'NaN'::float8
+    ),
+    CONSTRAINT chk_collector_channel_deadband CHECK (
+        deadband <> 'Infinity'::float8
+        AND deadband <> '-Infinity'::float8
+        AND deadband <> 'NaN'::float8
+        AND deadband >= 0
+    ),
+    CONSTRAINT chk_collector_channel_threshold_finite CHECK (
+        (threshold_low IS NULL OR (
+            threshold_low <> 'Infinity'::float8
+            AND threshold_low <> '-Infinity'::float8
+            AND threshold_low <> 'NaN'::float8
+        ))
+        AND (threshold_high IS NULL OR (
+            threshold_high <> 'Infinity'::float8
+            AND threshold_high <> '-Infinity'::float8
+            AND threshold_high <> 'NaN'::float8
+        ))
+    ),
+    CONSTRAINT chk_collector_channel_alarm_deadband CHECK (
+        alarm_deadband <> 'Infinity'::float8
+        AND alarm_deadband <> '-Infinity'::float8
+        AND alarm_deadband <> 'NaN'::float8
+        AND alarm_deadband >= 0
+    ),
     CONSTRAINT chk_collector_channel_decimal CHECK (decimal_places BETWEEN 0 AND 6),
     CONSTRAINT chk_collector_channel_threshold CHECK (
         threshold_low IS NULL OR threshold_high IS NULL OR threshold_low <= threshold_high
@@ -474,7 +502,8 @@ CREATE TABLE public.collector_config_version (
     CONSTRAINT pk_collector_config_version PRIMARY KEY (id),
     CONSTRAINT chk_collector_config_version_status CHECK (status IN (0, 1, 2)),
     CONSTRAINT chk_collector_config_version_source CHECK (source IN ('manual', 'import', 'rollback')),
-    CONSTRAINT chk_collector_config_version_checksum CHECK (length(checksum) = 64),
+    CONSTRAINT chk_collector_config_version_checksum CHECK (checksum ~ '^[0-9a-f]{64}$'),
+    CONSTRAINT chk_collector_config_version_snapshot CHECK (jsonb_typeof(snapshot) = 'object'),
     CONSTRAINT chk_collector_config_version_published CHECK (
         status <> 1 OR published_at IS NOT NULL
     )
@@ -496,7 +525,7 @@ COMMENT ON COLUMN public.collector_config_version.id IS '主键编号';
 COMMENT ON COLUMN public.collector_config_version.version_no IS '业务版本号（单调递增）';
 COMMENT ON COLUMN public.collector_config_version.status IS '状态：0 草稿、1 已发布、2 已被取代';
 COMMENT ON COLUMN public.collector_config_version.snapshot IS '全量配置快照（protocols/devices/sensors/channels/schedules），checksum 覆盖传感器及协议配置';
-COMMENT ON COLUMN public.collector_config_version.checksum IS '快照规范化 JSON 的 SHA-256 十六进制值';
+COMMENT ON COLUMN public.collector_config_version.checksum IS '快照规范化 JSON 的 SHA-256 小写十六进制值（64 位）';
 COMMENT ON COLUMN public.collector_config_version.change_note IS '变更说明';
 COMMENT ON COLUMN public.collector_config_version.source IS '来源：manual/import/rollback';
 COMMENT ON COLUMN public.collector_config_version.based_on_version_id IS '回滚/复制所基于的历史版本编号';
@@ -521,7 +550,13 @@ CREATE TABLE public.collector_sample_raw (
     raw_value bigint,
     quality smallint DEFAULT 0 NOT NULL,
     CONSTRAINT pk_collector_sample_raw PRIMARY KEY (channel_id, collect_time),
-    CONSTRAINT chk_collector_sample_raw_value CHECK (value IS NULL OR is_finite(value)),
+    CONSTRAINT chk_collector_sample_raw_value CHECK (
+        value IS NULL OR (
+            value <> 'Infinity'::float8
+            AND value <> '-Infinity'::float8
+            AND value <> 'NaN'::float8
+        )
+    ),
     CONSTRAINT chk_collector_sample_raw_quality CHECK (quality IN (0, 1, 2))
 ) PARTITION BY RANGE (collect_time);
 
@@ -574,12 +609,36 @@ CREATE TABLE public.collector_aggregate_hour (
         sample_count >= 0 AND good_count >= 0 AND bad_count >= 0
     ),
     CONSTRAINT chk_collector_aggregate_hour_finite CHECK (
-        (value_avg IS NULL OR is_finite(value_avg))
-        AND (value_min IS NULL OR is_finite(value_min))
-        AND (value_max IS NULL OR is_finite(value_max))
-        AND (value_sum IS NULL OR is_finite(value_sum))
-        AND (value_first IS NULL OR is_finite(value_first))
-        AND (value_last IS NULL OR is_finite(value_last))
+        (value_avg IS NULL OR (
+            value_avg <> 'Infinity'::float8
+            AND value_avg <> '-Infinity'::float8
+            AND value_avg <> 'NaN'::float8
+        ))
+        AND (value_min IS NULL OR (
+            value_min <> 'Infinity'::float8
+            AND value_min <> '-Infinity'::float8
+            AND value_min <> 'NaN'::float8
+        ))
+        AND (value_max IS NULL OR (
+            value_max <> 'Infinity'::float8
+            AND value_max <> '-Infinity'::float8
+            AND value_max <> 'NaN'::float8
+        ))
+        AND (value_sum IS NULL OR (
+            value_sum <> 'Infinity'::float8
+            AND value_sum <> '-Infinity'::float8
+            AND value_sum <> 'NaN'::float8
+        ))
+        AND (value_first IS NULL OR (
+            value_first <> 'Infinity'::float8
+            AND value_first <> '-Infinity'::float8
+            AND value_first <> 'NaN'::float8
+        ))
+        AND (value_last IS NULL OR (
+            value_last <> 'Infinity'::float8
+            AND value_last <> '-Infinity'::float8
+            AND value_last <> 'NaN'::float8
+        ))
     )
 );
 
@@ -628,12 +687,36 @@ CREATE TABLE public.collector_aggregate_day (
         sample_count >= 0 AND good_count >= 0 AND bad_count >= 0
     ),
     CONSTRAINT chk_collector_aggregate_day_finite CHECK (
-        (value_avg IS NULL OR is_finite(value_avg))
-        AND (value_min IS NULL OR is_finite(value_min))
-        AND (value_max IS NULL OR is_finite(value_max))
-        AND (value_sum IS NULL OR is_finite(value_sum))
-        AND (value_first IS NULL OR is_finite(value_first))
-        AND (value_last IS NULL OR is_finite(value_last))
+        (value_avg IS NULL OR (
+            value_avg <> 'Infinity'::float8
+            AND value_avg <> '-Infinity'::float8
+            AND value_avg <> 'NaN'::float8
+        ))
+        AND (value_min IS NULL OR (
+            value_min <> 'Infinity'::float8
+            AND value_min <> '-Infinity'::float8
+            AND value_min <> 'NaN'::float8
+        ))
+        AND (value_max IS NULL OR (
+            value_max <> 'Infinity'::float8
+            AND value_max <> '-Infinity'::float8
+            AND value_max <> 'NaN'::float8
+        ))
+        AND (value_sum IS NULL OR (
+            value_sum <> 'Infinity'::float8
+            AND value_sum <> '-Infinity'::float8
+            AND value_sum <> 'NaN'::float8
+        ))
+        AND (value_first IS NULL OR (
+            value_first <> 'Infinity'::float8
+            AND value_first <> '-Infinity'::float8
+            AND value_first <> 'NaN'::float8
+        ))
+        AND (value_last IS NULL OR (
+            value_last <> 'Infinity'::float8
+            AND value_last <> '-Infinity'::float8
+            AND value_last <> 'NaN'::float8
+        ))
     )
 );
 
@@ -730,8 +813,16 @@ CREATE TABLE public.collector_alarm (
     CONSTRAINT chk_collector_alarm_sensor CHECK (sensor_id >= 0),
     CONSTRAINT chk_collector_alarm_channel CHECK (channel_id >= 0 AND (channel_id = 0 OR sensor_id > 0)),
     CONSTRAINT chk_collector_alarm_value_finite CHECK (
-        (trigger_value IS NULL OR is_finite(trigger_value))
-        AND (threshold_value IS NULL OR is_finite(threshold_value))
+        (trigger_value IS NULL OR (
+            trigger_value <> 'Infinity'::float8
+            AND trigger_value <> '-Infinity'::float8
+            AND trigger_value <> 'NaN'::float8
+        ))
+        AND (threshold_value IS NULL OR (
+            threshold_value <> 'Infinity'::float8
+            AND threshold_value <> '-Infinity'::float8
+            AND threshold_value <> 'NaN'::float8
+        ))
     ),
     CONSTRAINT chk_collector_alarm_level CHECK (level IN (1, 2, 3)),
     CONSTRAINT chk_collector_alarm_status CHECK (status IN (0, 1, 2)),
@@ -834,10 +925,26 @@ CREATE TABLE public.collector_heartbeat (
     CONSTRAINT pk_collector_heartbeat PRIMARY KEY (id),
     CONSTRAINT chk_collector_heartbeat_status CHECK (status IN ('starting', 'running', 'degraded', 'stopped')),
     CONSTRAINT chk_collector_heartbeat_finite CHECK (
-        (cpu_percent IS NULL OR is_finite(cpu_percent))
-        AND (mem_percent IS NULL OR is_finite(mem_percent))
-        AND (disk_used_percent IS NULL OR is_finite(disk_used_percent))
-        AND (temperature_c IS NULL OR is_finite(temperature_c))
+        (cpu_percent IS NULL OR (
+            cpu_percent <> 'Infinity'::numeric
+            AND cpu_percent <> '-Infinity'::numeric
+            AND cpu_percent <> 'NaN'::numeric
+        ))
+        AND (mem_percent IS NULL OR (
+            mem_percent <> 'Infinity'::numeric
+            AND mem_percent <> '-Infinity'::numeric
+            AND mem_percent <> 'NaN'::numeric
+        ))
+        AND (disk_used_percent IS NULL OR (
+            disk_used_percent <> 'Infinity'::numeric
+            AND disk_used_percent <> '-Infinity'::numeric
+            AND disk_used_percent <> 'NaN'::numeric
+        ))
+        AND (temperature_c IS NULL OR (
+            temperature_c <> 'Infinity'::numeric
+            AND temperature_c <> '-Infinity'::numeric
+            AND temperature_c <> 'NaN'::numeric
+        ))
     ),
     CONSTRAINT chk_collector_heartbeat_device CHECK (device_total >= 0 AND device_online >= 0)
 );
