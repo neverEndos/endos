@@ -40,6 +40,7 @@ from poll import (  # noqa: E402
     run_loop,
     summarize,
 )
+from seed import SENSOR_CODE_BY_DRIVER  # noqa: E402
 from storage import DatabaseManager, unresolved_context  # noqa: E402
 
 LOGGER_NAME = "hsi"
@@ -53,7 +54,15 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--port", default="/dev/ttyS4", help="串口设备")
-    parser.add_argument("--interval", type=float, default=5.0, help="轮询间隔（秒）")
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=None,
+        help=(
+            "轮询间隔（秒）。缺省时读取 DB collector_device.poll_interval_ms，"
+            "读取不到才退回 5.0；显式传入时以本参数为准"
+        ),
+    )
     parser.add_argument(
         "--duration",
         type=float,
@@ -69,7 +78,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--flags",
         default="auto",
-        help="RS485 flags：auto 或逗号分隔列表，例如 1,3,5,7",
+        help=(
+            "RS485 flags：auto 时优先使用 collector_sensor.connection_config.rs485Flags"
+            "（有值时），否则依次尝试 1,3,5,7,0；也可传逗号分隔列表"
+        ),
+    )
+    parser.add_argument(
+        "--require-sensors",
+        action="store_true",
+        help=(
+            "严格模式：所有已启用传感器都必须应答，否则轮询器拒绝启动。"
+            "默认宽松：缺失传感器只告警并在后续轮询中跳过"
+        ),
+    )
+    parser.add_argument(
+        "--partition-every",
+        type=int,
+        default=60,
+        help="每 N 轮预创建一次 collector_sample_raw 未来日分区（0 表示只在启动时执行）",
     )
     parser.add_argument(
         "--no-jsonl",
@@ -99,6 +125,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="DB 不可用时的重连/重新种子间隔（秒），期间继续输出 JSONL",
     )
     return parser
+
+
+def resolve_interval_s(
+    cli_interval: float | None,
+    poll_interval_ms: int | None,
+    default: float = 5.0,
+) -> tuple[float, str]:
+    """决定轮询间隔：CLI 显式值 > ``collector_device.poll_interval_ms`` > 默认。
+
+    返回 ``(间隔秒, 来源说明)``，便于日志与测试。
+    """
+
+    if cli_interval is not None:
+        return float(cli_interval), "命令行 --interval"
+    if poll_interval_ms and int(poll_interval_ms) > 0:
+        return int(poll_interval_ms) / 1000.0, "collector_device.poll_interval_ms"
+    return float(default), f"默认 {default}"
 
 
 def positive_float(value: str) -> float:
@@ -167,25 +210,18 @@ def run(args: argparse.Namespace, logger: logging.Logger) -> int:
         transport = SerialRS485Transport(args.port, logger=logger)
         transport.open()
         logger.info(
-            "串口已打开 port=%s baud=%d interval_s=%.1f duration_s=%.1f timeout_s=%.2f",
+            "串口已打开 port=%s baud=%d duration_s=%.1f timeout_s=%.2f",
             args.port,
             transport.baud,
-            args.interval,
             args.duration,
             args.timeout,
         )
         # 先关闭内核 RS485 模式，清除上一次进程可能遗留的卡死状态。
+        # 内核不支持 TIOCSRS485 时 transport 会告警并继续（依赖板载自动方向）。
         transport.set_rs485_flags(0)
-        flags = discover_rs485_flags(
-            transport,
-            drivers,
-            candidates=parse_flags(args.flags),
-            timeout=args.timeout,
-            logger=logger,
-            reopen=transport.reopen,
-        )
-        logger.info("RS485 连通确认 flags=%d sensors=%s", flags, [d.name for d in drivers])
 
+        # 先初始化 DB：轮询间隔、启用传感器与 rs485Flags 都来自 DB 配置；
+        # DB 不可用时仍按默认值启动，期间只输出 JSONL，由管理器周期性重连。
         if not args.no_db:
             # 首次尝试立即执行；失败后由管理器按 --db-retry-interval 节流重试，
             # 进程不退出，期间继续输出 JSONL。
@@ -197,13 +233,75 @@ def run(args: argparse.Namespace, logger: logging.Logger) -> int:
             db_manager.ensure_ready()
             channel_context = db_manager.context
 
+        # enabled=0 的传感器不参与探测与轮询。
+        target_drivers = [
+            driver
+            for driver in drivers
+            if channel_context.sensor_enabled(
+                SENSOR_CODE_BY_DRIVER.get(driver.name, "")
+            )
+        ]
+        if not target_drivers:
+            raise PollError("DB 中所有传感器均为 enabled=0，没有可轮询的传感器")
+
+        auto_flags = args.flags.strip().lower() == "auto"
+        if auto_flags:
+            configured = channel_context.rs485_flags
+            if configured is not None:
+                candidates = (configured,) + tuple(
+                    flag for flag in DEFAULT_RS485_FLAGS if flag != configured
+                )
+                logger.info(
+                    "使用 connection_config.rs485Flags=%d 作为首选候选", configured
+                )
+            else:
+                candidates = DEFAULT_RS485_FLAGS
+        else:
+            candidates = parse_flags(args.flags)
+
+        responsive: set[str] = set()
+        flags = discover_rs485_flags(
+            transport,
+            target_drivers,
+            candidates=candidates,
+            timeout=args.timeout,
+            logger=logger,
+            reopen=transport.reopen,
+            require_all=args.require_sensors,
+            responsive_out=responsive,
+        )
+        active_drivers = [d for d in target_drivers if d.name in responsive]
+        skipped_drivers = [d.name for d in target_drivers if d.name not in responsive]
+        if skipped_drivers:
+            logger.warning(
+                "以下传感器探测无应答，后续轮询将跳过：%s（如需严格校验请加 --require-sensors）",
+                skipped_drivers,
+            )
+        logger.info(
+            "RS485 连通确认 flags=%s sensors=%s require_sensors=%s",
+            flags,
+            [d.name for d in active_drivers],
+            args.require_sensors,
+        )
+
+        interval_s, interval_source = resolve_interval_s(
+            args.interval, channel_context.poll_interval_ms
+        )
+        if interval_s <= 0:
+            raise PollError(f"轮询间隔必须大于 0：{interval_s}")
+        if args.partition_every < 0:
+            raise PollError("--partition-every 不能为负数")
+        logger.info(
+            "轮询间隔 interval_s=%.3f（来源：%s）", interval_s, interval_source
+        )
+
         writer = None if args.no_jsonl else JsonlWriter(output_path)
         duration = None if args.duration <= 0 else args.duration
         stats = run_loop(
             transport,
-            drivers,
+            active_drivers,
             writer=writer,
-            interval_s=args.interval,
+            interval_s=interval_s,
             duration_s=duration,
             timeout=args.timeout,
             retries=args.retries,
@@ -212,6 +310,7 @@ def run(args: argparse.Namespace, logger: logging.Logger) -> int:
             db_manager=db_manager,
             channel_context=channel_context,
             heartbeat_every=args.heartbeat_every,
+            partition_every=args.partition_every,
         )
         summary = summarize(
             stats,

@@ -17,7 +17,12 @@ from typing import Any, Callable
 
 from hsi.frame import HsiFrame, validate_response
 from seed import SENSOR_CODE_BY_DRIVER
-from storage import collect_time_now
+from storage import (
+    MISSING,
+    collect_time_now,
+    engineering_value,
+    raw_value_for_binding,
+)
 
 LOGGER_NAME = "hsi"
 RETRY_DELAY_S = 0.1
@@ -214,23 +219,34 @@ def discover_rs485_flags(
     attempts_per_flag: int = DEFAULT_REQUIRED_EXCHANGES,
     logger: logging.Logger | None = None,
     reopen: Callable[[], None] | None = None,
+    require_all: bool = False,
+    responsive_out: set | None = None,
 ) -> int:
     """依次尝试候选 RS485 flags，确认链路可持续通信后返回可用 flags。
 
-    每个传感器必须连续成功完成 ``attempts_per_flag`` 次 msg=1 状态查询，避免把
-    “首帧能通、随后 TX 卡死”的 flags 误判为可用。候选失败且还有后续候选时，通过
-    ``reopen`` 重新打开串口，因为部分内核的 RS485 模式一旦卡死，只能重开端口恢复。
+    默认宽松模式：只要**至少一个**传感器连续成功完成 ``attempts_per_flag`` 次
+    msg=1 状态查询，该 flags 即视为可用；无应答的传感器只 WARN，由调用方在后续
+    轮询中跳过，不阻止启动。``require_all=True`` 时恢复严格校验：所有传入的
+    传感器都必须应答，否则继续尝试下一候选（全部失败则抛 ``PollError``）。
+
+    每个传感器必须连续成功，避免把“首帧能通、随后 TX 卡死”的 flags 误判为可用。
+    候选失败且还有后续候选时，通过 ``reopen`` 重新打开串口，因为部分内核的
+    RS485 模式一旦卡死，只能重开端口恢复。``responsive_out`` 会写入本次选用
+    flags 下实际应答的传感器名集合，供调用方过滤轮询列表。
     """
     log = logger or logging.getLogger(LOGGER_NAME)
     candidates = tuple(candidates)
+    driver_names = [driver.name for driver in drivers]
     for index, flags in enumerate(candidates):
         transport.set_rs485_flags(flags)
         log.info(
-            "RS485 探测 flags=%d（要求每个传感器连续 %d 次状态应答）",
+            "RS485 探测 flags=%d（%s模式，要求每个应答传感器连续 %d 次状态应答）",
             flags,
+            "严格" if require_all else "宽松",
             attempts_per_flag,
         )
-        all_ok = True
+        responsive: set[str] = set()
+        candidate_ok = True
         for driver in drivers:
             sensor_ok = True
             last_error = None
@@ -241,13 +257,14 @@ def discover_rs485_flags(
                     status = driver.parse_status(frame)
                     log.info(
                         "RS485 flags=%d sensor=%s msg=1 应答成功 attempt=%d/%d rx=%s "
-                        "status_byte=%d valid=%s raw=%s",
+                        "status_lo=%s status_hi=%s valid=%s raw=%s",
                         flags,
                         driver.name,
                         attempt,
                         attempts_per_flag,
                         frame.raw.hex(),
-                        status["status_byte"],
+                        status.get("status_code_lo", status["status_byte"]),
+                        status.get("status_code_hi", 0),
                         status["valid"],
                         status["raw_data_hex"],
                     )
@@ -265,17 +282,37 @@ def discover_rs485_flags(
                     break
                 if attempt < attempts_per_flag:
                     time.sleep(RETRY_DELAY_S)
-            if not sensor_ok:
-                all_ok = False
-                log.warning(
-                    "RS485 flags=%d sensor=%s 无法连续应答，放弃该 flags（最后错误: %s）",
-                    flags,
-                    driver.name,
-                    last_error,
-                )
+            if sensor_ok:
+                responsive.add(driver.name)
+                continue
+            log.warning(
+                "RS485 flags=%d sensor=%s 无法连续应答（最后错误: %s）",
+                flags,
+                driver.name,
+                last_error,
+            )
+            if require_all:
+                candidate_ok = False
                 break
-        if all_ok:
-            log.info("RS485 使用 flags=%d", flags)
+            log.warning(
+                "宽松模式：sensor=%s 本轮不可用，后续轮询将跳过它", driver.name
+            )
+        if require_all:
+            candidate_ok = candidate_ok and responsive == set(driver_names)
+        else:
+            candidate_ok = bool(responsive)
+        if candidate_ok:
+            missing = [name for name in driver_names if name not in responsive]
+            if missing:
+                log.warning(
+                    "RS485 使用 flags=%d（缺失传感器 %s 将在轮询中跳过）",
+                    flags,
+                    missing,
+                )
+            else:
+                log.info("RS485 使用 flags=%d（全部传感器应答）", flags)
+            if responsive_out is not None:
+                responsive_out.update(responsive)
             return flags
         if index < len(candidates) - 1 and reopen is not None:
             log.warning(
@@ -285,30 +322,59 @@ def discover_rs485_flags(
                 reopen()
             except Exception as exc:
                 raise PollError(f"重新打开串口失败: {exc}") from exc
-    raise PollError(f"所有候选 RS485 flags 均无法连通: {candidates}")
+    raise PollError(
+        f"所有候选 RS485 flags 均无法连通: {candidates}"
+        f"（严格模式要求全部传感器应答：{require_all}）"
+    )
 
 
-def build_channel_entries(result: dict[str, Any], bindings: Any) -> list[dict[str, Any]]:
+def build_channel_entries(
+    result: dict[str, Any],
+    bindings: Any,
+    *,
+    logger: logging.Logger | None = None,
+    warned_fields: set | None = None,
+) -> list[dict[str, Any]]:
     """把一次成功的传感器解析结果展开为通道级 JSONL 条目。
 
     ``channel_id`` 来自启动时按 ``sensor_code + channel_code`` 的 DB 解析结果；
     未解析到 id 的通道仍保留条目（``channel_id`` 为 null），但不会写入 raw。
+    原始值按字段名关联，工程值按通道配置的 ``scale``/``value_offset`` 计算，
+    与落库使用同一口径；当前格式不存在的字段会被跳过并只记录一次 INFO。
     """
 
     raw_fields = result.get("raw_fields") or []
-    fields = result.get("fields") or {}
+    raw_by_field = result.get("raw_by_field")
+    if raw_by_field is not None:
+        raw_by_field = {str(k): int(v) for k, v in raw_by_field.items()}
+    log = logger or logging.getLogger(LOGGER_NAME)
+    fmt = result.get("format") or "?"
+    sensor = result.get("sensor") or result.get("sensor_code") or "?"
     entries = []
     for binding in bindings:
-        index = binding.field_index - 1
-        if index < 0 or index >= len(raw_fields):
+        if not binding.enabled:
+            continue
+        raw = raw_value_for_binding(binding, raw_by_field, raw_fields)
+        if raw is MISSING:
+            key = ("jsonl-absent-field", sensor, fmt, binding.field)
+            if warned_fields is not None:
+                if key in warned_fields:
+                    continue
+                warned_fields.add(key)
+            log.info(
+                "sensor=%s format=%s 通道字段 %s 不存在，JSONL 条目已跳过",
+                sensor,
+                fmt,
+                binding.field,
+            )
             continue
         entries.append(
             {
                 "channel_id": binding.channel_id,
                 "channel_code": binding.channel_code,
                 "field": binding.field,
-                "value": fields.get(binding.field),
-                "raw_value": int(raw_fields[index]),
+                "value": engineering_value(raw, binding),
+                "raw_value": int(raw),
             }
         )
     return entries
@@ -347,6 +413,7 @@ def poll_cycle(
     logger: logging.Logger,
     channel_context: Any | None = None,
     warned_missing: set | None = None,
+    warned_fields: set | None = None,
 ) -> list[dict[str, Any]]:
     """顺序访问所有传感器，成功后写一行 JSONL，并返回可落库的记录。"""
 
@@ -368,7 +435,12 @@ def poll_cycle(
             else:
                 bindings = ()
                 device_id = None
-            entries = build_channel_entries(result, bindings)
+            entries = build_channel_entries(
+                result,
+                bindings,
+                logger=logger,
+                warned_fields=warned_fields,
+            )
             _warn_unresolved_channels(logger, driver.name, entries, warned_missing)
             record = {
                 "timestamp": now_timestamp(),
@@ -433,6 +505,7 @@ def run_loop(
     channel_context: Any | None = None,
     heartbeat_every: int = 5,
     db_manager: Any | None = None,
+    partition_every: int = 60,
 ) -> dict[str, SensorStats]:
     """按固定间隔循环轮询，直到达到 duration 或被 should_stop 终止。
 
@@ -452,6 +525,7 @@ def run_loop(
         for driver in drivers
     }
     warned_missing: set = set()
+    warned_fields: set = set()
     started = time.monotonic()
     next_at = started
     cycle = 0
@@ -482,11 +556,23 @@ def run_loop(
             logger=log,
             channel_context=context,
             warned_missing=warned_missing,
+            warned_fields=warned_fields,
         )
         if db_manager is not None:
             db_manager.write_cycle(records, collect_time_now(), cycle=cycle)
             if heartbeat_every > 0 and (cycle == 1 or cycle % heartbeat_every == 0):
                 db_manager.write_heartbeat()
+            if partition_every > 0 and cycle % partition_every == 0:
+                # 分区预创建失败只告警，不中断轮询。
+                try:
+                    db_manager.ensure_partitions()
+                except Exception as exc:  # 防御性兜底：任何维护错误都不得中断采集
+                    log.warning(
+                        "cycle=%d 分区预创建失败（继续轮询）: %s: %s",
+                        cycle,
+                        type(exc).__name__,
+                        exc,
+                    )
         elif storage is not None:
             try:
                 storage.write_cycle(records, collect_time_now(), cycle=cycle)

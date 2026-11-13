@@ -23,6 +23,30 @@ LEGACY_LENGTH = 0x0E
 EXTENDED_LENGTH = 0x12
 LEGACY_FIELD_COUNT = 6
 EXTENDED_FIELD_COUNT = 8
+STATUS_LENGTH = 0x05
+
+# 每种应答格式的字段名与 Data 中 int16 的顺序一一对应。
+# 落库/JSONL 的通道映射按字段名关联，不再依赖固定的 fieldIndex 顺序；
+# 这样 0x0E（6 字段）与 0x12（8 字段）即使顺序不同也不会错位。
+LEGACY_FIELD_NAMES = (
+    "conductivity_ns_m",
+    "conductivity_change_pct",
+    "dc",
+    "dc_change_pct",
+    "saturation_pct",
+    "temperature_c",
+)
+
+EXTENDED_FIELD_NAMES = (
+    "conductivity_ns_m",
+    "conductivity_change_pct",
+    "dc",
+    "saturation_pct",
+    "temperature_c",
+    "raw_conductivity",
+    "raw_dc",
+    "raw_dac",
+)
 
 
 def _scaled(value: int, factor: float, digits: int) -> float:
@@ -41,12 +65,28 @@ def build_measure_request() -> bytes:
 
 
 def parse_status(frame: HsiFrame) -> dict:
-    """解析状态应答；与 CS1000 相同，取 Data 首字节作为 StatusByte。"""
+    """解析 msg=1 状态应答（Length=0x05，Data=StatusCodeLo/Hi+保留字节）。
+
+    StatusCodeLo/Hi 组成 16 位状态码，0 表示有效；非 0 只记录，不在这里决定
+    采集是否继续（是否跳过传感器由轮询器按统计策略判断）。
+    """
     validate_response(frame, 1)
-    status_byte = frame.data[0] if frame.data else 0xFF
+    if frame.length != STATUS_LENGTH:
+        raise FrameError(
+            f"HLB1400 状态应答 Length 错误: 0x{frame.length:02X}，"
+            f"期望 0x{STATUS_LENGTH:02X}"
+        )
+    data = frame.data
+    status_lo = data[0] if len(data) >= 1 else 0xFF
+    status_hi = data[1] if len(data) >= 2 else 0x00
+    status_code = status_lo | (status_hi << 8)
     return {
-        "status_byte": status_byte,
-        "valid": status_byte == 0,
+        "status_code_lo": status_lo,
+        "status_code_hi": status_hi,
+        "status_code": status_code,
+        # 兼容旧字段：状态码低字节
+        "status_byte": status_lo,
+        "valid": status_code == 0,
         "raw_data_hex": frame.data.hex(),
     }
 
@@ -69,13 +109,20 @@ def parse_payload_legacy(data: bytes) -> dict:
     return {
         "fields": fields,
         "raw_fields": list(values),
+        "raw_by_field": dict(zip(LEGACY_FIELD_NAMES, values)),
+        "field_names": LEGACY_FIELD_NAMES,
         "quality": 0,
         "format": f"0x{LEGACY_LENGTH:02X}",
     }
 
 
 def parse_payload_extended(data: bytes) -> dict:
-    """解析 Length=0x12 的 release 13.08 扩展格式负载（16 字节 / 8 个 int16）。"""
+    """解析 Length=0x12 的 release 13.08 扩展格式负载（16 字节 / 8 个 int16）。
+
+    注意 0x12 的字段顺序与 0x0E 不同（没有 dc_change_pct，且在温度之后追加
+    Raw Conductivity/Raw DC/Raw DAC）。调用方必须按 ``raw_by_field`` 的字段名
+    取值，不能沿用 0x0E 的 fieldIndex 顺序。
+    """
     if len(data) != EXTENDED_FIELD_COUNT * 2:
         raise FrameError(
             f"HLB1400 扩展格式负载长度错误: {len(data)} 字节，期望 {EXTENDED_FIELD_COUNT * 2} 字节"
@@ -94,6 +141,8 @@ def parse_payload_extended(data: bytes) -> dict:
     return {
         "fields": fields,
         "raw_fields": list(values),
+        "raw_by_field": dict(zip(EXTENDED_FIELD_NAMES, values)),
+        "field_names": EXTENDED_FIELD_NAMES,
         "quality": 0,
         "format": f"0x{EXTENDED_LENGTH:02X}",
     }

@@ -60,6 +60,33 @@ class Hlb1400ExtendedTest(unittest.TestCase):
         self.assertEqual(fields["raw_dc"], 222)
         self.assertEqual(fields["raw_dac"], 333)
         self.assertEqual(parsed["raw_fields"], [100, 200, 300, 55, 250, 111, 222, 333])
+        self.assertEqual(
+            parsed["raw_by_field"],
+            {
+                "conductivity_ns_m": 100,
+                "conductivity_change_pct": 200,
+                "dc": 300,
+                "saturation_pct": 55,
+                "temperature_c": 250,
+                "raw_conductivity": 111,
+                "raw_dc": 222,
+                "raw_dac": 333,
+            },
+        )
+        # 0x12 没有 dc_change_pct（0x0E 的第 4 字段），不能按位置串到饱和度。
+        self.assertNotIn("dc_change_pct", parsed["raw_by_field"])
+
+    def test_status_parse_has_lo_hi(self):
+        frame = parse_frame(build_frame(RESPONSE_ADDRESS, 1, b"\x00\x00\x00"))
+        status = hlb1400.parse_status(frame)
+        self.assertEqual(status["status_code_lo"], 0)
+        self.assertEqual(status["status_code_hi"], 0)
+        self.assertTrue(status["valid"])
+
+    def test_status_wrong_length_rejected(self):
+        frame = parse_frame(build_frame(RESPONSE_ADDRESS, 1, b"\x00"))
+        with self.assertRaises(FrameError):
+            hlb1400.parse_status(frame)
 
 
 class Hlb1400RejectTest(unittest.TestCase):

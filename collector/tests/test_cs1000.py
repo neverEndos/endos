@@ -67,17 +67,31 @@ class Cs1000ParseTest(unittest.TestCase):
             cs1000.parse_measure(frame)
 
     def test_status_parse(self):
-        frame = parse_frame(build_frame(RESPONSE_ADDRESS, 1, b"\x00\x01\x02"))
+        frame = parse_frame(build_frame(RESPONSE_ADDRESS, 1, b"\x00\x00\x02"))
         status = cs1000.parse_status(frame)
-        self.assertEqual(status["status_byte"], 0)
+        self.assertEqual(status["status_code_lo"], 0)
+        self.assertEqual(status["status_code_hi"], 0)
+        self.assertEqual(status["status_code"], 0)
         self.assertTrue(status["valid"])
-        self.assertEqual(status["raw_data_hex"], "000102")
+        self.assertEqual(status["raw_data_hex"], "000002")
 
-    def test_status_nonzero_invalid(self):
+    def test_status_nonzero_lo_invalid(self):
         frame = parse_frame(build_frame(RESPONSE_ADDRESS, 1, b"\x07\x00\x00"))
         status = cs1000.parse_status(frame)
         self.assertEqual(status["status_byte"], 7)
+        self.assertEqual(status["status_code"], 7)
         self.assertFalse(status["valid"])
+
+    def test_status_nonzero_hi_invalid(self):
+        frame = parse_frame(build_frame(RESPONSE_ADDRESS, 1, b"\x00\x01\x00"))
+        status = cs1000.parse_status(frame)
+        self.assertEqual(status["status_code"], 0x0100)
+        self.assertFalse(status["valid"])
+
+    def test_status_wrong_length_rejected(self):
+        frame = parse_frame(build_frame(RESPONSE_ADDRESS, 1, b"\x00"))
+        with self.assertRaises(FrameError):
+            cs1000.parse_status(frame)
 
     def test_driver_requests(self):
         driver = cs1000.CS1000()

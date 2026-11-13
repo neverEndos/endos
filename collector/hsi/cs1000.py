@@ -15,8 +15,23 @@ from hsi.frame import FrameError, HsiFrame, build_frame, validate_response
 SENSOR_NAME = "CS1000"
 ADDRESS = 0x61
 MEASURE_LENGTH = 0x16
+STATUS_LENGTH = 0x05
 FIELD_COUNT = 10
 VALID_FLOW_STATES = (11, 22, 33, 44, 55)
+
+# msg=3 Data 中 int16 的字段顺序；落库/JSONL 按字段名关联 raw 值。
+FIELD_NAMES = (
+    "iso_4",
+    "iso_6",
+    "iso_14",
+    "sae_a",
+    "sae_b",
+    "sae_c",
+    "sae_d",
+    "temperature_c",
+    "flow_state",
+    "drive_pct",
+)
 
 # 字段名 -> (缩放系数, 小数位)；FlowState/Drive 为整数，不做缩放。
 _SCALED_FIELDS = (
@@ -47,16 +62,27 @@ def build_measure_request() -> bytes:
 
 
 def parse_status(frame: HsiFrame) -> dict:
-    """解析状态应答。
+    """解析 msg=1 状态应答（Length=0x05，Data=StatusCodeLo/Hi+保留字节）。
 
-    协议只约定“无效时 StatusByte≠0”；原型取 Data 首字节作为 StatusByte，
-    同时保留原始 Data 便于后续按正式文档校正。
+    StatusCodeLo/Hi 组成 16 位状态码，0 表示有效；保留原始 Data 便于对照。
     """
     validate_response(frame, 1)
-    status_byte = frame.data[0] if frame.data else 0xFF
+    if frame.length != STATUS_LENGTH:
+        raise FrameError(
+            f"CS1000 状态应答 Length 错误: 0x{frame.length:02X}，"
+            f"期望 0x{STATUS_LENGTH:02X}"
+        )
+    data = frame.data
+    status_lo = data[0] if len(data) >= 1 else 0xFF
+    status_hi = data[1] if len(data) >= 2 else 0x00
+    status_code = status_lo | (status_hi << 8)
     return {
-        "status_byte": status_byte,
-        "valid": status_byte == 0,
+        "status_code_lo": status_lo,
+        "status_code_hi": status_hi,
+        "status_code": status_code,
+        # 兼容旧字段：状态码低字节
+        "status_byte": status_lo,
+        "valid": status_code == 0,
         "raw_data_hex": frame.data.hex(),
     }
 
@@ -80,6 +106,8 @@ def parse_payload(data: bytes) -> dict:
     return {
         "fields": fields,
         "raw_fields": list(values),
+        "raw_by_field": dict(zip(FIELD_NAMES, values)),
+        "field_names": FIELD_NAMES,
         "quality": quality,
         "format": f"0x{MEASURE_LENGTH:02X}",
     }

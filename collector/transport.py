@@ -49,6 +49,8 @@ class SerialRS485Transport:
         self.logger = logger
         self.fd: int | None = None
         self.rs485_flags: int | None = None
+        self.rs485_unsupported = False
+        self._rs485_warned = False
         self._saved_attrs: list | None = None
         self._saved_rs485: bytes | None = None
 
@@ -141,7 +143,20 @@ class SerialRS485Transport:
         try:
             fcntl.ioctl(self.fd, TIOCSRS485, payload)
         except OSError as exc:
-            raise SerialTransportError(f"设置 RS485 flags={flags} 失败: {exc}") from exc
+            # 部分内核/驱动不实现 TIOCSRS485。此时无法在进程内配置方向控制，
+            # 但板载自动方向电路仍可收发；告警后继续，不阻断采集。
+            self.rs485_unsupported = True
+            self.rs485_flags = None
+            if not self._rs485_warned:
+                self._rs485_warned = True
+                if self.logger is not None:
+                    self.logger.warning(
+                        "TIOCSRS485 不可用（flags=%d 设置失败: %s），继续运行并依赖板载"
+                        " RS485 自动方向",
+                        flags,
+                        exc,
+                    )
+            return
         self.rs485_flags = flags
         if self.logger is not None:
             self.logger.info("设置 RS485 flags=%d", flags)

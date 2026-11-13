@@ -10,6 +10,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import seed  # noqa: E402
+import storage  # noqa: E402
 from hsi import cs1000, hlb1400  # noqa: E402
 from hsi.frame import RESPONSE_ADDRESS, build_frame, parse_frame  # noqa: E402
 from poll import run_loop  # noqa: E402
@@ -59,6 +60,19 @@ def cs_result(values=(100, 200, 300, 21, 22, 23, 24, 250, 11, 55)):
 def hlb_result(values=(100, 200, 300, 400, 55, 250)):
     frame = parse_frame(
         build_frame(RESPONSE_ADDRESS, 3, struct.pack("<6h", *values))
+    )
+    return {
+        "ok": True,
+        "sensor": "HLB1400",
+        "sensor_code": "hlb1400-01",
+        "latency_ms": 9.0,
+        **hlb1400.parse_measure(frame),
+    }
+
+
+def hlb_extended_result(values=(100, 200, 300, 55, 250, 111, 222, 333)):
+    frame = parse_frame(
+        build_frame(RESPONSE_ADDRESS, 3, struct.pack("<8h", *values))
     )
     return {
         "ok": True,
@@ -206,6 +220,115 @@ class BuildSampleRowsTest(unittest.TestCase):
             DEVICE_ID,
         )
         self.assertTrue(all(row[5] == 1 for row in rows))
+
+    def test_hlb1400_extended_maps_by_field_name_without_misalignment(self):
+        # 0x12 顺序：conductivity/change/dc/saturation/temperature/raw...
+        # 若沿用 0x0E 的 fieldIndex，dc_change(4) 会错拿 saturation，temperature(6)
+        # 会错拿 raw_conductivity；本用例逐通道断言按字段名关联的结果。
+        rows = build_sample_rows(
+            resolved_context().bindings,
+            [hlb_extended_result()],
+            datetime(2026, 11, 13, 20, 30),
+            DEVICE_ID,
+        )
+        by_id = {row[0]: row for row in rows}
+        self.assertEqual(
+            sorted(by_id),
+            [111, 112, 113, 115, 116],
+        )
+        self.assertEqual(by_id[111][4], 100)
+        self.assertEqual(by_id[111][3], 10.0)
+        self.assertEqual(by_id[112][4], 200)
+        self.assertEqual(by_id[112][3], 20.0)
+        self.assertEqual(by_id[113][4], 300)
+        self.assertEqual(by_id[113][3], 3.0)
+        self.assertEqual(by_id[115][4], 55)
+        self.assertEqual(by_id[115][3], 55.0)
+        self.assertEqual(by_id[116][4], 250)
+        self.assertEqual(by_id[116][3], 25.0)
+        # 0x12 不存在 dc_change_pct，不能写入错位行。
+        self.assertNotIn(114, by_id)
+        # raw_conductivity/raw_dc/raw_dac 未配置通道，不产生行。
+        self.assertEqual(len(rows), 5)
+
+    def test_scale_and_offset_from_channel_config(self):
+        # DB 列 scale=2.0 / value_offset=10 → 100*2+10=210
+        rows = context_from_rows(
+            DEVICE_ID,
+            [
+                (
+                    "cs1000-01",
+                    "iso_4",
+                    11,
+                    101,
+                    DEVICE_ID,
+                    {"fieldIndex": 1},
+                    2.0,
+                    10.0,
+                    "µm",
+                    1,
+                )
+            ],
+        )
+        result = build_sample_rows(
+            rows.bindings, [cs_result()], datetime(2026, 11, 13, 20, 30), DEVICE_ID
+        )
+        first = {row[0]: row for row in result}[101]
+        self.assertEqual(first[3], 210.0)
+        self.assertEqual(first[4], 100)
+
+    def test_disabled_channel_is_removed(self):
+        context = context_from_rows(
+            DEVICE_ID,
+            [
+                (
+                    "cs1000-01",
+                    "iso_4",
+                    11,
+                    101,
+                    DEVICE_ID,
+                    {"fieldIndex": 1},
+                    0.1,
+                    0.0,
+                    "µm",
+                    0,
+                )
+            ],
+        )
+        bindings = {binding.key: binding for binding in context.bindings}
+        self.assertNotIn(("cs1000-01", "iso_4"), bindings)
+        # 已解析上下文里把该通道标记为 disabled，落库时必须跳过。
+        resolved = resolved_context()
+        disabled = [
+            replace(b, enabled=False) if b.key == ("cs1000-01", "iso_4") else b
+            for b in resolved.bindings
+        ]
+        rows = build_sample_rows(
+            disabled, [cs_result()], datetime(2026, 11, 13, 20, 30), DEVICE_ID
+        )
+        self.assertNotIn(101, [row[0] for row in rows])
+        self.assertEqual(len(rows), 9)
+
+    def test_device_poll_interval_and_rs485_flags_propagate(self):
+        context = context_from_rows(
+            DEVICE_ID,
+            [("cs1000-01", "iso_4", 11, 101, DEVICE_ID, {"fieldIndex": 1})],
+            poll_interval_ms=60000,
+            rs485_flags=0,
+            active_sensor_codes=("cs1000-01",),
+        )
+        self.assertEqual(context.poll_interval_ms, 60000)
+        self.assertEqual(context.rs485_flags, 0)
+        self.assertTrue(context.sensor_enabled("cs1000-01"))
+        self.assertFalse(context.sensor_enabled("hlb1400-01"))
+
+    def test_rs485_flags_from_connection_config(self):
+        self.assertEqual(storage._rs485_flags_from_config({"rs485Flags": 3}), 3)
+        self.assertEqual(
+            storage._rs485_flags_from_config('{"rs485Flags": 0}'), 0
+        )
+        self.assertIsNone(storage._rs485_flags_from_config({"rs485Flags": "bad"}))
+        self.assertIsNone(storage._rs485_flags_from_config("not-json"))
 
 
 class DeviceStateTest(unittest.TestCase):

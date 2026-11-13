@@ -173,12 +173,46 @@ class DiscoverFlagsTest(unittest.TestCase):
                 attempts_per_flag=1,
             )
 
-    def test_one_sensor_missing_rejects_flags(self):
+    def test_one_sensor_missing_relaxed_mode_uses_responsive_drivers(self):
         def handler(request, flags, seq):
             # CS1000 (0x61) 有应答，HLB1400 无应答
             if request[2] == 0x61:
                 return status_ok()
             raise TimeoutError("HLB1400 无应答")
+
+        transport = FakeTransport(handler)
+        responsive: set[str] = set()
+        flags = discover_rs485_flags(
+            transport,
+            [cs1000.CS1000(), hlb1400.HLB1400()],
+            candidates=(1,),
+            timeout=0.1,
+            attempts_per_flag=1,
+            responsive_out=responsive,
+        )
+        self.assertEqual(flags, 1)
+        self.assertEqual(responsive, {"CS1000"})
+
+    def test_one_sensor_missing_strict_mode_rejects_flags(self):
+        def handler(request, flags, seq):
+            if request[2] == 0x61:
+                return status_ok()
+            raise TimeoutError("HLB1400 无应答")
+
+        transport = FakeTransport(handler)
+        with self.assertRaises(PollError):
+            discover_rs485_flags(
+                transport,
+                [cs1000.CS1000(), hlb1400.HLB1400()],
+                candidates=(1,),
+                timeout=0.1,
+                attempts_per_flag=1,
+                require_all=True,
+            )
+
+    def test_all_sensors_missing_still_rejects_flags(self):
+        def handler(request, flags, seq):
+            raise TimeoutError("no response")
 
         transport = FakeTransport(handler)
         with self.assertRaises(PollError):

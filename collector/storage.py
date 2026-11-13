@@ -18,6 +18,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable
 
+import partitions as partition_maintenance
 from seed import (
     CHANNEL_SEEDS,
     COLLECTOR_VERSION,
@@ -54,7 +55,12 @@ def mask_settings(settings: dict) -> dict:
 
 @dataclass(frozen=True)
 class ChannelBinding:
-    """一个通道的解析结果：种子字段映射 + 启动时从 DB 解析出的 id。"""
+    """一个通道的解析结果：种子字段映射 + 启动时从 DB 解析出的配置与 id。
+
+    ``scale`` / ``value_offset`` / ``unit`` / ``enabled`` 来自 ``collector_channel``
+    列；``field`` 是解析器返回的字段名，``field_index`` 仅作为无字段名映射时的
+    兼容回退。工程值统一按 ``raw * scale + value_offset`` 计算。
+    """
 
     sensor_code: str
     channel_code: str
@@ -64,6 +70,10 @@ class ChannelBinding:
     channel_id: int | None = None
     sensor_id: int | None = None
     device_id: int | None = None
+    scale: float = 1.0
+    value_offset: float = 0.0
+    unit: str | None = None
+    enabled: bool = True
 
     @property
     def key(self) -> tuple[str, str]:
@@ -77,12 +87,23 @@ class DeviceContext:
     device_id: int | None
     bindings: tuple[ChannelBinding, ...]
     resolved: bool
+    poll_interval_ms: int | None = None
+    rs485_flags: int | None = None
+    active_sensor_codes: tuple[str, ...] | None = None
 
     def bindings_for(self, sensor_code: str) -> tuple[ChannelBinding, ...]:
         return tuple(b for b in self.bindings if b.sensor_code == sensor_code)
 
     def missing_bindings(self) -> tuple[ChannelBinding, ...]:
         return tuple(b for b in self.bindings if b.channel_id is None)
+
+    def sensor_enabled(self, sensor_code: str) -> bool:
+        """未从 DB 解析出传感器清单时（DB 不可用）视为全部启用。"""
+
+        return (
+            self.active_sensor_codes is None
+            or sensor_code in self.active_sensor_codes
+        )
 
 
 def seed_bindings() -> tuple[ChannelBinding, ...]:
@@ -98,6 +119,9 @@ def seed_bindings() -> tuple[ChannelBinding, ...]:
                 field=channel.field,
                 field_index=channel.field_index,
                 address=sensor.address,
+                scale=channel.scale,
+                value_offset=0.0,
+                unit=channel.unit,
             )
         )
     return tuple(bindings)
@@ -107,48 +131,169 @@ def unresolved_context() -> DeviceContext:
     return DeviceContext(device_id=None, bindings=seed_bindings(), resolved=False)
 
 
-def _field_index_from_config(config: Any, default: int) -> int:
+def _parse_config(config: Any) -> dict:
     if isinstance(config, str):
         try:
             config = json.loads(config)
         except ValueError:
-            return default
-    if isinstance(config, dict):
-        value = config.get("fieldIndex")
-        if isinstance(value, int) and value >= 1:
-            return value
+            return {}
+    return config if isinstance(config, dict) else {}
+
+
+def _field_index_from_config(config: Any, default: int) -> int:
+    parsed = _parse_config(config)
+    value = parsed.get("fieldIndex")
+    if isinstance(value, int) and value >= 1:
+        return value
     return default
+
+
+def _field_name_from_config(config: Any, default: str) -> str:
+    parsed = _parse_config(config)
+    value = parsed.get("field")
+    if isinstance(value, str) and value:
+        return value
+    return default
+
+
+def _number_from_config(config: Any, key: str, default: float) -> float:
+    parsed = _parse_config(config)
+    value = parsed.get(key)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return default
+
+
+def _rs485_flags_from_config(config: Any) -> int | None:
+    parsed = _parse_config(config)
+    value = parsed.get("rs485Flags")
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
 
 
 def context_from_rows(
     device_id: int | None,
     channel_rows: Iterable[tuple],
+    *,
+    poll_interval_ms: int | None = None,
+    rs485_flags: int | None = None,
+    active_sensor_codes: tuple[str, ...] | None = None,
 ) -> DeviceContext:
     """把 DB 查询结果合并到种子绑定。
 
     ``channel_rows`` 每项为 ``(sensor_code, channel_code, sensor_id, channel_id,
-    device_id, channel_config)``。只更新种子中存在的通道；DB 中多出来的通道不会
-    被采集器写入。
+    device_id, channel_config, scale, value_offset, unit, enabled)``；也兼容旧的
+    6 元组（此时 scale/unit 沿用种子值）。``enabled=0`` 的通道会被移除，不参与
+    采集。只更新种子中存在的通道；DB 中多出来的通道不会被采集器写入。
     """
 
     merged = {binding.key: binding for binding in seed_bindings()}
     for row in channel_rows:
-        sensor_code, channel_code, sensor_id, channel_id, row_device_id, config = row
-        current = merged.get((sensor_code, channel_code))
+        if len(row) >= 10:
+            (
+                sensor_code,
+                channel_code,
+                sensor_id,
+                channel_id,
+                row_device_id,
+                config,
+                scale,
+                value_offset,
+                unit,
+                enabled,
+            ) = row[:10]
+        else:
+            sensor_code, channel_code, sensor_id, channel_id, row_device_id, config = row[:6]
+            scale = None
+            value_offset = None
+            unit = None
+            enabled = 1
+        key = (sensor_code, channel_code)
+        current = merged.get(key)
         if current is None:
             continue
-        merged[(sensor_code, channel_code)] = replace(
+        if not int(enabled):
+            merged.pop(key, None)
+            continue
+        merged[key] = replace(
             current,
             channel_id=int(channel_id),
             sensor_id=int(sensor_id),
             device_id=int(row_device_id) if row_device_id is not None else device_id,
+            field=_field_name_from_config(config, current.field),
             field_index=_field_index_from_config(config, current.field_index),
+            scale=(
+                float(scale)
+                if scale is not None
+                else _number_from_config(config, "scale", current.scale)
+            ),
+            value_offset=(
+                float(value_offset)
+                if value_offset is not None
+                else _number_from_config(config, "offset", current.value_offset)
+            ),
+            unit=unit if unit is not None else current.unit,
+            enabled=True,
         )
     return DeviceContext(
         device_id=device_id,
         bindings=tuple(merged.values()),
         resolved=device_id is not None,
+        poll_interval_ms=poll_interval_ms,
+        rs485_flags=rs485_flags,
+        active_sensor_codes=active_sensor_codes,
     )
+
+
+MISSING = object()
+
+
+def raw_value_for_binding(
+    binding: ChannelBinding,
+    raw_by_field: dict[str, int] | None,
+    raw_fields: Iterable[int],
+) -> Any:
+    """按字段名取原始值；缺少字段名映射时退回 ``field_index``（1 起始）。
+
+    返回 ``MISSING`` 表示当前应答格式中不存在该字段，调用方应跳过该通道，
+    不能用其他位置的值顶替。
+    """
+
+    if raw_by_field is not None:
+        return raw_by_field.get(binding.field, MISSING)
+    index = binding.field_index - 1
+    raw_fields = list(raw_fields)
+    if index < 0 or index >= len(raw_fields):
+        return MISSING
+    return raw_fields[index]
+
+
+def engineering_value(raw: Any, binding: ChannelBinding) -> float | None:
+    """按通道配置计算工程值：``raw * scale + value_offset``。"""
+
+    if raw is MISSING or raw is None:
+        return None
+    try:
+        value = float(raw) * float(binding.scale) + float(binding.value_offset)
+    except (TypeError, ValueError):
+        return None
+    value = round(value, 10)
+    return 0.0 if value == 0 else value
+
+
+def _info_once(
+    logger: logging.Logger,
+    warned: set | None,
+    key: tuple,
+    message: str,
+    *args: Any,
+) -> None:
+    if warned is not None:
+        if key in warned:
+            return
+        warned.add(key)
+    logger.info(message, *args)
 
 
 def build_sample_rows(
@@ -156,13 +301,19 @@ def build_sample_rows(
     results: Iterable[dict[str, Any]],
     collect_time: datetime,
     device_id: int | None,
+    *,
+    logger: logging.Logger | None = None,
+    warned_fields: set | None = None,
 ) -> list[tuple[int, int, datetime, Any, int, int]]:
     """把一轮解析结果转换为 ``collector_sample_raw`` 行。
 
-    每个成功传感器按 ``field_index``（1 起始）从 ``raw_fields`` 取 int16 原始值，
-    按 ``field`` 从 ``fields`` 取工程值；未解析到 ``channel_id`` 的通道直接跳过。
+    原始值与工程值都按**字段名**关联：``raw_by_field`` 由解析器给出当前应答
+    格式的字段集合，``value`` 按通道配置的 ``scale``/``value_offset`` 计算。
+    当前格式中不存在的通道字段、以及当前格式中存在但未配置通道的字段都会被
+    跳过；后者每个字段只记录一次 INFO，避免每轮刷屏。
     """
 
+    log = logger or logging.getLogger(LOGGER_NAME)
     rows: list[tuple[int, int, datetime, Any, int, int]] = []
     for result in results:
         if not result.get("ok"):
@@ -171,13 +322,39 @@ def build_sample_rows(
             result.get("sensor", "")
         )
         raw_fields = result.get("raw_fields") or []
-        fields = result.get("fields") or {}
+        raw_by_field = result.get("raw_by_field")
+        if raw_by_field is not None:
+            raw_by_field = {str(k): int(v) for k, v in raw_by_field.items()}
         quality = int(result.get("quality") or 0)
-        for binding in bindings:
-            if binding.sensor_code != sensor_code or binding.channel_id is None:
+        sensor_bindings = [b for b in bindings if b.sensor_code == sensor_code]
+        configured_fields = {b.field for b in sensor_bindings}
+        fmt = result.get("format") or "?"
+        if raw_by_field is not None:
+            for name in raw_by_field:
+                if name not in configured_fields:
+                    _info_once(
+                        log,
+                        warned_fields,
+                        ("unconfigured-field", sensor_code, fmt, name),
+                        "sensor=%s format=%s 字段 %s 未配置通道，已跳过（不写 raw）",
+                        sensor_code,
+                        fmt,
+                        name,
+                    )
+        for binding in sensor_bindings:
+            if binding.channel_id is None or not binding.enabled:
                 continue
-            index = binding.field_index - 1
-            if index < 0 or index >= len(raw_fields):
+            raw = raw_value_for_binding(binding, raw_by_field, raw_fields)
+            if raw is MISSING:
+                _info_once(
+                    log,
+                    warned_fields,
+                    ("absent-field", sensor_code, fmt, binding.field),
+                    "sensor=%s format=%s 通道字段 %s 不存在，已跳过（不写 raw）",
+                    sensor_code,
+                    fmt,
+                    binding.field,
+                )
                 continue
             row_device_id = device_id if device_id is not None else binding.device_id
             if row_device_id is None:
@@ -187,8 +364,8 @@ def build_sample_rows(
                     int(binding.channel_id),
                     int(row_device_id),
                     collect_time,
-                    fields.get(binding.field),
-                    int(raw_fields[index]),
+                    engineering_value(raw, binding),
+                    int(raw),
                     quality,
                 )
             )
@@ -348,6 +525,7 @@ class PgStorage:
         self._online = 0
         self._failures = 0
         self._last_write_lag_ms: int | None = None
+        self._warned_fields: set = set()
 
     # ------------------------------------------------------------------ 连接
     def connect(self) -> None:
@@ -384,12 +562,17 @@ class PgStorage:
         try:
             with self._conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id FROM public.collector_device"
+                    "SELECT id, poll_interval_ms FROM public.collector_device"
                     " WHERE device_code = %s AND deleted = 0",
                     (DEVICE_CODE,),
                 )
                 row = cur.fetchone()
                 device_id = int(row[0]) if row else None
+                poll_interval_ms = (
+                    int(row[1])
+                    if row and row[1] is not None and int(row[1]) > 0
+                    else None
+                )
                 if device_id is None:
                     self.logger.error(
                         "未找到设备种子 device_code=%s，请检查 seed.py 是否执行成功",
@@ -398,18 +581,75 @@ class PgStorage:
                     self.context = unresolved_context()
                     return self.context
 
+                # 传感器配置：enabled 过滤 + connection_config.rs485Flags
+                cur.execute(
+                    """
+                    SELECT sensor_code, enabled, connection_config
+                    FROM public.collector_sensor
+                    WHERE device_id = %s AND deleted = 0
+                    ORDER BY sort, id
+                    """,
+                    (device_id,),
+                )
+                sensor_rows = cur.fetchall()
+                enabled_sensor_codes = tuple(
+                    sensor_code
+                    for sensor_code, enabled, _ in sensor_rows
+                    if int(enabled)
+                )
+                disabled_sensors = [
+                    sensor_code
+                    for sensor_code, enabled, _ in sensor_rows
+                    if not int(enabled)
+                ]
+                rs485_flags = None
+                for sensor_code, enabled, config in sensor_rows:
+                    if not int(enabled):
+                        continue
+                    configured = _rs485_flags_from_config(config)
+                    if configured is not None:
+                        rs485_flags = configured
+                        break
+
                 cur.execute(
                     """
                     SELECT s.sensor_code, c.channel_code, s.id, c.id,
-                           c.device_id, c.channel_config
+                           c.device_id, c.channel_config,
+                           c.scale, c.value_offset, c.unit, c.enabled
                     FROM public.collector_channel c
                     JOIN public.collector_sensor s ON s.id = c.sensor_id
                     WHERE c.deleted = 0 AND s.deleted = 0 AND c.device_id = %s
+                      AND s.enabled = 1 AND c.enabled = 1
+                    ORDER BY c.sort, c.id
                     """,
                     (device_id,),
                 )
                 rows = cur.fetchall()
-                self.context = context_from_rows(device_id, rows)
+                self.context = context_from_rows(
+                    device_id,
+                    rows,
+                    poll_interval_ms=poll_interval_ms,
+                    rs485_flags=rs485_flags,
+                    active_sensor_codes=enabled_sensor_codes,
+                )
+
+                cur.execute(
+                    """
+                    SELECT count(*)
+                    FROM public.collector_channel c
+                    JOIN public.collector_sensor s ON s.id = c.sensor_id
+                    WHERE c.deleted = 0 AND s.deleted = 0 AND c.device_id = %s
+                      AND (s.enabled = 0 OR c.enabled = 0)
+                    """,
+                    (device_id,),
+                )
+                skipped_channels = int(cur.fetchone()[0])
+                if disabled_sensors or skipped_channels:
+                    self.logger.info(
+                        "已跳过禁用传感器 %s 与禁用通道 %d 个（enabled=0）",
+                        disabled_sensors or "无",
+                        skipped_channels,
+                    )
 
                 cur.execute(
                     "SELECT online, consecutive_failures"
@@ -458,7 +698,12 @@ class PgStorage:
             return {"written": 0, "skipped": True}
 
         rows = build_sample_rows(
-            self.context.bindings, results, collect_time, self.context.device_id
+            self.context.bindings,
+            results,
+            collect_time,
+            self.context.device_id,
+            logger=self.logger,
+            warned_fields=self._warned_fields,
         )
         success, latency_ms, error = cycle_outcome(results)
         state = next_device_state(
@@ -523,6 +768,20 @@ class PgStorage:
             "consecutive_failures": state.consecutive_failures,
             "write_lag_ms": self._last_write_lag_ms,
         }
+
+    def ensure_partitions(
+        self, today=None, lead_days: int | None = None
+    ) -> list[str]:
+        """确保未来日分区存在；失败向上抛异常，由 DatabaseManager 告警。"""
+
+        self._ensure_conn()
+        with self._conn:
+            return partition_maintenance.ensure_partitions(
+                self._conn,
+                today=today,
+                lead_days=lead_days,
+                logger=self.logger,
+            )
 
     def write_heartbeat(self) -> int | None:
         """插入一行心跳，返回心跳 id；DB 不可用时由调用方处理异常。"""
@@ -614,6 +873,7 @@ class DatabaseManager:
         self._last_attempt: float | None = None
         self._attempts = 0
         self._last_error: str | None = None
+        self._last_partition_error: str | None = None
 
     # ------------------------------------------------------------------ 状态
     def ensure_ready(self) -> bool:
@@ -643,6 +903,8 @@ class DatabaseManager:
             )
             self._last_error = None
         self.ready = True
+        # 启动（或 DB 恢复）后预创建未来日分区；失败只告警，不影响落库。
+        self.ensure_partitions()
         missing = self.context.missing_bindings()
         self.logger.info(
             "PostgreSQL 落库已启用 device_id=%s channels=%d/%d（DB 尝试 %d 次）",
@@ -719,6 +981,33 @@ class DatabaseManager:
             storage.close()
         except Exception:  # 连接已坏时 close 也可能失败
             pass
+
+    def ensure_partitions(self) -> list[str]:
+        """维护 ``collector_sample_raw`` 未来日分区；失败只告警不抛异常。
+
+        权限不足（例如采集账号无建表权限）时记录 WARN，并提示运维手工创建；
+        同一错误在一个恢复周期内只告警一次，避免每轮刷屏。
+        """
+
+        if not self.ready or self.storage is None:
+            return []
+        handler = getattr(self.storage, "ensure_partitions", None)
+        if handler is None:
+            return []
+        try:
+            created = handler()
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            if error != self._last_partition_error:
+                self._last_partition_error = error
+                self.logger.warning(
+                    "collector_sample_raw 分区预创建失败（采集继续；若为权限不足，"
+                    "请运维按 collector_retention_policy.partition_lead_days 手工建分区）: %s",
+                    error,
+                )
+            return []
+        self._last_partition_error = None
+        return created
 
     # ------------------------------------------------------------------ 写入
     def write_cycle(
