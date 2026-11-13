@@ -1,7 +1,7 @@
 /*
  采集器采集数据表初始化脚本（PostgreSQL 17）
 
- 适用范围：collector 首期 14 张表（协议注册表、设备、通道、分时段轮询、配置版本、
+ 适用范围：collector 首期 15 张表（协议注册表、设备、传感器、通道、分时段轮询、配置版本、
  原始采样、小时/天聚合、聚合水位、报警、设备状态、心跳、命令、保留策略）。
 
  说明：
@@ -11,10 +11,48 @@
  3. collector_sample_raw 按天 RANGE 分区，本脚本创建示例日分区与 DEFAULT 分区；
     后续分区由维护任务按 collector_retention_policy.partition_lead_days 提前创建。
  4. 业务时间统一使用 timestamp(3) without time zone，语义为 Asia/Shanghai 本地墙钟时间。
- 5. 本脚本为初始化脚本，不含 DROP/TRUNCATE，请在空库中一次性执行。
+ 5. 本脚本支持重复执行：开头会删除并重建下述 15 张 collector 表与 10 个序列，
+    执行将清空采集器已有数据，请在确认后执行。
+ 6. 数值有限性约束显式排除 NaN 与正负 Infinity（数值类型没有可用的内置有限性判断
+    函数）；配置版本 snapshot 必须为 JSON 对象，checksum 必须为 64 位小写十六进制字符串。
 */
 
 SET client_encoding = 'UTF8';
+
+
+-- =============================================================================
+-- 0. 删除旧对象（重建会清空采集器数据）
+--    先删表再删序列，以固定顺序清理本期对象；
+--    列默认值不依赖这些序列，序列仅供种子数据与后续 DO 主键生成使用；
+--    分区表只 DROP 父表，分区及其索引/约束随父表一并删除，不单独 DROP。
+-- =============================================================================
+
+DROP TABLE IF EXISTS public.collector_protocol;
+DROP TABLE IF EXISTS public.collector_device;
+DROP TABLE IF EXISTS public.collector_sensor;
+DROP TABLE IF EXISTS public.collector_channel;
+DROP TABLE IF EXISTS public.collector_poll_schedule;
+DROP TABLE IF EXISTS public.collector_config_version;
+DROP TABLE IF EXISTS public.collector_sample_raw;
+DROP TABLE IF EXISTS public.collector_aggregate_hour;
+DROP TABLE IF EXISTS public.collector_aggregate_day;
+DROP TABLE IF EXISTS public.collector_aggregate_watermark;
+DROP TABLE IF EXISTS public.collector_alarm;
+DROP TABLE IF EXISTS public.collector_device_status;
+DROP TABLE IF EXISTS public.collector_heartbeat;
+DROP TABLE IF EXISTS public.collector_command;
+DROP TABLE IF EXISTS public.collector_retention_policy;
+
+DROP SEQUENCE IF EXISTS public.collector_protocol_seq;
+DROP SEQUENCE IF EXISTS public.collector_device_seq;
+DROP SEQUENCE IF EXISTS public.collector_sensor_seq;
+DROP SEQUENCE IF EXISTS public.collector_channel_seq;
+DROP SEQUENCE IF EXISTS public.collector_poll_schedule_seq;
+DROP SEQUENCE IF EXISTS public.collector_config_version_seq;
+DROP SEQUENCE IF EXISTS public.collector_alarm_seq;
+DROP SEQUENCE IF EXISTS public.collector_heartbeat_seq;
+DROP SEQUENCE IF EXISTS public.collector_command_seq;
+DROP SEQUENCE IF EXISTS public.collector_retention_policy_seq;
 
 
 -- =============================================================================
@@ -29,6 +67,13 @@ CREATE SEQUENCE public.collector_protocol_seq
     CACHE 1;
 
 CREATE SEQUENCE public.collector_device_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+CREATE SEQUENCE public.collector_sensor_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -126,10 +171,10 @@ COMMENT ON COLUMN public.collector_protocol.protocol_code IS '协议业务编码
 COMMENT ON COLUMN public.collector_protocol.protocol_name IS '协议展示名称';
 COMMENT ON COLUMN public.collector_protocol.transport_type IS '传输大类：serial/tcp/udp/can/mqtt/http 等，可空、可扩展';
 COMMENT ON COLUMN public.collector_protocol.driver_key IS 'collector 驱动标识，与驱动实现一一对应';
-COMMENT ON COLUMN public.collector_protocol.connection_schema IS '设备连接参数 JSON Schema，驱动设备表单与校验';
+COMMENT ON COLUMN public.collector_protocol.connection_schema IS '传感器连接参数 JSON Schema，驱动传感器表单与校验';
 COMMENT ON COLUMN public.collector_protocol.channel_schema IS '通道寻址/解析参数 JSON Schema，驱动通道表单与校验';
 COMMENT ON COLUMN public.collector_protocol.protocol_version IS '协议定义版本（语义化版本），快照中固定';
-COMMENT ON COLUMN public.collector_protocol.enabled IS '是否启用：0 否、1 是';
+COMMENT ON COLUMN public.collector_protocol.enabled IS '是否允许新增传感器引用：0 否、1 是；已有传感器仍按快照运行';
 COMMENT ON COLUMN public.collector_protocol.sort IS '排序值';
 COMMENT ON COLUMN public.collector_protocol.description IS '协议说明、驱动限制与升级注意事项';
 COMMENT ON COLUMN public.collector_protocol.creator IS '创建者';
@@ -147,9 +192,7 @@ CREATE TABLE public.collector_device (
     id bigint NOT NULL,
     device_code character varying(64) NOT NULL,
     device_name character varying(100) NOT NULL,
-    protocol_code character varying(64) NOT NULL,
     enabled smallint DEFAULT 1 NOT NULL,
-    connection_config jsonb DEFAULT '{}'::jsonb NOT NULL,
     poll_interval_ms integer DEFAULT 5000 NOT NULL,
     timeout_ms integer DEFAULT 1000 NOT NULL,
     retries smallint DEFAULT 2 NOT NULL,
@@ -164,29 +207,21 @@ CREATE TABLE public.collector_device (
     CONSTRAINT pk_collector_device PRIMARY KEY (id),
     CONSTRAINT chk_collector_device_enabled CHECK (enabled IN (0, 1)),
     CONSTRAINT chk_collector_device_code CHECK (length(device_code) > 0),
-    CONSTRAINT chk_collector_device_protocol CHECK (length(protocol_code) > 0),
     CONSTRAINT chk_collector_device_poll CHECK (poll_interval_ms >= 100),
     CONSTRAINT chk_collector_device_timeout CHECK (timeout_ms >= 10),
-    CONSTRAINT chk_collector_device_retries CHECK (retries BETWEEN 0 AND 10),
-    CONSTRAINT chk_collector_device_connection CHECK (jsonb_typeof(connection_config) = 'object')
+    CONSTRAINT chk_collector_device_retries CHECK (retries BETWEEN 0 AND 10)
 );
 
 CREATE UNIQUE INDEX uk_collector_device_code
     ON public.collector_device USING btree (device_code)
     WHERE (deleted = 0);
 
-CREATE INDEX idx_collector_device_protocol
-    ON public.collector_device USING btree (protocol_code)
-    WHERE (deleted = 0);
-
-COMMENT ON TABLE public.collector_device IS '采集设备通用配置表（协议无关）';
+COMMENT ON TABLE public.collector_device IS '采集设备/采集主机通用配置表（协议无关，采集对象最高层）';
 COMMENT ON COLUMN public.collector_device.id IS '主键编号';
 COMMENT ON COLUMN public.collector_device.device_code IS '设备编码（业务唯一）';
 COMMENT ON COLUMN public.collector_device.device_name IS '设备名称';
-COMMENT ON COLUMN public.collector_device.protocol_code IS '协议编码（逻辑关联 collector_protocol.protocol_code，不建 FK）';
 COMMENT ON COLUMN public.collector_device.enabled IS '是否启用：0 否、1 是';
-COMMENT ON COLUMN public.collector_device.connection_config IS '协议连接参数 JSON，结构由 collector_protocol.connection_schema 定义';
-COMMENT ON COLUMN public.collector_device.poll_interval_ms IS '默认轮询周期（毫秒）';
+COMMENT ON COLUMN public.collector_device.poll_interval_ms IS '设备默认轮询周期（毫秒），传感器与通道可继承';
 COMMENT ON COLUMN public.collector_device.timeout_ms IS '单次请求超时（毫秒）';
 COMMENT ON COLUMN public.collector_device.retries IS '失败重试次数';
 COMMENT ON COLUMN public.collector_device.reconnect_interval_ms IS '断线重连间隔（毫秒）';
@@ -200,12 +235,69 @@ COMMENT ON COLUMN public.collector_device.deleted IS '是否删除：0 否、1 �
 
 
 -- =============================================================================
--- 4. 采集通道
+-- 4. 采集传感器
+-- =============================================================================
+
+CREATE TABLE public.collector_sensor (
+    id bigint NOT NULL,
+    device_id bigint NOT NULL,
+    sensor_code character varying(64) NOT NULL,
+    sensor_name character varying(100) NOT NULL,
+    protocol_code character varying(64) NOT NULL,
+    connection_config jsonb DEFAULT '{}'::jsonb NOT NULL,
+    enabled smallint DEFAULT 1 NOT NULL,
+    description character varying(255),
+    sort integer DEFAULT 0 NOT NULL,
+    creator character varying(64) DEFAULT ''::character varying,
+    create_time timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updater character varying(64) DEFAULT ''::character varying,
+    update_time timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    deleted smallint DEFAULT 0 NOT NULL,
+    CONSTRAINT pk_collector_sensor PRIMARY KEY (id),
+    CONSTRAINT chk_collector_sensor_code CHECK (length(sensor_code) > 0),
+    CONSTRAINT chk_collector_sensor_name CHECK (length(sensor_name) > 0),
+    CONSTRAINT chk_collector_sensor_protocol CHECK (length(protocol_code) > 0),
+    CONSTRAINT chk_collector_sensor_enabled CHECK (enabled IN (0, 1)),
+    CONSTRAINT chk_collector_sensor_connection CHECK (jsonb_typeof(connection_config) = 'object')
+);
+
+CREATE UNIQUE INDEX uk_collector_sensor_code
+    ON public.collector_sensor USING btree (device_id, sensor_code)
+    WHERE (deleted = 0);
+
+CREATE INDEX idx_collector_sensor_device
+    ON public.collector_sensor USING btree (device_id)
+    WHERE (deleted = 0);
+
+CREATE INDEX idx_collector_sensor_protocol
+    ON public.collector_sensor USING btree (protocol_code)
+    WHERE (deleted = 0);
+
+COMMENT ON TABLE public.collector_sensor IS '采集传感器表（设备下级，绑定协议与连接参数）';
+COMMENT ON COLUMN public.collector_sensor.id IS '主键编号';
+COMMENT ON COLUMN public.collector_sensor.device_id IS '所属设备编号（逻辑关联 collector_device.id）';
+COMMENT ON COLUMN public.collector_sensor.sensor_code IS '传感器编码（设备内唯一）';
+COMMENT ON COLUMN public.collector_sensor.sensor_name IS '传感器名称';
+COMMENT ON COLUMN public.collector_sensor.protocol_code IS '协议编码（逻辑关联 collector_protocol.protocol_code，不建 FK）';
+COMMENT ON COLUMN public.collector_sensor.connection_config IS '协议连接参数 JSON，由 protocol.connection_schema 校验';
+COMMENT ON COLUMN public.collector_sensor.enabled IS '是否启用：0 否、1 是';
+COMMENT ON COLUMN public.collector_sensor.description IS '描述';
+COMMENT ON COLUMN public.collector_sensor.sort IS '排序值';
+COMMENT ON COLUMN public.collector_sensor.creator IS '创建者';
+COMMENT ON COLUMN public.collector_sensor.create_time IS '创建时间';
+COMMENT ON COLUMN public.collector_sensor.updater IS '更新者';
+COMMENT ON COLUMN public.collector_sensor.update_time IS '更新时间';
+COMMENT ON COLUMN public.collector_sensor.deleted IS '是否删除：0 否、1 是';
+
+
+-- =============================================================================
+-- 5. 采集通道
 -- =============================================================================
 
 CREATE TABLE public.collector_channel (
     id bigint NOT NULL,
     device_id bigint NOT NULL,
+    sensor_id bigint NOT NULL,
     channel_code character varying(64) NOT NULL,
     channel_name character varying(100) NOT NULL,
     enabled smallint DEFAULT 1 NOT NULL,
@@ -232,7 +324,41 @@ CREATE TABLE public.collector_channel (
     CONSTRAINT pk_collector_channel PRIMARY KEY (id),
     CONSTRAINT chk_collector_channel_code CHECK (length(channel_code) > 0),
     CONSTRAINT chk_collector_channel_enabled CHECK (enabled IN (0, 1)),
-    CONSTRAINT chk_collector_channel_value_type CHECK (value_type IN ('number', 'boolean', 'string')),
+    CONSTRAINT chk_collector_channel_value_type CHECK (value_type = 'number'),
+    CONSTRAINT chk_collector_channel_scale CHECK (
+        scale <> 'Infinity'::float8
+        AND scale <> '-Infinity'::float8
+        AND scale <> 'NaN'::float8
+    ),
+    CONSTRAINT chk_collector_channel_offset CHECK (
+        value_offset <> 'Infinity'::float8
+        AND value_offset <> '-Infinity'::float8
+        AND value_offset <> 'NaN'::float8
+    ),
+    CONSTRAINT chk_collector_channel_deadband CHECK (
+        deadband <> 'Infinity'::float8
+        AND deadband <> '-Infinity'::float8
+        AND deadband <> 'NaN'::float8
+        AND deadband >= 0
+    ),
+    CONSTRAINT chk_collector_channel_threshold_finite CHECK (
+        (threshold_low IS NULL OR (
+            threshold_low <> 'Infinity'::float8
+            AND threshold_low <> '-Infinity'::float8
+            AND threshold_low <> 'NaN'::float8
+        ))
+        AND (threshold_high IS NULL OR (
+            threshold_high <> 'Infinity'::float8
+            AND threshold_high <> '-Infinity'::float8
+            AND threshold_high <> 'NaN'::float8
+        ))
+    ),
+    CONSTRAINT chk_collector_channel_alarm_deadband CHECK (
+        alarm_deadband <> 'Infinity'::float8
+        AND alarm_deadband <> '-Infinity'::float8
+        AND alarm_deadband <> 'NaN'::float8
+        AND alarm_deadband >= 0
+    ),
     CONSTRAINT chk_collector_channel_decimal CHECK (decimal_places BETWEEN 0 AND 6),
     CONSTRAINT chk_collector_channel_threshold CHECK (
         threshold_low IS NULL OR threshold_high IS NULL OR threshold_low <= threshold_high
@@ -243,7 +369,11 @@ CREATE TABLE public.collector_channel (
 );
 
 CREATE UNIQUE INDEX uk_collector_channel_code
-    ON public.collector_channel USING btree (device_id, channel_code)
+    ON public.collector_channel USING btree (sensor_id, channel_code)
+    WHERE (deleted = 0);
+
+CREATE INDEX idx_collector_channel_sensor
+    ON public.collector_channel USING btree (sensor_id)
     WHERE (deleted = 0);
 
 CREATE INDEX idx_collector_channel_device
@@ -252,12 +382,13 @@ CREATE INDEX idx_collector_channel_device
 
 COMMENT ON TABLE public.collector_channel IS '采集通道通用配置表（协议无关，含 UI 渲染字段）';
 COMMENT ON COLUMN public.collector_channel.id IS '主键编号';
-COMMENT ON COLUMN public.collector_channel.device_id IS '所属设备编号（逻辑关联 collector_device.id）';
-COMMENT ON COLUMN public.collector_channel.channel_code IS '通道编码（设备内唯一）';
+COMMENT ON COLUMN public.collector_channel.device_id IS '所属设备编号（冗余，Service 保证与传感器所属设备一致）';
+COMMENT ON COLUMN public.collector_channel.sensor_id IS '所属传感器编号（逻辑关联 collector_sensor.id）';
+COMMENT ON COLUMN public.collector_channel.channel_code IS '通道编码（传感器内唯一）';
 COMMENT ON COLUMN public.collector_channel.channel_name IS '通道名称（列表/卡片展示）';
 COMMENT ON COLUMN public.collector_channel.enabled IS '是否启用：0 否、1 是';
-COMMENT ON COLUMN public.collector_channel.value_type IS '通用值类型：number/boolean/string（决定聚合与展示方式）';
-COMMENT ON COLUMN public.collector_channel.channel_config IS '协议专用寻址/解析参数 JSON，结构由 collector_protocol.channel_schema 定义';
+COMMENT ON COLUMN public.collector_channel.value_type IS '通用值类型：首期仅 number；bit 等协议值由驱动转换为数值 0/1';
+COMMENT ON COLUMN public.collector_channel.channel_config IS '协议专用寻址/解析参数 JSON，由所属传感器的 protocol.channel_schema 校验';
 COMMENT ON COLUMN public.collector_channel.scale IS '数值缩放系数（仅 value_type=number）';
 COMMENT ON COLUMN public.collector_channel.value_offset IS '工程值偏移量（仅 value_type=number）';
 COMMENT ON COLUMN public.collector_channel.unit IS '工程单位（可空；空表示无量纲/状态量）';
@@ -279,12 +410,13 @@ COMMENT ON COLUMN public.collector_channel.deleted IS '是否删除：0 否、1 
 
 
 -- =============================================================================
--- 5. 分时段轮询策略
+-- 6. 分时段轮询策略
 -- =============================================================================
 
 CREATE TABLE public.collector_poll_schedule (
     id bigint NOT NULL,
     device_id bigint NOT NULL,
+    sensor_id bigint DEFAULT 0 NOT NULL,
     channel_id bigint DEFAULT 0 NOT NULL,
     schedule_name character varying(100) NOT NULL,
     weekdays smallint DEFAULT 127 NOT NULL,
@@ -302,7 +434,8 @@ CREATE TABLE public.collector_poll_schedule (
     update_time timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     deleted smallint DEFAULT 0 NOT NULL,
     CONSTRAINT pk_collector_poll_schedule PRIMARY KEY (id),
-    CONSTRAINT chk_collector_poll_schedule_channel CHECK (channel_id >= 0),
+    CONSTRAINT chk_collector_poll_schedule_sensor CHECK (sensor_id >= 0),
+    CONSTRAINT chk_collector_poll_schedule_channel CHECK (channel_id >= 0 AND (channel_id = 0 OR sensor_id > 0)),
     CONSTRAINT chk_collector_poll_schedule_weekdays CHECK (weekdays BETWEEN 0 AND 127),
     CONSTRAINT chk_collector_poll_schedule_interval CHECK (interval_ms >= 100),
     CONSTRAINT chk_collector_poll_schedule_dates CHECK (
@@ -313,8 +446,12 @@ CREATE TABLE public.collector_poll_schedule (
 );
 
 CREATE INDEX idx_collector_poll_schedule_device
-    ON public.collector_poll_schedule USING btree (device_id, channel_id, enabled)
+    ON public.collector_poll_schedule USING btree (device_id, sensor_id, channel_id, enabled)
     WHERE (deleted = 0);
+
+CREATE INDEX idx_collector_poll_schedule_sensor
+    ON public.collector_poll_schedule USING btree (sensor_id)
+    WHERE (sensor_id > 0 AND deleted = 0);
 
 CREATE INDEX idx_collector_poll_schedule_channel
     ON public.collector_poll_schedule USING btree (channel_id)
@@ -322,8 +459,9 @@ CREATE INDEX idx_collector_poll_schedule_channel
 
 COMMENT ON TABLE public.collector_poll_schedule IS '采集分时段轮询策略表';
 COMMENT ON COLUMN public.collector_poll_schedule.id IS '主键编号';
-COMMENT ON COLUMN public.collector_poll_schedule.device_id IS '所属设备编号';
-COMMENT ON COLUMN public.collector_poll_schedule.channel_id IS '通道编号；0 表示设备级策略';
+COMMENT ON COLUMN public.collector_poll_schedule.device_id IS '所属设备编号（所有级别必填）';
+COMMENT ON COLUMN public.collector_poll_schedule.sensor_id IS '传感器编号；channel_id=0 时大于 0 表示传感器级，0 表示设备级';
+COMMENT ON COLUMN public.collector_poll_schedule.channel_id IS '通道编号；大于 0 表示通道级，且 sensor_id 必须指向其所属传感器';
 COMMENT ON COLUMN public.collector_poll_schedule.schedule_name IS '策略名称';
 COMMENT ON COLUMN public.collector_poll_schedule.weekdays IS '生效星期位图：bit0=周一…bit6=周日，127=每天';
 COMMENT ON COLUMN public.collector_poll_schedule.start_time IS '开始时间；start=end 表示全天';
@@ -342,7 +480,7 @@ COMMENT ON COLUMN public.collector_poll_schedule.deleted IS '是否删除：0 �
 
 
 -- =============================================================================
--- 6. 配置版本快照
+-- 7. 配置版本快照
 -- =============================================================================
 
 CREATE TABLE public.collector_config_version (
@@ -364,7 +502,8 @@ CREATE TABLE public.collector_config_version (
     CONSTRAINT pk_collector_config_version PRIMARY KEY (id),
     CONSTRAINT chk_collector_config_version_status CHECK (status IN (0, 1, 2)),
     CONSTRAINT chk_collector_config_version_source CHECK (source IN ('manual', 'import', 'rollback')),
-    CONSTRAINT chk_collector_config_version_checksum CHECK (length(checksum) = 64),
+    CONSTRAINT chk_collector_config_version_checksum CHECK (checksum ~ '^[0-9a-f]{64}$'),
+    CONSTRAINT chk_collector_config_version_snapshot CHECK (jsonb_typeof(snapshot) = 'object'),
     CONSTRAINT chk_collector_config_version_published CHECK (
         status <> 1 OR published_at IS NOT NULL
     )
@@ -385,8 +524,8 @@ COMMENT ON TABLE public.collector_config_version IS '采集配置版本快照表
 COMMENT ON COLUMN public.collector_config_version.id IS '主键编号';
 COMMENT ON COLUMN public.collector_config_version.version_no IS '业务版本号（单调递增）';
 COMMENT ON COLUMN public.collector_config_version.status IS '状态：0 草稿、1 已发布、2 已被取代';
-COMMENT ON COLUMN public.collector_config_version.snapshot IS '全量配置快照（protocols/devices/channels/schedules）';
-COMMENT ON COLUMN public.collector_config_version.checksum IS '快照规范化 JSON 的 SHA-256 十六进制值';
+COMMENT ON COLUMN public.collector_config_version.snapshot IS '全量配置快照（protocols/devices/sensors/channels/schedules），checksum 覆盖传感器及协议配置';
+COMMENT ON COLUMN public.collector_config_version.checksum IS '快照规范化 JSON 的 SHA-256 小写十六进制值（64 位）';
 COMMENT ON COLUMN public.collector_config_version.change_note IS '变更说明';
 COMMENT ON COLUMN public.collector_config_version.source IS '来源：manual/import/rollback';
 COMMENT ON COLUMN public.collector_config_version.based_on_version_id IS '回滚/复制所基于的历史版本编号';
@@ -400,7 +539,7 @@ COMMENT ON COLUMN public.collector_config_version.deleted IS '是否删除：0 �
 
 
 -- =============================================================================
--- 7. 原始采样（按天 RANGE 分区）
+-- 8. 原始采样（按天 RANGE 分区）
 -- =============================================================================
 
 CREATE TABLE public.collector_sample_raw (
@@ -411,6 +550,13 @@ CREATE TABLE public.collector_sample_raw (
     raw_value bigint,
     quality smallint DEFAULT 0 NOT NULL,
     CONSTRAINT pk_collector_sample_raw PRIMARY KEY (channel_id, collect_time),
+    CONSTRAINT chk_collector_sample_raw_value CHECK (
+        value IS NULL OR (
+            value <> 'Infinity'::float8
+            AND value <> '-Infinity'::float8
+            AND value <> 'NaN'::float8
+        )
+    ),
     CONSTRAINT chk_collector_sample_raw_quality CHECK (quality IN (0, 1, 2))
 ) PARTITION BY RANGE (collect_time);
 
@@ -441,7 +587,7 @@ COMMENT ON COLUMN public.collector_sample_raw.quality IS '质量码：0 good、1
 
 
 -- =============================================================================
--- 8. 小时聚合
+-- 9. 小时聚合
 -- =============================================================================
 
 CREATE TABLE public.collector_aggregate_hour (
@@ -461,6 +607,38 @@ CREATE TABLE public.collector_aggregate_hour (
     CONSTRAINT pk_collector_aggregate_hour PRIMARY KEY (channel_id, bucket_time),
     CONSTRAINT chk_collector_aggregate_hour_count CHECK (
         sample_count >= 0 AND good_count >= 0 AND bad_count >= 0
+    ),
+    CONSTRAINT chk_collector_aggregate_hour_finite CHECK (
+        (value_avg IS NULL OR (
+            value_avg <> 'Infinity'::float8
+            AND value_avg <> '-Infinity'::float8
+            AND value_avg <> 'NaN'::float8
+        ))
+        AND (value_min IS NULL OR (
+            value_min <> 'Infinity'::float8
+            AND value_min <> '-Infinity'::float8
+            AND value_min <> 'NaN'::float8
+        ))
+        AND (value_max IS NULL OR (
+            value_max <> 'Infinity'::float8
+            AND value_max <> '-Infinity'::float8
+            AND value_max <> 'NaN'::float8
+        ))
+        AND (value_sum IS NULL OR (
+            value_sum <> 'Infinity'::float8
+            AND value_sum <> '-Infinity'::float8
+            AND value_sum <> 'NaN'::float8
+        ))
+        AND (value_first IS NULL OR (
+            value_first <> 'Infinity'::float8
+            AND value_first <> '-Infinity'::float8
+            AND value_first <> 'NaN'::float8
+        ))
+        AND (value_last IS NULL OR (
+            value_last <> 'Infinity'::float8
+            AND value_last <> '-Infinity'::float8
+            AND value_last <> 'NaN'::float8
+        ))
     )
 );
 
@@ -470,13 +648,13 @@ CREATE INDEX idx_collector_aggregate_hour_device_time
 CREATE INDEX idx_collector_aggregate_hour_bucket
     ON public.collector_aggregate_hour USING btree (bucket_time);
 
-COMMENT ON TABLE public.collector_aggregate_hour IS '小时聚合数据表';
+COMMENT ON TABLE public.collector_aggregate_hour IS '小时聚合数据表（统计值仅用 quality=0 且 value 非 NULL 的 raw 行；无有效统计值时为 NULL）';
 COMMENT ON COLUMN public.collector_aggregate_hour.channel_id IS '通道编号';
 COMMENT ON COLUMN public.collector_aggregate_hour.device_id IS '设备编号（冗余）';
 COMMENT ON COLUMN public.collector_aggregate_hour.bucket_time IS '小时桶起始时间';
-COMMENT ON COLUMN public.collector_aggregate_hour.sample_count IS '参与聚合的样本数';
-COMMENT ON COLUMN public.collector_aggregate_hour.good_count IS 'good 质量样本数';
-COMMENT ON COLUMN public.collector_aggregate_hour.bad_count IS 'bad 质量样本数';
+COMMENT ON COLUMN public.collector_aggregate_hour.sample_count IS '该桶全部 raw 行数（含 good/uncertain/bad）';
+COMMENT ON COLUMN public.collector_aggregate_hour.good_count IS 'quality=0 的 raw 行数';
+COMMENT ON COLUMN public.collector_aggregate_hour.bad_count IS 'quality=2 的 raw 行数；uncertain 数由 sample-good-bad 推导';
 COMMENT ON COLUMN public.collector_aggregate_hour.value_avg IS '平均值';
 COMMENT ON COLUMN public.collector_aggregate_hour.value_min IS '最小值';
 COMMENT ON COLUMN public.collector_aggregate_hour.value_max IS '最大值';
@@ -487,7 +665,7 @@ COMMENT ON COLUMN public.collector_aggregate_hour.update_time IS '最后重算�
 
 
 -- =============================================================================
--- 9. 天聚合
+-- 10. 天聚合
 -- =============================================================================
 
 CREATE TABLE public.collector_aggregate_day (
@@ -507,6 +685,38 @@ CREATE TABLE public.collector_aggregate_day (
     CONSTRAINT pk_collector_aggregate_day PRIMARY KEY (channel_id, bucket_date),
     CONSTRAINT chk_collector_aggregate_day_count CHECK (
         sample_count >= 0 AND good_count >= 0 AND bad_count >= 0
+    ),
+    CONSTRAINT chk_collector_aggregate_day_finite CHECK (
+        (value_avg IS NULL OR (
+            value_avg <> 'Infinity'::float8
+            AND value_avg <> '-Infinity'::float8
+            AND value_avg <> 'NaN'::float8
+        ))
+        AND (value_min IS NULL OR (
+            value_min <> 'Infinity'::float8
+            AND value_min <> '-Infinity'::float8
+            AND value_min <> 'NaN'::float8
+        ))
+        AND (value_max IS NULL OR (
+            value_max <> 'Infinity'::float8
+            AND value_max <> '-Infinity'::float8
+            AND value_max <> 'NaN'::float8
+        ))
+        AND (value_sum IS NULL OR (
+            value_sum <> 'Infinity'::float8
+            AND value_sum <> '-Infinity'::float8
+            AND value_sum <> 'NaN'::float8
+        ))
+        AND (value_first IS NULL OR (
+            value_first <> 'Infinity'::float8
+            AND value_first <> '-Infinity'::float8
+            AND value_first <> 'NaN'::float8
+        ))
+        AND (value_last IS NULL OR (
+            value_last <> 'Infinity'::float8
+            AND value_last <> '-Infinity'::float8
+            AND value_last <> 'NaN'::float8
+        ))
     )
 );
 
@@ -516,31 +726,31 @@ CREATE INDEX idx_collector_aggregate_day_device_date
 CREATE INDEX idx_collector_aggregate_day_bucket
     ON public.collector_aggregate_day USING btree (bucket_date);
 
-COMMENT ON TABLE public.collector_aggregate_day IS '天聚合数据表';
+COMMENT ON TABLE public.collector_aggregate_day IS '天聚合数据表（优先小时、缺小时回退 raw；与小时统计保持同口径）';
 COMMENT ON COLUMN public.collector_aggregate_day.channel_id IS '通道编号';
 COMMENT ON COLUMN public.collector_aggregate_day.device_id IS '设备编号（冗余）';
 COMMENT ON COLUMN public.collector_aggregate_day.bucket_date IS '天桶日期';
-COMMENT ON COLUMN public.collector_aggregate_day.sample_count IS '参与聚合的样本数';
-COMMENT ON COLUMN public.collector_aggregate_day.good_count IS 'good 质量样本数';
-COMMENT ON COLUMN public.collector_aggregate_day.bad_count IS 'bad 质量样本数';
+COMMENT ON COLUMN public.collector_aggregate_day.sample_count IS '该桶全部 raw 行数（含 good/uncertain/bad）';
+COMMENT ON COLUMN public.collector_aggregate_day.good_count IS 'quality=0 的 raw 行数';
+COMMENT ON COLUMN public.collector_aggregate_day.bad_count IS 'quality=2 的 raw 行数；uncertain 数由 sample-good-bad 推导';
 COMMENT ON COLUMN public.collector_aggregate_day.value_avg IS '加权平均值';
 COMMENT ON COLUMN public.collector_aggregate_day.value_min IS '最小值';
 COMMENT ON COLUMN public.collector_aggregate_day.value_max IS '最大值';
 COMMENT ON COLUMN public.collector_aggregate_day.value_sum IS '求和';
-COMMENT ON COLUMN public.collector_aggregate_day.value_first IS '当日首个小时均值';
-COMMENT ON COLUMN public.collector_aggregate_day.value_last IS '当日最后小时均值';
+COMMENT ON COLUMN public.collector_aggregate_day.value_first IS '当日首个有效统计值（仅 quality=0 且 value 非 NULL，按 collect_time）';
+COMMENT ON COLUMN public.collector_aggregate_day.value_last IS '当日最后有效统计值（仅 quality=0 且 value 非 NULL，按 collect_time）';
 COMMENT ON COLUMN public.collector_aggregate_day.update_time IS '最后重算时间';
 
 
 -- =============================================================================
--- 10. 聚合水位与补跑状态
+-- 11. 聚合水位与补跑状态
 -- =============================================================================
 
 CREATE TABLE public.collector_aggregate_watermark (
     agg_type character varying(8) NOT NULL,
     channel_id bigint NOT NULL,
     device_id bigint NOT NULL,
-    watermark_time timestamp(3) without time zone NOT NULL,
+    watermark_time timestamp(3) without time zone,
     backfill_from timestamp(3) without time zone,
     backfill_to timestamp(3) without time zone,
     status smallint DEFAULT 0 NOT NULL,
@@ -565,9 +775,9 @@ COMMENT ON TABLE public.collector_aggregate_watermark IS '聚合水位与补跑�
 COMMENT ON COLUMN public.collector_aggregate_watermark.agg_type IS '聚合类型：hour / day';
 COMMENT ON COLUMN public.collector_aggregate_watermark.channel_id IS '通道编号';
 COMMENT ON COLUMN public.collector_aggregate_watermark.device_id IS '设备编号（冗余）';
-COMMENT ON COLUMN public.collector_aggregate_watermark.watermark_time IS '已成功聚合的最新桶结束时间（exclusive）';
-COMMENT ON COLUMN public.collector_aggregate_watermark.backfill_from IS '补跑起始时间（可空）';
-COMMENT ON COLUMN public.collector_aggregate_watermark.backfill_to IS '补跑结束时间（可空）';
+COMMENT ON COLUMN public.collector_aggregate_watermark.watermark_time IS '最新已成功提交桶的结束时间（exclusive）；NULL 表示从未成功';
+COMMENT ON COLUMN public.collector_aggregate_watermark.backfill_from IS '手工补跑起始时间（可空，含）';
+COMMENT ON COLUMN public.collector_aggregate_watermark.backfill_to IS '手工补跑结束时间（可空，不含）';
 COMMENT ON COLUMN public.collector_aggregate_watermark.status IS '状态：0 空闲、1 运行中、2 失败';
 COMMENT ON COLUMN public.collector_aggregate_watermark.retry_count IS '连续失败次数';
 COMMENT ON COLUMN public.collector_aggregate_watermark.last_error IS '最近一次错误信息';
@@ -577,12 +787,13 @@ COMMENT ON COLUMN public.collector_aggregate_watermark.update_time IS '更新时
 
 
 -- =============================================================================
--- 11. 报警事件
+-- 12. 报警事件
 -- =============================================================================
 
 CREATE TABLE public.collector_alarm (
     id bigint NOT NULL,
     device_id bigint NOT NULL,
+    sensor_id bigint DEFAULT 0 NOT NULL,
     channel_id bigint DEFAULT 0 NOT NULL,
     alarm_type character varying(32) NOT NULL,
     level smallint DEFAULT 2 NOT NULL,
@@ -599,7 +810,20 @@ CREATE TABLE public.collector_alarm (
     cleared_at timestamp(3) without time zone,
     clear_reason character varying(255),
     CONSTRAINT pk_collector_alarm PRIMARY KEY (id),
-    CONSTRAINT chk_collector_alarm_channel CHECK (channel_id >= 0),
+    CONSTRAINT chk_collector_alarm_sensor CHECK (sensor_id >= 0),
+    CONSTRAINT chk_collector_alarm_channel CHECK (channel_id >= 0 AND (channel_id = 0 OR sensor_id > 0)),
+    CONSTRAINT chk_collector_alarm_value_finite CHECK (
+        (trigger_value IS NULL OR (
+            trigger_value <> 'Infinity'::float8
+            AND trigger_value <> '-Infinity'::float8
+            AND trigger_value <> 'NaN'::float8
+        ))
+        AND (threshold_value IS NULL OR (
+            threshold_value <> 'Infinity'::float8
+            AND threshold_value <> '-Infinity'::float8
+            AND threshold_value <> 'NaN'::float8
+        ))
+    ),
     CONSTRAINT chk_collector_alarm_level CHECK (level IN (1, 2, 3)),
     CONSTRAINT chk_collector_alarm_status CHECK (status IN (0, 1, 2)),
     CONSTRAINT chk_collector_alarm_cleared CHECK ((status = 2) = (cleared_at IS NOT NULL)),
@@ -613,6 +837,9 @@ CREATE UNIQUE INDEX uk_collector_alarm_active_dedupe
 CREATE INDEX idx_collector_alarm_device_time
     ON public.collector_alarm USING btree (device_id, triggered_at DESC);
 
+CREATE INDEX idx_collector_alarm_sensor_time
+    ON public.collector_alarm USING btree (sensor_id, triggered_at DESC);
+
 CREATE INDEX idx_collector_alarm_channel_time
     ON public.collector_alarm USING btree (channel_id, triggered_at DESC);
 
@@ -622,11 +849,12 @@ CREATE INDEX idx_collector_alarm_active
 
 COMMENT ON TABLE public.collector_alarm IS '采集报警事件表';
 COMMENT ON COLUMN public.collector_alarm.id IS '主键编号';
-COMMENT ON COLUMN public.collector_alarm.device_id IS '设备编号';
-COMMENT ON COLUMN public.collector_alarm.channel_id IS '通道编号；0 表示设备级报警';
+COMMENT ON COLUMN public.collector_alarm.device_id IS '设备编号（所有级别必填）';
+COMMENT ON COLUMN public.collector_alarm.sensor_id IS '传感器编号；channel_id=0 时大于 0 表示传感器级，0 表示设备级';
+COMMENT ON COLUMN public.collector_alarm.channel_id IS '通道编号；大于 0 表示通道级，且 sensor_id 必须指向其所属传感器';
 COMMENT ON COLUMN public.collector_alarm.alarm_type IS '报警类型，如 threshold_high/threshold_low/comm_timeout/device_offline/quality_bad';
 COMMENT ON COLUMN public.collector_alarm.level IS '级别：1 提示、2 警告、3 严重';
-COMMENT ON COLUMN public.collector_alarm.dedupe_key IS '活动报警去重键（dev:{deviceId}:ch:{channelId}:type:{alarmType}）';
+COMMENT ON COLUMN public.collector_alarm.dedupe_key IS '活动报警去重键（dev:{deviceId}:sensor:{sensorId}:ch:{channelId}:type:{alarmType}，包含 sensor 维度）';
 COMMENT ON COLUMN public.collector_alarm.status IS '状态：0 活动、1 已确认、2 已清除';
 COMMENT ON COLUMN public.collector_alarm.message IS '报警描述';
 COMMENT ON COLUMN public.collector_alarm.trigger_value IS '触发时数值';
@@ -641,7 +869,7 @@ COMMENT ON COLUMN public.collector_alarm.clear_reason IS '清除原因';
 
 
 -- =============================================================================
--- 12. 设备当前状态
+-- 13. 设备当前状态
 -- =============================================================================
 
 CREATE TABLE public.collector_device_status (
@@ -674,7 +902,7 @@ COMMENT ON COLUMN public.collector_device_status.update_time IS '更新时间';
 
 
 -- =============================================================================
--- 13. 采集器心跳
+-- 14. 采集器心跳
 -- =============================================================================
 
 CREATE TABLE public.collector_heartbeat (
@@ -682,9 +910,6 @@ CREATE TABLE public.collector_heartbeat (
     instance_id character varying(64) NOT NULL,
     heartbeat_time timestamp(3) without time zone NOT NULL,
     status character varying(16) DEFAULT 'running'::character varying NOT NULL,
-    buffer_pending integer DEFAULT 0 NOT NULL,
-    buffer_bytes bigint DEFAULT 0 NOT NULL,
-    buffer_oldest_time timestamp(3) without time zone,
     write_lag_ms integer,
     device_total integer DEFAULT 0 NOT NULL,
     device_online integer DEFAULT 0 NOT NULL,
@@ -699,7 +924,28 @@ CREATE TABLE public.collector_heartbeat (
     message character varying(255),
     CONSTRAINT pk_collector_heartbeat PRIMARY KEY (id),
     CONSTRAINT chk_collector_heartbeat_status CHECK (status IN ('starting', 'running', 'degraded', 'stopped')),
-    CONSTRAINT chk_collector_heartbeat_buffer CHECK (buffer_pending >= 0 AND buffer_bytes >= 0),
+    CONSTRAINT chk_collector_heartbeat_finite CHECK (
+        (cpu_percent IS NULL OR (
+            cpu_percent <> 'Infinity'::numeric
+            AND cpu_percent <> '-Infinity'::numeric
+            AND cpu_percent <> 'NaN'::numeric
+        ))
+        AND (mem_percent IS NULL OR (
+            mem_percent <> 'Infinity'::numeric
+            AND mem_percent <> '-Infinity'::numeric
+            AND mem_percent <> 'NaN'::numeric
+        ))
+        AND (disk_used_percent IS NULL OR (
+            disk_used_percent <> 'Infinity'::numeric
+            AND disk_used_percent <> '-Infinity'::numeric
+            AND disk_used_percent <> 'NaN'::numeric
+        ))
+        AND (temperature_c IS NULL OR (
+            temperature_c <> 'Infinity'::numeric
+            AND temperature_c <> '-Infinity'::numeric
+            AND temperature_c <> 'NaN'::numeric
+        ))
+    ),
     CONSTRAINT chk_collector_heartbeat_device CHECK (device_total >= 0 AND device_online >= 0)
 );
 
@@ -714,9 +960,6 @@ COMMENT ON COLUMN public.collector_heartbeat.id IS '主键编号';
 COMMENT ON COLUMN public.collector_heartbeat.instance_id IS '采集器实例标识（主机+进程/启动批次）';
 COMMENT ON COLUMN public.collector_heartbeat.heartbeat_time IS '心跳时间';
 COMMENT ON COLUMN public.collector_heartbeat.status IS '状态：starting/running/degraded/stopped';
-COMMENT ON COLUMN public.collector_heartbeat.buffer_pending IS 'SQLite 缓冲待写行数';
-COMMENT ON COLUMN public.collector_heartbeat.buffer_bytes IS '缓冲占用字节数';
-COMMENT ON COLUMN public.collector_heartbeat.buffer_oldest_time IS '缓冲最旧数据时间';
 COMMENT ON COLUMN public.collector_heartbeat.write_lag_ms IS '写入延迟（毫秒）';
 COMMENT ON COLUMN public.collector_heartbeat.device_total IS '配置设备总数';
 COMMENT ON COLUMN public.collector_heartbeat.device_online IS '在线设备数';
@@ -732,12 +975,13 @@ COMMENT ON COLUMN public.collector_heartbeat.message IS '附加状态信息';
 
 
 -- =============================================================================
--- 14. 命令下发与结果
+-- 15. 命令下发与结果
 -- =============================================================================
 
 CREATE TABLE public.collector_command (
     id bigint NOT NULL,
     device_id bigint NOT NULL,
+    sensor_id bigint DEFAULT 0 NOT NULL,
     channel_id bigint DEFAULT 0 NOT NULL,
     command_type character varying(32) NOT NULL,
     payload jsonb,
@@ -751,7 +995,11 @@ CREATE TABLE public.collector_command (
     result jsonb,
     error_message character varying(500),
     CONSTRAINT pk_collector_command PRIMARY KEY (id),
-    CONSTRAINT chk_collector_command_channel CHECK (channel_id >= 0),
+    CONSTRAINT chk_collector_command_sensor CHECK (sensor_id >= 0),
+    CONSTRAINT chk_collector_command_channel CHECK (channel_id >= 0 AND (channel_id = 0 OR sensor_id > 0)),
+    CONSTRAINT chk_collector_command_reload_scope CHECK (
+        command_type <> 'reload_config' OR (sensor_id = 0 AND channel_id = 0)
+    ),
     CONSTRAINT chk_collector_command_status CHECK (status IN (0, 1, 2, 3, 4, 5))
 );
 
@@ -762,11 +1010,15 @@ CREATE INDEX idx_collector_command_pending
 CREATE INDEX idx_collector_command_device_time
     ON public.collector_command USING btree (device_id, requested_at DESC);
 
+CREATE INDEX idx_collector_command_sensor_time
+    ON public.collector_command USING btree (sensor_id, requested_at DESC);
+
 COMMENT ON TABLE public.collector_command IS '采集命令下发与结果表';
 COMMENT ON COLUMN public.collector_command.id IS '主键编号';
-COMMENT ON COLUMN public.collector_command.device_id IS '目标设备编号';
-COMMENT ON COLUMN public.collector_command.channel_id IS '目标通道编号；0 表示设备级命令';
-COMMENT ON COLUMN public.collector_command.command_type IS '命令类型，如 test_read/write_register/reconnect/reload_config';
+COMMENT ON COLUMN public.collector_command.device_id IS '目标设备编号（命令最高作用域，所有命令必填）';
+COMMENT ON COLUMN public.collector_command.sensor_id IS '目标传感器编号；channel_id=0 时大于 0 表示传感器级，0 表示设备级';
+COMMENT ON COLUMN public.collector_command.channel_id IS '目标通道编号；大于 0 时 sensor_id 必须指向其所属传感器';
+COMMENT ON COLUMN public.collector_command.command_type IS '命令类型，如 test_read/write_register/reconnect/reload_config；reload_config 仅允许 sensor_id=0、channel_id=0 的设备级命令';
 COMMENT ON COLUMN public.collector_command.payload IS '命令参数 JSON';
 COMMENT ON COLUMN public.collector_command.status IS '状态：0 待执行、1 已下发、2 成功、3 失败、4 超时、5 取消';
 COMMENT ON COLUMN public.collector_command.requested_by IS '发起人用户编号';
@@ -780,7 +1032,7 @@ COMMENT ON COLUMN public.collector_command.error_message IS '失败原因';
 
 
 -- =============================================================================
--- 15. 保留策略
+-- 16. 保留策略
 -- =============================================================================
 
 CREATE TABLE public.collector_retention_policy (
@@ -804,7 +1056,10 @@ CREATE TABLE public.collector_retention_policy (
     ),
     CONSTRAINT chk_collector_retention_policy_days CHECK (retention_days >= 0),
     CONSTRAINT chk_collector_retention_policy_lead CHECK (partition_lead_days BETWEEN 0 AND 30),
-    CONSTRAINT chk_collector_retention_policy_action CHECK (action IN ('drop_partition', 'delete_rows')),
+    CONSTRAINT chk_collector_retention_policy_action CHECK (
+        (data_class = 'sample_raw' AND action = 'drop_partition')
+        OR (data_class <> 'sample_raw' AND action = 'delete_rows')
+    ),
     CONSTRAINT chk_collector_retention_policy_enabled CHECK (enabled IN (0, 1))
 );
 
@@ -816,9 +1071,9 @@ COMMENT ON TABLE public.collector_retention_policy IS '采集数据保留策略�
 COMMENT ON COLUMN public.collector_retention_policy.id IS '主键编号';
 COMMENT ON COLUMN public.collector_retention_policy.data_class IS '数据类：sample_raw/aggregate_hour/aggregate_day/alarm/heartbeat/command';
 COMMENT ON COLUMN public.collector_retention_policy.retention_days IS '保留天数；0 表示永久保留';
-COMMENT ON COLUMN public.collector_retention_policy.partition_lead_days IS '未来分区提前创建天数';
-COMMENT ON COLUMN public.collector_retention_policy.action IS '清理动作：drop_partition/delete_rows';
-COMMENT ON COLUMN public.collector_retention_policy.enabled IS '是否启用：0 否、1 是';
+COMMENT ON COLUMN public.collector_retention_policy.partition_lead_days IS '未来分区提前创建天数；由独立分区预建调度使用，不受 enabled 影响';
+COMMENT ON COLUMN public.collector_retention_policy.action IS '清理动作：sample_raw 只能 drop_partition，其他 data_class 只能 delete_rows';
+COMMENT ON COLUMN public.collector_retention_policy.enabled IS '是否启用过期清理：0 否、1 是；不影响未来分区预建';
 COMMENT ON COLUMN public.collector_retention_policy.description IS '策略说明';
 COMMENT ON COLUMN public.collector_retention_policy.last_run_at IS '最近执行时间';
 COMMENT ON COLUMN public.collector_retention_policy.last_run_result IS '最近执行结果摘要';
@@ -830,10 +1085,10 @@ COMMENT ON COLUMN public.collector_retention_policy.deleted IS '是否删除：0
 
 
 -- =============================================================================
--- 16. 首期种子数据
+-- 17. 首期种子数据
 -- =============================================================================
 
--- 16.1 协议注册表：仅首期支持的 Modbus RTU / Modbus TCP。
+-- 17.1 协议注册表：仅首期支持的 Modbus RTU / Modbus TCP。
 -- id 使用序列生成，保证后续通过序列新增协议时编号不冲突。
 -- connection_schema / channel_schema 为合法 JSON Schema（Draft 2020-12），
 -- 包含必填字段、枚举、默认值与示例；Service 保存与发布配置时按此校验。
@@ -1124,7 +1379,7 @@ $json$::jsonb,
     'TCP Modbus TCP 从站；连接参数含主机、端口、从站地址与块读取优化参数'
 );
 
--- 16.2 保留策略初始建议（对应设计稿容量结论）：
+-- 17.2 保留策略初始建议（对应设计稿容量结论）：
 --   sample_raw     30 天，按天分区，过期分区整体 DROP；
 --   aggregate_hour 365 天，按 bucket_time 分批 DELETE；
 --   aggregate_day  0 表示永久保留，不做清理；
@@ -1183,7 +1438,6 @@ INSERT INTO public.collector_retention_policy (
     '命令：保留 30 天'
 );
 
--- 16.3 聚合水位：主键为 (agg_type, channel_id)，按通道分别记录。
+-- 17.3 聚合水位：主键为 (agg_type, channel_id)，按通道分别记录。
 -- 空库尚无设备/通道，故不预置 hour/day 行；通道创建或首个配置版本发布后，
--- 由聚合任务为每个数值型通道初始化 (hour, channel_id) 与 (day, channel_id) 水位。
-</content>
+-- 由聚合任务为每个 number 通道初始化 (hour, channel_id) 与 (day, channel_id) 水位，watermark_time 均为 NULL。
