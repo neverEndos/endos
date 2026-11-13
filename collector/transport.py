@@ -84,6 +84,15 @@ class SerialRS485Transport:
         attrs[6][termios.VTIME] = 0
         termios.tcsetattr(self.fd, termios.TCSANOW, attrs)
 
+    def reopen(self) -> None:
+        """关闭并重新打开串口。
+
+        某些内核的 RS485 自动方向模式一旦卡死，只能通过重开端口恢复；探测失败
+        的候选 flags 需要走这条路径。
+        """
+        self.close()
+        self.open()
+
     def close(self) -> None:
         """恢复 termios/RS485 原设置并关闭 fd。"""
         if self.fd is None:

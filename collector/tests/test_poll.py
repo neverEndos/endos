@@ -134,6 +134,31 @@ class DiscoverFlagsTest(unittest.TestCase):
         self.assertEqual(transport.flags_calls, [1, 3, 5])
         self.assertEqual(transport.flags, 5)
 
+    def test_first_frame_only_flag_rejected_and_reopens(self):
+        state = {"calls": 0}
+        reopen_calls = []
+
+        def handler(request, flags, seq):
+            if flags == 1:
+                state["calls"] += 1
+                if state["calls"] == 1:
+                    return status_ok()
+                raise TimeoutError("首帧后 TX 卡死")
+            return status_ok()
+
+        transport = FakeTransport(handler)
+        flags = discover_rs485_flags(
+            transport,
+            [cs1000.CS1000(), hlb1400.HLB1400()],
+            candidates=(1, 0),
+            timeout=0.1,
+            attempts_per_flag=2,
+            reopen=lambda: reopen_calls.append(True),
+        )
+        self.assertEqual(flags, 0)
+        self.assertEqual(transport.flags_calls, [1, 0])
+        self.assertEqual(reopen_calls, [True])
+
     def test_all_flags_fail(self):
         def handler(request, flags, seq):
             raise TimeoutError("no response")

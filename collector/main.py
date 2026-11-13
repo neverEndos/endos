@@ -127,12 +127,15 @@ def run(args: argparse.Namespace, logger: logging.Logger) -> int:
             args.duration,
             args.timeout,
         )
+        # 先关闭内核 RS485 模式，清除上一次进程可能遗留的卡死状态。
+        transport.set_rs485_flags(0)
         flags = discover_rs485_flags(
             transport,
             drivers,
             candidates=parse_flags(args.flags),
             timeout=args.timeout,
             logger=logger,
+            reopen=transport.reopen,
         )
         logger.info("RS485 连通确认 flags=%d sensors=%s", flags, [d.name for d in drivers])
 

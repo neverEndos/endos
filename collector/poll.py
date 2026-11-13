@@ -19,7 +19,11 @@ from hsi.frame import HsiFrame, validate_response
 
 LOGGER_NAME = "hsi"
 RETRY_DELAY_S = 0.1
-DEFAULT_RS485_FLAGS = (1, 3, 5, 7)
+# 现场实测：内核 dw-apb-uart 的 RS485 自动方向模式（flags=1/3/5/7）在首帧后
+# 会把 TX 队列卡死（TIOCOUTQ 持续增长，串口 close 等待约 30 秒），无法持续轮询；
+# flags=0（关闭内核 RS485 模式）配合板载自动方向电路可以稳定收发，故作为回退候选。
+DEFAULT_RS485_FLAGS = (1, 3, 5, 7, 0)
+DEFAULT_REQUIRED_EXCHANGES = 2
 
 
 class PollError(RuntimeError):
@@ -204,55 +208,64 @@ def discover_rs485_flags(
     *,
     candidates: tuple[int, ...] = DEFAULT_RS485_FLAGS,
     timeout: float = 1.0,
-    attempts_per_flag: int = 2,
+    attempts_per_flag: int = DEFAULT_REQUIRED_EXCHANGES,
     logger: logging.Logger | None = None,
+    reopen: Callable[[], None] | None = None,
 ) -> int:
-    """依次尝试候选 RS485 flags，用 msg=1 状态查询确认连通后返回可用 flags。
+    """依次尝试候选 RS485 flags，确认链路可持续通信后返回可用 flags。
 
-    判定标准是收到结构/校验合法、功能码正确的应答帧；StatusByte 非 0 只记录，
-    视为传感器状态异常而非链路不可用。
+    每个传感器必须连续成功完成 ``attempts_per_flag`` 次 msg=1 状态查询，避免把
+    “首帧能通、随后 TX 卡死”的 flags 误判为可用。候选失败且还有后续候选时，通过
+    ``reopen`` 重新打开串口，因为部分内核的 RS485 模式一旦卡死，只能重开端口恢复。
     """
     log = logger or logging.getLogger(LOGGER_NAME)
-    for flags in candidates:
+    candidates = tuple(candidates)
+    for index, flags in enumerate(candidates):
         transport.set_rs485_flags(flags)
-        log.info("RS485 探测 flags=%d", flags)
+        log.info(
+            "RS485 探测 flags=%d（要求每个传感器连续 %d 次状态应答）",
+            flags,
+            attempts_per_flag,
+        )
         all_ok = True
         for driver in drivers:
-            sensor_ok = False
+            sensor_ok = True
             last_error = None
             for attempt in range(1, attempts_per_flag + 1):
                 try:
                     frame = transport.transact(driver.build_status_request(), timeout=timeout)
                     validate_response(frame, 1)
                     status = driver.parse_status(frame)
-                    sensor_ok = True
                     log.info(
-                        "RS485 flags=%d sensor=%s msg=1 应答成功 attempt=%d rx=%s "
+                        "RS485 flags=%d sensor=%s msg=1 应答成功 attempt=%d/%d rx=%s "
                         "status_byte=%d valid=%s raw=%s",
                         flags,
                         driver.name,
                         attempt,
+                        attempts_per_flag,
                         frame.raw.hex(),
                         status["status_byte"],
                         status["valid"],
                         status["raw_data_hex"],
                     )
-                    break
                 except Exception as exc:
+                    sensor_ok = False
                     last_error = f"{type(exc).__name__}: {exc}"
                     log.info(
-                        "RS485 flags=%d sensor=%s msg=1 失败 attempt=%d error=%s",
+                        "RS485 flags=%d sensor=%s msg=1 失败 attempt=%d/%d error=%s",
                         flags,
                         driver.name,
                         attempt,
+                        attempts_per_flag,
                         last_error,
                     )
-                    if attempt < attempts_per_flag:
-                        time.sleep(RETRY_DELAY_S)
+                    break
+                if attempt < attempts_per_flag:
+                    time.sleep(RETRY_DELAY_S)
             if not sensor_ok:
                 all_ok = False
                 log.warning(
-                    "RS485 flags=%d sensor=%s 无有效应答，放弃该 flags（最后错误: %s）",
+                    "RS485 flags=%d sensor=%s 无法连续应答，放弃该 flags（最后错误: %s）",
                     flags,
                     driver.name,
                     last_error,
@@ -261,6 +274,14 @@ def discover_rs485_flags(
         if all_ok:
             log.info("RS485 使用 flags=%d", flags)
             return flags
+        if index < len(candidates) - 1 and reopen is not None:
+            log.warning(
+                "RS485 flags=%d 未通过持续通信校验，重新打开串口后尝试下一候选", flags
+            )
+            try:
+                reopen()
+            except Exception as exc:
+                raise PollError(f"重新打开串口失败: {exc}") from exc
     raise PollError(f"所有候选 RS485 flags 均无法连通: {candidates}")
 
 

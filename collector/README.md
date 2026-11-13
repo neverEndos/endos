@@ -52,11 +52,12 @@ python3 main.py --interval 60 --duration 600
 | `--retries` | `1` | 单次采集失败后的重试次数 |
 | `--output` | `~/collector-proto/data.jsonl` | JSONL 输出路径（每次启动覆盖） |
 | `--log` | `~/collector-proto/proto.log` | 日志路径（每次启动覆盖） |
-| `--flags` | `auto` | RS485 flags：`auto` 依次尝试 `1,3,5,7`，或逗号分隔列表 |
+| `--flags` | `auto` | RS485 flags：`auto` 依次尝试 `1,3,5,7,0`，或逗号分隔列表 |
 
-启动流程：打开串口 → 保存原 termios/RS485 配置 → 依次尝试 RS485 flags，用 msg=1
-状态查询确认两颗传感器都能应答后固定该 flags → 进入轮询。进程收到 SIGINT/SIGTERM
-或达到 `--duration` 后关闭 JSONL、恢复串口设置，并输出统计摘要。
+启动流程：打开串口 → 保存原 termios/RS485 配置 → 先以 flags=0 清除遗留状态 →
+依次尝试 RS485 flags；每个 flags 要求两颗传感器各连续 2 次 msg=1 状态应答，失败
+则重开串口再试下一候选（本现场会回退到 0）→ 固定该 flags 进入轮询。进程收到
+SIGINT/SIGTERM 或达到 `--duration` 后关闭 JSONL、恢复串口设置，并输出统计摘要。
 
 ## 输出
 
@@ -100,8 +101,15 @@ STX(0x02) | Length | Address | Number | Data... | Checksum | ETX(0x03)
 | msg=2 | 传感器信息（本现场两颗传感器无应答） | 不使用 |
 
 RS485：9600 / 8N1、无流控；通过 termios ioctl `TIOCSRS485`（`0x542F`，
-`struct serial_rs485` 8×uint32）开启方向控制。现场实测 flags=1/3/5/7 中部分组合会
-静默，因此启动时自动依次尝试并选择第一个两颗传感器都能应答的组合。
+`struct serial_rs485` 8×uint32）配置方向控制。
+
+> **板端实测结论（RK3568 / Linux 6.1.141 dw-apb-uart）**：开启内核 RS485 自动
+> 方向模式（flags=1/3/5/7）时，每个新打开的端口只有**首帧**能收到应答，之后
+> `TIOCOUTQ` 持续增长（TX 队列卡死）、串口 `close` 需等待约 30 秒；重新打开端口
+> 才能恢复。`flags=0`（关闭内核 RS485 模式）依赖板载自动方向电路，可以持续稳定
+> 收发。因此 `auto` 会依次尝试 `1,3,5,7`（每个 flags 要求两颗传感器各连续 2 次
+> 状态应答，失败则重开串口）并回退到 `0`，本现场实际使用 `flags=0`。可用
+> `--flags` 显式指定候选，便于在其他硬件上复测。
 
 ### CS1000（0x61）
 
