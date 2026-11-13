@@ -43,14 +43,6 @@ interface AccessState {
    * 登录 accessToken
    */
   refreshToken: AccessToken;
-  /**
-   * 登录租户编号
-   */
-  tenantId: null | number;
-  /**
-   * 访问租户编号
-   */
-  visitTenantId: null | number;
 }
 
 /**
@@ -103,12 +95,6 @@ export const useAccessStore = defineStore('core-access', {
     setRefreshToken(token: AccessToken) {
       this.refreshToken = token;
     },
-    setTenantId(tenantId: null | number) {
-      this.tenantId = tenantId;
-    },
-    setVisitTenantId(visitTenantId: number) {
-      this.visitTenantId = visitTenantId;
-    },
     unlockScreen() {
       this.isLockScreen = false;
       this.lockScreenPassword = undefined;
@@ -120,8 +106,6 @@ export const useAccessStore = defineStore('core-access', {
       'accessToken',
       'refreshToken',
       'accessCodes',
-      'tenantId',
-      'visitTenantId',
       'isLockScreen',
       'lockScreenPassword',
     ],
@@ -136,8 +120,6 @@ export const useAccessStore = defineStore('core-access', {
     lockScreenPassword: undefined,
     loginExpired: false,
     refreshToken: null,
-    tenantId: null,
-    visitTenantId: null,
   }),
 });
 

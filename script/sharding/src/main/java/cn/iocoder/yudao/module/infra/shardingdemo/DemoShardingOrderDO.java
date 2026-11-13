@@ -1,6 +1,6 @@
 package cn.iocoder.yudao.module.infra.shardingdemo;
 
-import cn.iocoder.yudao.framework.tenant.core.db.TenantBaseDO;
+import cn.iocoder.yudao.framework.mybatis.core.dataobject.BaseDO;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
@@ -20,7 +20,7 @@ import lombok.*;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class DemoShardingOrderDO extends TenantBaseDO {
+public class DemoShardingOrderDO extends BaseDO {
 
     /**
      * 编号

@@ -11,14 +11,12 @@ import cn.iocoder.yudao.module.system.dal.dataobject.permission.MenuDO;
 import cn.iocoder.yudao.module.system.dal.mysql.permission.MenuMapper;
 import cn.iocoder.yudao.module.system.dal.redis.RedisKeyConstants;
 import cn.iocoder.yudao.module.system.enums.permission.MenuTypeEnum;
-import cn.iocoder.yudao.module.system.service.tenant.TenantService;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.Lists;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
-import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -43,9 +41,6 @@ public class MenuServiceImpl implements MenuService {
     private MenuMapper menuMapper;
     @Resource
     private PermissionService permissionService;
-    @Resource
-    @Lazy // 延迟，避免循环依赖报错
-    private TenantService tenantService;
 
     @Override
     @CacheEvict(value = RedisKeyConstants.PERMISSION_MENU_ID_LIST, key = "#createReqVO.permission",
@@ -125,15 +120,6 @@ public class MenuServiceImpl implements MenuService {
     @Override
     public List<MenuDO> getMenuList() {
         return menuMapper.selectList();
-    }
-
-    @Override
-    public List<MenuDO> getMenuListByTenant(MenuListReqVO reqVO) {
-        // 查询所有菜单，并过滤掉关闭的节点
-        List<MenuDO> menus = getMenuList(reqVO);
-        // 开启多租户的情况下，需要过滤掉未开通的菜单
-        tenantService.handleTenantMenu(menuIds -> menus.removeIf(menu -> !CollUtil.contains(menuIds, menu.getId())));
-        return menus;
     }
 
     @Override

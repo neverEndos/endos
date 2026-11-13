@@ -2,7 +2,6 @@ package cn.iocoder.yudao.module.system.controller.admin.captcha;
 
 import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.framework.common.util.servlet.ServletUtils;
-import cn.iocoder.yudao.framework.tenant.core.aop.TenantIgnore;
 import com.anji.captcha.model.common.ResponseModel;
 import com.anji.captcha.model.vo.CaptchaVO;
 import com.anji.captcha.service.CaptchaService;
@@ -27,7 +26,6 @@ public class CaptchaController {
     @PostMapping({"/get"})
     @Operation(summary = "获得验证码")
     @PermitAll
-    @TenantIgnore
     public ResponseModel get(@RequestBody CaptchaVO data, HttpServletRequest request) {
         assert request.getRemoteHost() != null;
         data.setBrowserInfo(getRemoteId(request));
@@ -37,7 +35,6 @@ public class CaptchaController {
     @PostMapping("/check")
     @Operation(summary = "校验验证码")
     @PermitAll
-    @TenantIgnore
     public ResponseModel check(@RequestBody CaptchaVO data, HttpServletRequest request) {
         data.setBrowserInfo(getRemoteId(request));
         return captchaService.check(data);

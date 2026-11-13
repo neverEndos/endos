@@ -3,7 +3,7 @@
  */
 import type { RequestClientOptions } from '@vben/request';
 
-import { isTenantEnable, useAppConfig } from '@vben/hooks';
+import { useAppConfig } from '@vben/hooks';
 import { preferences } from '@vben/preferences';
 import {
   authenticateResponseInterceptor,
@@ -21,7 +21,6 @@ import { useAuthStore } from '#/store';
 import { refreshTokenApi } from './core';
 
 const { apiURL } = useAppConfig(import.meta.env, import.meta.env.PROD);
-const tenantEnable = isTenantEnable();
 const apiEncrypt = createApiEncrypt(import.meta.env);
 
 function createRequestClient(baseURL: string, options?: RequestClientOptions) {
@@ -75,11 +74,6 @@ function createRequestClient(baseURL: string, options?: RequestClientOptions) {
   client.addRequestInterceptor({
     fulfilled: async (config) => {
       const accessStore = useAccessStore();
-      // 是否需要设置访问租户；该配置仅供前端请求拦截器使用，Axios 不会发送值为 false 的请求头
-      // 保留 false，刷新令牌后重新发起的请求，仍不设置访问租户
-      const isVisitTenant = config.headers.get('isVisitTenant') !== false;
-      config.headers.set('isVisitTenant', isVisitTenant ? undefined : false);
-
       const isToken = config.headers.get('isToken') !== false;
       // 保留 false 供响应拦截器判断匿名请求；Axios 不会发送值为 false 的请求头。
       config.headers.set('isToken', isToken ? undefined : false);
@@ -87,13 +81,6 @@ function createRequestClient(baseURL: string, options?: RequestClientOptions) {
         ? formatToken(accessStore.accessToken)
         : null;
       config.headers['Accept-Language'] = preferences.app.locale;
-      // 添加租户编号
-      config.headers['tenant-id'] = tenantEnable
-        ? accessStore.tenantId
-        : undefined;
-      // 只有登录时，才设置 visit-tenant-id 访问租户
-      config.headers['visit-tenant-id'] =
-        tenantEnable && isVisitTenant ? accessStore.visitTenantId : undefined;
 
       // 是否 API 加密
       if ((config.headers || {}).isEncrypt) {
@@ -236,17 +223,3 @@ export const requestClient = createRequestClient(apiURL, {
 });
 
 export const baseRequestClient = new RequestClient({ baseURL: apiURL });
-baseRequestClient.addRequestInterceptor({
-  fulfilled: (config) => {
-    const accessStore = useAccessStore();
-    // 添加租户编号
-    config.headers['tenant-id'] = tenantEnable
-      ? accessStore.tenantId
-      : undefined;
-    // 只有登录时，才设置 visit-tenant-id 访问租户
-    config.headers['visit-tenant-id'] = tenantEnable
-      ? accessStore.visitTenantId
-      : undefined;
-    return config;
-  },
-});

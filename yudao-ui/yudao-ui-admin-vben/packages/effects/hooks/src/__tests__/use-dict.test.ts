@@ -159,14 +159,14 @@ describe('use-dict compatibility layer', () => {
       .mockReturnValueOnce(newRequest.promise);
     dict.setupDictHandler(api);
 
-    // 守卫首次加载进行中，切换租户触发刷新
+    // 守卫首次加载进行中，切换身份触发刷新
     const preload = dict.preloadDicts();
     const refresh = dict.refreshDicts();
     expect(api).toHaveBeenCalledTimes(2);
 
     // 旧请求先返回：不能写入缓存，守卫的预加载继续等待新请求
     oldRequest.resolve([
-      { dictType: 'system_user_sex', label: '旧租户', value: '1' },
+      { dictType: 'system_user_sex', label: '旧身份', value: '1' },
     ]);
     let preloaded = false;
     void preload.then(() => {
@@ -356,69 +356,69 @@ describe('use-dict compatibility layer', () => {
   it('clears on a context switch and drops the pending CRUD response', async () => {
     const { dict } = await setup();
     const crud = deferred<SimpleDictData[]>();
-    const tenant = deferred<SimpleDictData[]>();
+    const nextLoad = deferred<SimpleDictData[]>();
     const api = vi
       .fn<() => Promise<SimpleDictData[]>>()
       .mockResolvedValueOnce(GENDER)
       .mockReturnValueOnce(crud.promise)
-      .mockReturnValueOnce(tenant.promise);
+      .mockReturnValueOnce(nextLoad.promise);
     dict.setupDictHandler(api);
     await dict.preloadDicts();
 
     const crudRefresh = dict.refreshDicts({ preserveCache: true });
     expect(dict.getDictOptions('system_user_sex')).toHaveLength(2);
 
-    // CRUD 刷新未返回时切换租户：默认模式立即清空
-    const tenantRefresh = dict.refreshDicts();
+    // CRUD 刷新未返回时切换身份：默认模式立即清空
+    const nextRefresh = dict.refreshDicts();
     expect(dict.getDictOptions('system_user_sex')).toEqual([]);
     expect(api).toHaveBeenCalledTimes(3);
 
-    // 旧租户的 CRUD 响应晚到，不能写入新租户缓存
+    // 旧身份的 CRUD 响应晚到，不能写入新身份缓存
     crud.resolve([
-      { dictType: 'system_user_sex', label: '旧租户', value: '1' },
+      { dictType: 'system_user_sex', label: '旧身份', value: '1' },
     ]);
     await flush();
     expect(dict.getDictOptions('system_user_sex')).toEqual([]);
 
-    tenant.resolve([
-      { dictType: 'system_user_sex', label: '新租户', value: '1' },
+    nextLoad.resolve([
+      { dictType: 'system_user_sex', label: '新身份', value: '1' },
     ]);
-    await Promise.all([crudRefresh, tenantRefresh]);
-    expect(dict.getDictLabel('system_user_sex', 1)).toBe('新租户');
+    await Promise.all([crudRefresh, nextRefresh]);
+    expect(dict.getDictLabel('system_user_sex', 1)).toBe('新身份');
     expect(api).toHaveBeenCalledTimes(3);
   });
 
   it('keeps a cacheless context refresh waiting for the CRUD load that replaced it', async () => {
     const { dict } = await setup();
-    const tenant = deferred<SimpleDictData[]>();
+    const nextLoad = deferred<SimpleDictData[]>();
     const crud = deferred<SimpleDictData[]>();
     const api = vi
       .fn<() => Promise<SimpleDictData[]>>()
-      .mockReturnValueOnce(tenant.promise)
+      .mockReturnValueOnce(nextLoad.promise)
       .mockReturnValueOnce(crud.promise);
     dict.setupDictHandler(api);
 
-    // 1. 租户切换：无缓存刷新 A
-    let tenantSettled = false;
-    const tenantRefresh = dict.refreshDicts().then(() => {
-      tenantSettled = true;
+    // 1. 身份切换：无缓存刷新 A
+    let nextSettled = false;
+    const nextRefresh = dict.refreshDicts().then(() => {
+      nextSettled = true;
     });
     // 2. CRUD 刷新 B 废弃 A，此时缓存仍为空
     const crudRefresh = dict.refreshDicts({ preserveCache: true });
     expect(api).toHaveBeenCalledTimes(2);
     expect(dict.getDictOptions('system_user_sex')).toEqual([]);
 
-    // 3. A 先返回：结果被丢弃，租户切换的等待者不能放行（否则 refreshTab 会捕获空选项）
-    tenant.resolve([
+    // 3. A 先返回：结果被丢弃，身份切换的等待者不能放行（否则 refreshTab 会捕获空选项）
+    nextLoad.resolve([
       { dictType: 'system_user_sex', label: '旧批次', value: '1' },
     ]);
     await flush();
-    expect(tenantSettled).toBe(false);
+    expect(nextSettled).toBe(false);
     expect(dict.getDictOptions('system_user_sex')).toEqual([]);
 
     // 4. B 返回后才放行：此时重建 schema 捕获的选项非空
     crud.resolve(GENDER);
-    await tenantRefresh;
+    await nextRefresh;
     const schemaOptions = dict.getDictOptions('system_user_sex', 'number');
     expect(schemaOptions).toEqual([
       { label: '男', value: 1 },
@@ -432,21 +432,21 @@ describe('use-dict compatibility layer', () => {
   it('releases the cacheless refresh waiter when the replacement load fails', async () => {
     const { dict } = await setup();
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    const tenant = deferred<SimpleDictData[]>();
+    const nextLoad = deferred<SimpleDictData[]>();
     const crud = deferred<SimpleDictData[]>();
     const api = vi
       .fn<() => Promise<SimpleDictData[]>>()
-      .mockReturnValueOnce(tenant.promise)
+      .mockReturnValueOnce(nextLoad.promise)
       .mockReturnValueOnce(crud.promise);
     dict.setupDictHandler(api);
 
-    const tenantRefresh = dict.refreshDicts();
+    const nextRefresh = dict.refreshDicts();
     const crudRefresh = dict.refreshDicts({ preserveCache: true });
-    tenant.resolve(GENDER);
+    nextLoad.resolve(GENDER);
     crud.reject(new Error('500'));
 
     // 替代加载失败也放行，不抛错、不额外请求
-    await expect(tenantRefresh).resolves.toBeUndefined();
+    await expect(nextRefresh).resolves.toBeUndefined();
     await expect(crudRefresh).resolves.toBeUndefined();
     expect(api).toHaveBeenCalledTimes(2);
   });

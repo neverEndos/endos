@@ -1,7 +1,6 @@
 package cn.iocoder.yudao.module.infra.job.job;
 
 import cn.iocoder.yudao.framework.quartz.core.handler.JobHandler;
-import cn.iocoder.yudao.framework.tenant.core.aop.TenantIgnore;
 import cn.iocoder.yudao.module.infra.service.job.JobLogService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -30,7 +29,6 @@ public class JobLogCleanJob implements JobHandler {
     private static final Integer DELETE_LIMIT = 100;
 
     @Override
-    @TenantIgnore
     public String execute(String param) {
         Integer count = jobLogService.cleanJobLog(JOB_CLEAN_RETAIN_DAY, DELETE_LIMIT);
         log.info("[execute][定时执行清理定时任务日志数量 ({}) 个]", count);
