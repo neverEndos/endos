@@ -60,13 +60,17 @@ python3 main.py --interval 60 --duration 600
 | `--no-db` | 关闭 | 不连接 PostgreSQL，仅输出 JSONL（也不执行种子） |
 | `--no-seed` | 关闭 | 启动时不执行幂等种子（要求 DB 中已有配置） |
 | `--heartbeat-every` | `5` | 每 N 轮写一次心跳，首轮总是写；`0` 表示关闭心跳 |
+| `--db-retry-interval` | `60` | DB 不可用时的重连/重新种子/重新解析映射间隔（秒） |
 
 启动流程：打开串口 → 保存原 termios/RS485 配置 → 先以 flags=0 清除遗留状态 →
 依次尝试 RS485 flags；每个 flags 要求两颗传感器各连续 2 次 msg=1 状态应答，失败
 则重开串口再试下一候选（本现场会回退到 0）→ 执行幂等种子、连接 PostgreSQL 并
-解析通道 id（失败则降级为仅 JSONL）→ 固定该 flags 进入轮询。进程收到
-SIGINT/SIGTERM 或达到 `--duration` 后关闭 JSONL/DB 连接、恢复串口设置，并输出
-统计摘要。
+解析通道 id → 固定该 flags 进入轮询。DB 初始化失败不会退出进程：按
+`--db-retry-interval`（默认 60 秒）周期性重连，期间继续轮询并输出 `channel_id`
+为 null 的 JSONL；DB 恢复后自动重新执行幂等种子、重新解析通道映射，并从下一轮
+起恢复 raw/设备状态/心跳写入，无需人工重启。同一类连接错误在一个失败周期内只
+告警一次，恢复时记录 INFO，避免日志刷屏。进程收到 SIGINT/SIGTERM 或达到
+`--duration` 后关闭 JSONL/DB 连接、恢复串口设置，并输出统计摘要。
 
 ## 输出
 
@@ -104,7 +108,10 @@ SIGINT/SIGTERM 或达到 `--duration` 后关闭 JSONL/DB 连接、恢复串口�
 | `YUDAO_DB_PASSWORD` | `123456` | 密码 |
 
 启动流程：执行幂等种子 → 连接 DB → 按 `sensor_code + channel_code` 解析设备/通道
-id → 开始轮询。种子内容：
+id → 开始轮询。启动或运行中 DB 不可用时，由同一个重连状态机按
+`--db-retry-interval` 节流重试：每次重试都会重新执行幂等种子并重新解析映射，
+恢复后自动落库；写入失败会重置连接并纳入同一节流，不会每个轮询周期反复建连。
+种子内容：
 
 - `collector_protocol`：`hsi_rs485`（HYDAC HSI (RS485)，`driver_key=hsi_rs485_driver`）；
 - `collector_device`：`rk3568-hsi-01`，`poll_interval_ms=60000`、`timeout_ms=1000`、
@@ -124,7 +131,10 @@ id → 开始轮询。种子内容：
   `last_error`；
 - `collector_heartbeat`：首轮及每 `--heartbeat-every` 轮写一行，`instance_id`
   为“主机名 + 进程启动时间”，`collector_version=0.1.0-prototype`；
-- DB 不可用时只记录错误日志并继续轮询（首期接受丢数据，不做本地 spool）。
+- DB 不可用时记录 WARN（同一错误只告警一次）并继续轮询，JSONL 的
+  `device_id`/`channel_id` 为 null；按 `--db-retry-interval` 自动重连、重新种子并
+  重新解析映射，恢复后无需重启即继续落库（首期接受断连期间丢数据，不做本地
+  spool）。
 
 常用核对 SQL（板端）：
 
@@ -212,7 +222,8 @@ python -m unittest discover -s collector/tests -v
 ```
 
 覆盖：帧编码与校验和、错误帧拒绝、CS1000 10 字段解析、HLB1400 旧/扩展格式分支、
-状态应答、重试逻辑、RS485 flags 探测、JSONL 输出与统计摘要。
+状态应答、重试逻辑、RS485 flags 探测、JSONL 输出与统计摘要，以及 DB 首次不可用
+后恢复、映射解析失败后恢复、重连节流（不会每轮建连）、运行中写入失败自动重连。
 
 ## 约束与已知限制
 

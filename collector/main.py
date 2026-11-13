@@ -11,6 +11,10 @@
 - ``~/collector-proto/proto.log``：请求/应答、解析结果与最终摘要；
 - PostgreSQL：raw 采样、设备状态与心跳（``YUDAO_DB_*`` 环境变量）。
 
+DB 不可用时进程不退出：按 ``--db-retry-interval``（默认 60 秒）周期性重连、重新
+执行幂等种子并重新解析通道映射；期间 JSONL 仍输出，``channel_id`` 为 null。
+DB 恢复后自动开始落库，无需人工重启。
+
 串口部分只使用标准库；数据库写入使用板端已安装的 ``psycopg2``。
 """
 
@@ -26,7 +30,6 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-import seed  # noqa: E402
 from hsi import cs1000, hlb1400  # noqa: E402
 from poll import (  # noqa: E402
     DEFAULT_RS485_FLAGS,
@@ -37,7 +40,7 @@ from poll import (  # noqa: E402
     run_loop,
     summarize,
 )
-from storage import PgStorage, unresolved_context  # noqa: E402
+from storage import DatabaseManager, unresolved_context  # noqa: E402
 
 LOGGER_NAME = "hsi"
 DEFAULT_OUTPUT = "~/collector-proto/data.jsonl"
@@ -89,7 +92,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=5,
         help="每 N 轮写一次心跳（首轮总是写；0 表示关闭心跳）",
     )
+    parser.add_argument(
+        "--db-retry-interval",
+        type=positive_float,
+        default=60.0,
+        help="DB 不可用时的重连/重新种子间隔（秒），期间继续输出 JSONL",
+    )
     return parser
+
+
+def positive_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"无法解析数值: {value}") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("必须大于 0")
+    return parsed
 
 
 def configure_logging(path: str) -> logging.Logger:
@@ -128,9 +147,9 @@ def run(args: argparse.Namespace, logger: logging.Logger) -> int:
 
     drivers = [cs1000.CS1000(), hlb1400.HLB1400()]
     stop_requested = {"value": False}
-    db_storage: PgStorage | None = None
+    db_manager: DatabaseManager | None = None
     # 即使 DB 不可用，也用种子映射输出 device_id/channel_id（此时 id 为 null），
-    # 便于 JSONL 结构与落库对照。
+    # 便于 JSONL 结构与落库对照；DB 恢复后由 DatabaseManager 刷新该映射。
     channel_context = unresolved_context()
 
     def handle_signal(signum, _frame) -> None:
@@ -168,35 +187,15 @@ def run(args: argparse.Namespace, logger: logging.Logger) -> int:
         logger.info("RS485 连通确认 flags=%d sensors=%s", flags, [d.name for d in drivers])
 
         if not args.no_db:
-            if not args.no_seed:
-                try:
-                    seed.seed_all(logger=logger)
-                except Exception as exc:
-                    logger.error(
-                        "HSI 配置种子执行失败（继续可用配置运行）: %s: %s",
-                        type(exc).__name__,
-                        exc,
-                    )
-            try:
-                db_storage = PgStorage(logger=logger)
-                db_storage.connect()
-                channel_context = db_storage.load_context()
-            except Exception as exc:
-                logger.error(
-                    "PostgreSQL 初始化失败，本次仅输出 JSONL（数据不入库）: %s: %s",
-                    type(exc).__name__,
-                    exc,
-                )
-                if db_storage is not None:
-                    db_storage.close()
-                    db_storage = None
-                channel_context = unresolved_context()
-            else:
-                logger.info(
-                    "PostgreSQL 落库已启用 device_id=%s channels=%d",
-                    channel_context.device_id,
-                    len(channel_context.bindings),
-                )
+            # 首次尝试立即执行；失败后由管理器按 --db-retry-interval 节流重试，
+            # 进程不退出，期间继续输出 JSONL。
+            db_manager = DatabaseManager(
+                seed_enabled=not args.no_seed,
+                retry_interval_s=args.db_retry_interval,
+                logger=logger,
+            )
+            db_manager.ensure_ready()
+            channel_context = db_manager.context
 
         writer = None if args.no_jsonl else JsonlWriter(output_path)
         duration = None if args.duration <= 0 else args.duration
@@ -210,7 +209,7 @@ def run(args: argparse.Namespace, logger: logging.Logger) -> int:
             retries=args.retries,
             logger=logger,
             should_stop=lambda: stop_requested["value"],
-            storage=db_storage,
+            db_manager=db_manager,
             channel_context=channel_context,
             heartbeat_every=args.heartbeat_every,
         )
@@ -221,13 +220,16 @@ def run(args: argparse.Namespace, logger: logging.Logger) -> int:
             rss_kb=read_rss_kb(),
             jsonl_lines=writer.line_count if writer is not None else 0,
         )
-        summary["database"] = {
-            "enabled": db_storage is not None,
-            "device_id": channel_context.device_id,
-            "channels_resolved": sum(
-                1 for binding in channel_context.bindings if binding.channel_id is not None
-            ),
-        }
+        summary["database"] = (
+            db_manager.status()
+            if db_manager is not None
+            else {
+                "enabled": False,
+                "ready": False,
+                "device_id": None,
+                "channels_resolved": 0,
+            }
+        )
         logger.info("SUMMARY %s", json.dumps(summary, ensure_ascii=False))
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return 0
@@ -240,8 +242,8 @@ def run(args: argparse.Namespace, logger: logging.Logger) -> int:
     finally:
         if writer is not None:
             writer.close()
-        if db_storage is not None:
-            db_storage.close()
+        if db_manager is not None:
+            db_manager.close()
         if transport is not None:
             transport.close()
 

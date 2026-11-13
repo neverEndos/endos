@@ -432,12 +432,17 @@ def run_loop(
     storage: Any | None = None,
     channel_context: Any | None = None,
     heartbeat_every: int = 5,
+    db_manager: Any | None = None,
 ) -> dict[str, SensorStats]:
     """按固定间隔循环轮询，直到达到 duration 或被 should_stop 终止。
 
-    传入 ``storage`` 时，每轮把 raw 行与设备状态写入 PostgreSQL；DB 写入失败只
-    记录错误并继续下一轮（首期接受丢数据，不做本地 spool）。``heartbeat_every``
-    表示每多少轮写一次心跳，首轮总是写。
+    传入 ``db_manager`` 时，每轮先按重连节奏确保 DB 可用并使用其最新的通道映射
+    （DB 恢复后 JSONL 里的 ``channel_id`` 会自动补齐），再把 raw 行、设备状态与
+    心跳交给它写入；DB 不可用只记录日志并继续轮询（首期接受丢数据，不做本地
+    spool）。``heartbeat_every`` 表示每多少轮写一次心跳，首轮总是写。
+
+    传入 ``storage`` 时不维护连接状态，写入异常由本函数记录后继续下一轮；新代码
+    应优先使用 ``db_manager``。
     """
     if interval_s <= 0:
         raise ValueError("interval_s 必须大于 0")
@@ -461,6 +466,11 @@ def run_loop(
 
         cycle += 1
         log.info("========== 轮询 cycle=%d 开始 ==========", cycle)
+        context = channel_context
+        if db_manager is not None:
+            # 先按重连节奏尝试恢复 DB，再用最新映射输出 JSONL。
+            db_manager.ensure_ready()
+            context = db_manager.context
         records = poll_cycle(
             transport,
             drivers,
@@ -470,10 +480,14 @@ def run_loop(
             timeout=timeout,
             retries=retries,
             logger=log,
-            channel_context=channel_context,
+            channel_context=context,
             warned_missing=warned_missing,
         )
-        if storage is not None:
+        if db_manager is not None:
+            db_manager.write_cycle(records, collect_time_now(), cycle=cycle)
+            if heartbeat_every > 0 and (cycle == 1 or cycle % heartbeat_every == 0):
+                db_manager.write_heartbeat()
+        elif storage is not None:
             try:
                 storage.write_cycle(records, collect_time_now(), cycle=cycle)
             except Exception as exc:

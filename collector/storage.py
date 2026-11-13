@@ -16,7 +16,7 @@ import socket
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from seed import (
     CHANNEL_SEEDS,
@@ -25,9 +25,11 @@ from seed import (
     SENSOR_CODE_BY_DRIVER,
     SENSOR_SEED_BY_CODE,
     db_settings_from_env,
+    seed_all,
 )
 
 LOGGER_NAME = "hsi"
+DEFAULT_DB_RETRY_INTERVAL_S = 60.0
 SHANGHAI = timezone(timedelta(hours=8), name="Asia/Shanghai")
 DEVICE_TOTAL = 1
 DEVICE_FAILURE_THRESHOLD = 3
@@ -558,3 +560,197 @@ class PgStorage:
             row["write_lag_ms"],
         )
         return heartbeat_id
+
+
+class DatabaseUnavailableError(RuntimeError):
+    """一次 DB 初始化尝试未成功（连不上、种子缺失或映射无法解析）。"""
+
+
+class DatabaseManager:
+    """DB 初始化与重连闸门。
+
+    启动与运行中共用同一个状态机：
+
+    - 未就绪时，每次 :meth:`ensure_ready` 最多 ``retry_interval_s`` 秒尝试一次，
+      避免每个轮询周期都重复建连；
+    - 每次尝试先执行幂等种子（可用 ``seed_enabled=False`` 关闭），再连接并解析
+      设备/通道映射；
+    - 任一步失败则关闭连接、清空映射并记录（同一错误只告警一次），随后继续轮询
+      并输出 ``channel_id`` 为 null 的 JSONL；
+    - DB 恢复后自动重新种子、重新解析映射，下一轮起恢复 raw/状态/心跳写入；
+    - 运行中写入失败与启动失败走同一状态机，不会出现两套重连逻辑互相打架。
+
+    ``storage_factory``、``seed_func``、``clock`` 均可注入，便于单元测试脱离真实
+    数据库与真实时间。
+    """
+
+    def __init__(
+        self,
+        *,
+        enabled: bool = True,
+        seed_enabled: bool = True,
+        retry_interval_s: float = DEFAULT_DB_RETRY_INTERVAL_S,
+        settings: dict | None = None,
+        logger: logging.Logger | None = None,
+        storage_factory: Callable[[], Any] | None = None,
+        seed_func: Callable[..., Any] | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if retry_interval_s < 0:
+            raise ValueError("retry_interval_s 不能为负数")
+        self.logger = logger or logging.getLogger(LOGGER_NAME)
+        self.enabled = enabled
+        self.seed_enabled = seed_enabled
+        self.retry_interval_s = retry_interval_s
+        self.settings = settings if settings is not None else db_settings_from_env()
+        self._storage_factory = storage_factory or (
+            lambda: PgStorage(settings=self.settings, logger=self.logger)
+        )
+        self._seed_func = seed_func or seed_all
+        self._clock = clock
+        self.storage: Any | None = None
+        self.context: DeviceContext = unresolved_context()
+        self.ready = False
+        self._last_attempt: float | None = None
+        self._attempts = 0
+        self._last_error: str | None = None
+
+    # ------------------------------------------------------------------ 状态
+    def ensure_ready(self) -> bool:
+        """按节流节奏尝试初始化；返回当前是否可落库。"""
+
+        if not self.enabled:
+            return False
+        if self.ready and self.storage is not None:
+            return True
+        now = self._clock()
+        if (
+            self._last_attempt is not None
+            and now - self._last_attempt < self.retry_interval_s
+        ):
+            return False
+        self._last_attempt = now
+        self._attempts += 1
+        try:
+            self._initialize()
+        except Exception as exc:
+            self._mark_unavailable(exc)
+            return False
+        if self._last_error is not None:
+            self.logger.info(
+                "PostgreSQL 已恢复，自动重新执行种子并解析通道映射（共尝试 %d 次）",
+                self._attempts,
+            )
+            self._last_error = None
+        self.ready = True
+        missing = self.context.missing_bindings()
+        self.logger.info(
+            "PostgreSQL 落库已启用 device_id=%s channels=%d/%d（DB 尝试 %d 次）",
+            self.context.device_id,
+            len(self.context.bindings) - len(missing),
+            len(self.context.bindings),
+            self._attempts,
+        )
+        return True
+
+    def status(self) -> dict[str, Any]:
+        """摘要用状态（不包含密码等敏感信息）。"""
+
+        return {
+            "enabled": self.enabled,
+            "ready": self.ready,
+            "device_id": self.context.device_id,
+            "channels_resolved": sum(
+                1 for binding in self.context.bindings if binding.channel_id is not None
+            ),
+            "attempts": self._attempts,
+            "retry_interval_s": self.retry_interval_s,
+            "last_error": self._last_error,
+        }
+
+    def _initialize(self) -> None:
+        if self.seed_enabled:
+            try:
+                self._seed_func(logger=self.logger)
+            except Exception as exc:
+                # 与原有行为一致：种子失败不阻断采集，继续尝试连接并复用已有配置。
+                self.logger.warning(
+                    "HSI 配置种子执行失败（继续尝试连接并复用已有配置）: %s: %s",
+                    type(exc).__name__,
+                    exc,
+                )
+        storage = self._storage_factory()
+        try:
+            storage.connect()
+            context = storage.load_context()
+        except Exception:
+            self._safe_close(storage)
+            raise
+        if context.device_id is None:
+            self._safe_close(storage)
+            raise DatabaseUnavailableError("设备种子缺失，通道映射未能解析")
+        self.storage = storage
+        self.context = context
+
+    def _mark_unavailable(self, exc: Exception, reason: str = "PostgreSQL 暂不可用") -> None:
+        if self.storage is not None:
+            self._safe_close(self.storage)
+        self.storage = None
+        self.context = unresolved_context()
+        self.ready = False
+        # 运行中写入失败后同样按重连间隔节流，避免每个轮询周期反复建连。
+        self._last_attempt = self._clock()
+        error = f"{type(exc).__name__}: {exc}"
+        if error == self._last_error:
+            # 同一错误周期只告警一次，避免每分钟刷屏；恢复时再记录 INFO。
+            return
+        self._last_error = error
+        self.logger.warning(
+            "%s（DB 尝试 %d 次失败），本轮继续仅输出 JSONL（channel_id 为空），"
+            "%.0f 秒后自动重试: %s",
+            reason,
+            self._attempts,
+            self.retry_interval_s,
+            error,
+        )
+
+    def _safe_close(self, storage: Any) -> None:
+        try:
+            storage.close()
+        except Exception:  # 连接已坏时 close 也可能失败
+            pass
+
+    # ------------------------------------------------------------------ 写入
+    def write_cycle(
+        self,
+        results: Iterable[dict[str, Any]],
+        collect_time: datetime | None = None,
+        cycle: int | None = None,
+    ) -> dict[str, Any]:
+        """写一轮数据；DB 不可用时返回 skipped，不向上抛异常。"""
+
+        if not self.ensure_ready():
+            return {"written": 0, "skipped": True, "ready": False}
+        try:
+            outcome = self.storage.write_cycle(results, collect_time, cycle=cycle)
+        except Exception as exc:
+            self._mark_unavailable(exc, reason=f"cycle={cycle} DB 写入失败")
+            return {"written": 0, "skipped": True, "ready": False}
+        return {**outcome, "ready": True}
+
+    def write_heartbeat(self) -> int | None:
+        """写一次心跳；DB 不可用时返回 None，不向上抛异常。"""
+
+        if not self.ensure_ready():
+            return None
+        try:
+            return self.storage.write_heartbeat()
+        except Exception as exc:
+            self._mark_unavailable(exc, reason="心跳写入失败")
+            return None
+
+    def close(self) -> None:
+        self.ready = False
+        if self.storage is not None:
+            self._safe_close(self.storage)
+            self.storage = None
