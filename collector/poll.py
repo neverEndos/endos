@@ -16,6 +16,8 @@ from datetime import datetime
 from typing import Any, Callable
 
 from hsi.frame import HsiFrame, validate_response
+from seed import SENSOR_CODE_BY_DRIVER
+from storage import collect_time_now
 
 LOGGER_NAME = "hsi"
 RETRY_DELAY_S = 0.1
@@ -172,6 +174,7 @@ def poll_sensor_once(
                 "latency_ms": round(latency_ms, 2),
                 "total_latency_ms": round((time.monotonic() - started_all) * 1000.0, 2),
                 "fields": parsed["fields"],
+                "raw_fields": parsed.get("raw_fields", []),
                 "quality": parsed.get("quality", 0),
                 "format": parsed.get("format"),
                 "request_hex": request.hex(),
@@ -285,18 +288,69 @@ def discover_rs485_flags(
     raise PollError(f"所有候选 RS485 flags 均无法连通: {candidates}")
 
 
+def build_channel_entries(result: dict[str, Any], bindings: Any) -> list[dict[str, Any]]:
+    """把一次成功的传感器解析结果展开为通道级 JSONL 条目。
+
+    ``channel_id`` 来自启动时按 ``sensor_code + channel_code`` 的 DB 解析结果；
+    未解析到 id 的通道仍保留条目（``channel_id`` 为 null），但不会写入 raw。
+    """
+
+    raw_fields = result.get("raw_fields") or []
+    fields = result.get("fields") or {}
+    entries = []
+    for binding in bindings:
+        index = binding.field_index - 1
+        if index < 0 or index >= len(raw_fields):
+            continue
+        entries.append(
+            {
+                "channel_id": binding.channel_id,
+                "channel_code": binding.channel_code,
+                "field": binding.field,
+                "value": fields.get(binding.field),
+                "raw_value": int(raw_fields[index]),
+            }
+        )
+    return entries
+
+
+def _warn_unresolved_channels(
+    logger: logging.Logger,
+    sensor_name: str,
+    entries: list[dict[str, Any]],
+    warned_missing: set | None,
+) -> None:
+    missing = [entry["channel_code"] for entry in entries if entry["channel_id"] is None]
+    if not missing:
+        return
+    key = (sensor_name, tuple(missing))
+    if warned_missing is not None:
+        if key in warned_missing:
+            return
+        warned_missing.add(key)
+    logger.warning(
+        "sensor=%s 以下通道未解析到 channel_id，JSONL 仍输出但跳过 raw 写入: %s",
+        sensor_name,
+        missing,
+    )
+
+
 def poll_cycle(
     transport: Any,
     drivers: list[Any],
     stats: dict[str, SensorStats],
     *,
-    writer: JsonlWriter,
+    writer: JsonlWriter | None,
     cycle: int,
     timeout: float,
     retries: int,
     logger: logging.Logger,
-) -> None:
-    """顺序访问所有传感器，成功后写一行 JSONL。"""
+    channel_context: Any | None = None,
+    warned_missing: set | None = None,
+) -> list[dict[str, Any]]:
+    """顺序访问所有传感器，成功后写一行 JSONL，并返回可落库的记录。"""
+
+    records: list[dict[str, Any]] = []
     for driver in drivers:
         result = poll_sensor_once(
             transport, driver, timeout=timeout, retries=retries, logger=logger
@@ -307,17 +361,37 @@ def poll_cycle(
             sensor_stats.record_success(
                 result["latency_ms"], len(result["fields"]), result["attempts"]
             )
-            writer.write(
+            sensor_code = SENSOR_CODE_BY_DRIVER.get(driver.name)
+            if channel_context is not None and sensor_code is not None:
+                bindings = channel_context.bindings_for(sensor_code)
+                device_id = channel_context.device_id
+            else:
+                bindings = ()
+                device_id = None
+            entries = build_channel_entries(result, bindings)
+            _warn_unresolved_channels(logger, driver.name, entries, warned_missing)
+            record = {
+                "timestamp": now_timestamp(),
+                "sensor": driver.name,
+                "address": driver.address,
+                "sensor_code": sensor_code,
+                "device_id": device_id,
+                "fields": result["fields"],
+                "raw": result.get("raw_fields", []),
+                "channels": entries,
+                "quality": result["quality"],
+                "latency_ms": result["latency_ms"],
+                "attempts": result["attempts"],
+                "format": result["format"],
+                "cycle": cycle,
+            }
+            if writer is not None:
+                writer.write(record)
+            records.append(
                 {
-                    "timestamp": now_timestamp(),
-                    "sensor": driver.name,
-                    "address": driver.address,
-                    "fields": result["fields"],
-                    "quality": result["quality"],
-                    "latency_ms": result["latency_ms"],
-                    "attempts": result["attempts"],
-                    "format": result["format"],
-                    "cycle": cycle,
+                    **record,
+                    "ok": True,
+                    "raw_fields": result.get("raw_fields", []),
                 }
             )
         else:
@@ -331,6 +405,7 @@ def poll_cycle(
                 result["attempts"],
                 result["error"],
             )
+    return records
 
 
 def _sleep_until(deadline: float, should_stop: Callable[[], bool] | None) -> None:
@@ -347,15 +422,23 @@ def run_loop(
     transport: Any,
     drivers: list[Any],
     *,
-    writer: JsonlWriter,
+    writer: JsonlWriter | None = None,
     interval_s: float = 5.0,
     duration_s: float | None = None,
     timeout: float = 1.0,
     retries: int = 1,
     logger: logging.Logger | None = None,
     should_stop: Callable[[], bool] | None = None,
+    storage: Any | None = None,
+    channel_context: Any | None = None,
+    heartbeat_every: int = 5,
 ) -> dict[str, SensorStats]:
-    """按固定间隔循环轮询，直到达到 duration 或被 should_stop 终止。"""
+    """按固定间隔循环轮询，直到达到 duration 或被 should_stop 终止。
+
+    传入 ``storage`` 时，每轮把 raw 行与设备状态写入 PostgreSQL；DB 写入失败只
+    记录错误并继续下一轮（首期接受丢数据，不做本地 spool）。``heartbeat_every``
+    表示每多少轮写一次心跳，首轮总是写。
+    """
     if interval_s <= 0:
         raise ValueError("interval_s 必须大于 0")
     log = logger or logging.getLogger(LOGGER_NAME)
@@ -363,6 +446,7 @@ def run_loop(
         driver.name: SensorStats(driver.name, driver.field_count)
         for driver in drivers
     }
+    warned_missing: set = set()
     started = time.monotonic()
     next_at = started
     cycle = 0
@@ -377,7 +461,7 @@ def run_loop(
 
         cycle += 1
         log.info("========== 轮询 cycle=%d 开始 ==========", cycle)
-        poll_cycle(
+        records = poll_cycle(
             transport,
             drivers,
             stats,
@@ -386,7 +470,29 @@ def run_loop(
             timeout=timeout,
             retries=retries,
             logger=log,
+            channel_context=channel_context,
+            warned_missing=warned_missing,
         )
+        if storage is not None:
+            try:
+                storage.write_cycle(records, collect_time_now(), cycle=cycle)
+            except Exception as exc:
+                log.warning(
+                    "cycle=%d DB 写入失败，按首期策略丢弃本批数据并继续轮询: %s: %s",
+                    cycle,
+                    type(exc).__name__,
+                    exc,
+                )
+            if heartbeat_every > 0 and (cycle == 1 or cycle % heartbeat_every == 0):
+                try:
+                    storage.write_heartbeat()
+                except Exception as exc:
+                    log.warning(
+                        "cycle=%d 心跳写入失败（继续轮询）: %s: %s",
+                        cycle,
+                        type(exc).__name__,
+                        exc,
+                    )
 
         next_at += interval_s
         now = time.monotonic()

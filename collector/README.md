@@ -1,8 +1,9 @@
 # HSI 采集原型（CS1000 + HLB1400）
 
-这是采集器功能的最小验证原型：在 RK3568 板端通过 `/dev/ttyS4` + RS485 轮询两颗
-HYDAC HSI 传感器，验证帧协议、解析正确性与 5 秒轮询稳定性，并输出 JSONL 供后续
-collector 接入。原型只验证协议驱动与轮询，不接数据库、不写 raw 表。
+这是采集器功能的最小实现：在 RK3568 板端通过 `/dev/ttyS4` + RS485 轮询两颗
+HYDAC HSI 传感器，验证帧协议与解析正确性，把原始采样、设备状态和心跳写入
+PostgreSQL（`yudao_board`），同时保留 JSONL 输出便于对照。启动时自动执行幂等的
+HSI 演示配置种子（协议、1 台设备、2 个传感器、16 个通道）。
 
 - 纯 Python 3.12 标准库（`os` / `termios` / `select` / `fcntl` / `struct`），
   不引入 pyserial 等第三方依赖，板端无需 `pip install`；
@@ -16,6 +17,8 @@ collector 接入。原型只验证协议驱动与轮询，不接数据库、不�
 collector/
 ├── main.py              # CLI 入口
 ├── poll.py              # 轮询器、RS485 flags 探测、统计与 JSONL 输出
+├── seed.py              # 幂等 HSI 演示配置种子（协议/设备/传感器/通道）
+├── storage.py           # PostgreSQL 落库（raw/设备状态/心跳）与通道 id 解析
 ├── transport.py         # Linux 串口 + TIOCSRS485 传输层
 ├── hsi/
 │   ├── frame.py         # HSI 帧编码/校验/解析
@@ -53,30 +56,85 @@ python3 main.py --interval 60 --duration 600
 | `--output` | `~/collector-proto/data.jsonl` | JSONL 输出路径（每次启动覆盖） |
 | `--log` | `~/collector-proto/proto.log` | 日志路径（每次启动覆盖） |
 | `--flags` | `auto` | RS485 flags：`auto` 依次尝试 `1,3,5,7,0`，或逗号分隔列表 |
+| `--no-jsonl` | 关闭 | 不写 JSONL 文件，仍写日志与数据库 |
+| `--no-db` | 关闭 | 不连接 PostgreSQL，仅输出 JSONL（也不执行种子） |
+| `--no-seed` | 关闭 | 启动时不执行幂等种子（要求 DB 中已有配置） |
+| `--heartbeat-every` | `5` | 每 N 轮写一次心跳，首轮总是写；`0` 表示关闭心跳 |
 
 启动流程：打开串口 → 保存原 termios/RS485 配置 → 先以 flags=0 清除遗留状态 →
 依次尝试 RS485 flags；每个 flags 要求两颗传感器各连续 2 次 msg=1 状态应答，失败
-则重开串口再试下一候选（本现场会回退到 0）→ 固定该 flags 进入轮询。进程收到
-SIGINT/SIGTERM 或达到 `--duration` 后关闭 JSONL、恢复串口设置，并输出统计摘要。
+则重开串口再试下一候选（本现场会回退到 0）→ 执行幂等种子、连接 PostgreSQL 并
+解析通道 id（失败则降级为仅 JSONL）→ 固定该 flags 进入轮询。进程收到
+SIGINT/SIGTERM 或达到 `--duration` 后关闭 JSONL/DB 连接、恢复串口设置，并输出
+统计摘要。
 
 ## 输出
 
 `data.jsonl` 每次成功采样一行（失败只记日志）：
 
 ```json
-{"timestamp":"2026-11-13T18:00:00.123+08:00","sensor":"CS1000","address":97,"fields":{"iso_4":10.0,"iso_6":20.0,"iso_14":30.0,"sae_a":2.1,"sae_b":2.2,"sae_c":2.3,"sae_d":2.4,"temperature_c":25.0,"flow_state":11,"drive_pct":55},"quality":0,"latency_ms":8.12,"attempts":1,"format":"0x16","cycle":1}
+{"timestamp":"2026-11-13T18:00:00.123+08:00","sensor":"CS1000","address":97,"sensor_code":"cs1000-01","device_id":1,"fields":{"iso_4":10.0,"iso_6":20.0,"iso_14":30.0,"sae_a":2.1,"sae_b":2.2,"sae_c":2.3,"sae_d":2.4,"temperature_c":25.0,"flow_state":11,"drive_pct":55},"raw":[100,200,300,21,22,23,24,250,11,55],"channels":[{"channel_id":1,"channel_code":"iso_4","field":"iso_4","value":10.0,"raw_value":100}],"quality":0,"latency_ms":8.12,"attempts":1,"format":"0x16","cycle":1}
 ```
 
 - `timestamp`：本地时区 ISO 8601（毫秒）；
 - `sensor` / `address`：传感器名与 HSI 地址（CS1000=97、HLB1400=99）；
+- `sensor_code` / `device_id`：启动时按种子业务键从 DB 解析；DB 不可用时为 `null`；
 - `fields`：解析后的数值字段；
+- `raw`：msg=3 应答中的 int16 原始值（按字段顺序）；
+- `channels`：通道级明细，`channel_id` 由启动时 `sensor_code + channel_code` 查询
+  得到；某通道未解析到 id 时仍输出该条目（`channel_id=null`），但不会写入 raw 表；
 - `quality`：`0` 表示正常；CS1000 的 `flow_state` 不在 11/22/33/44/55 时置 `1`；
 - `latency_ms`：本次采集从发送到解析完成的耗时；
 - `attempts`：本次采集实际请求次数（成功前含重试）；
 - `format`：应答 Length，用于区分 HLB1400 的旧/扩展格式。
 
 `proto.log` 记录 RS485 flags 探测过程、每次请求/应答十六进制、解析结果、失败原因
-和最终 `SUMMARY`（含成功率、平均/最大延迟、RSS、JSONL 行数）。
+和最终 `SUMMARY`（含成功率、平均/最大延迟、RSS、JSONL 行数、DB 状态）。
+
+## PostgreSQL 落库
+
+连接参数来自 `YUDAO_DB_*` 环境变量（systemd 通过 `/etc/yudao/env.remote` 注入）：
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `YUDAO_DB_HOST` | `127.0.0.1` | PostgreSQL 主机 |
+| `YUDAO_DB_PORT` | `5432` | 端口 |
+| `YUDAO_DB_NAME` | `yudao_board` | 数据库名 |
+| `YUDAO_DB_USERNAME` | `root` | 用户名 |
+| `YUDAO_DB_PASSWORD` | `123456` | 密码 |
+
+启动流程：执行幂等种子 → 连接 DB → 按 `sensor_code + channel_code` 解析设备/通道
+id → 开始轮询。种子内容：
+
+- `collector_protocol`：`hsi_rs485`（HYDAC HSI (RS485)，`driver_key=hsi_rs485_driver`）；
+- `collector_device`：`rk3568-hsi-01`，`poll_interval_ms=60000`、`timeout_ms=1000`、
+  `retries=1`；
+- `collector_sensor`：`cs1000-01`（0x61）、`hlb1400-01`（0x63），连接参数为
+  `/dev/ttyS4` 9600 8N1 + `rs485=true`、`rs485Flags=0`；
+- `collector_channel`：16 条（CS1000 10 条、HLB1400 6 条），`value_type=number`，
+  `channel_config` 含 `address/message/fieldIndex/signed`。
+
+落库行为：
+
+- `collector_sample_raw`：每通道一行，`collect_time` 为 Asia/Shanghai 本地
+  `timestamp(3)`，`value` 为工程值、`raw_value` 为 int16 原始值；每批一个事务，
+  `ON CONFLICT (channel_id, collect_time) DO NOTHING`；
+- `collector_device_status`：任一颗传感器成功即视为本轮成功，更新 `online=1`、
+  `last_success_at`、批次最大 `last_latency_ms`；连续 3 轮失败后 `online=0` 并写
+  `last_error`；
+- `collector_heartbeat`：首轮及每 `--heartbeat-every` 轮写一行，`instance_id`
+  为“主机名 + 进程启动时间”，`collector_version=0.1.0-prototype`；
+- DB 不可用时只记录错误日志并继续轮询（首期接受丢数据，不做本地 spool）。
+
+常用核对 SQL（板端）：
+
+```bash
+PGPASSWORD=123456 psql -h 192.168.0.23 -U root -d yudao_board \
+  -c "select count(*) from collector_sample_raw" \
+  -c "select count(distinct channel_id) from collector_sample_raw" \
+  -c "select * from collector_device_status" \
+  -c "select id,instance_id,heartbeat_time,device_online,collector_version from collector_heartbeat order by id desc limit 3"
+```
 
 ## HSI 协议要点
 
@@ -158,9 +216,12 @@ python -m unittest discover -s collector/tests -v
 
 ## 约束与已知限制
 
-- 只读协议原型，不写数据库、不修改板端系统配置，不使用 `ttyS3` / `ttyS8`；
+- 不修改板端系统配置与网络配置，不使用 `ttyS3` / `ttyS8`；
 - 不依赖 msg=0 / msg=2（现场无应答）；
 - 当前两颗传感器处于自测随机模式，数值为随机值，不代表真实工况；本轮只验证
-  通信成功率、解析正确性与稳定性；
+  通信成功率、解析正确性、稳定落库；
 - 状态应答的 StatusByte 位置按“Data 首字节”处理，待正式文档确认；
-- 默认 5 秒轮询只做了 10 分钟短跑验证，文档建议的 60 秒模式尚未长跑验证。
+- 首期不做本地 spool：DB 不可用期间的数据直接丢弃；
+- 配置版本快照、聚合、报警尚未接入，`config_version_id` 等字段留空；
+- HLB1400 扩展格式（Length=0x12）的通道映射尚未配置（种子按现场 0x0E 旧格式）；
+- 默认 5 秒轮询只做了短跑验证，系统部署按 60 秒轮询运行。

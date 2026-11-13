@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """HSI 采集原型入口。
 
-板端运行（默认 /dev/ttyS4、5 秒间隔、运行 10 分钟后退出）::
+板端运行（默认 /dev/ttyS4、5 秒间隔、运行 10 分钟后退出；启动时执行幂等种子）::
 
     cd ~/collector-proto/collector
     python3 main.py --duration 600
 
 输出：
-- ``~/collector-proto/data.jsonl``：每次成功采样一行；
-- ``~/collector-proto/proto.log``：请求/应答、解析结果与最终摘要。
+- ``~/collector-proto/data.jsonl``：每次成功采样一行（含 device_id/channel_id）；
+- ``~/collector-proto/proto.log``：请求/应答、解析结果与最终摘要；
+- PostgreSQL：raw 采样、设备状态与心跳（``YUDAO_DB_*`` 环境变量）。
 
-本原型不写数据库、不修改板端系统配置，只使用标准库。
+串口部分只使用标准库；数据库写入使用板端已安装的 ``psycopg2``。
 """
 
 import argparse
@@ -25,6 +26,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
+import seed  # noqa: E402
 from hsi import cs1000, hlb1400  # noqa: E402
 from poll import (  # noqa: E402
     DEFAULT_RS485_FLAGS,
@@ -35,6 +37,7 @@ from poll import (  # noqa: E402
     run_loop,
     summarize,
 )
+from storage import PgStorage, unresolved_context  # noqa: E402
 
 LOGGER_NAME = "hsi"
 DEFAULT_OUTPUT = "~/collector-proto/data.jsonl"
@@ -64,6 +67,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--flags",
         default="auto",
         help="RS485 flags：auto 或逗号分隔列表，例如 1,3,5,7",
+    )
+    parser.add_argument(
+        "--no-jsonl",
+        action="store_true",
+        help="不写 JSONL 文件（仍按参数写日志）",
+    )
+    parser.add_argument(
+        "--no-db",
+        action="store_true",
+        help="不连接 PostgreSQL，仅输出 JSONL（也不执行种子）",
+    )
+    parser.add_argument(
+        "--no-seed",
+        action="store_true",
+        help="启动时不执行幂等 HSI 配置种子",
+    )
+    parser.add_argument(
+        "--heartbeat-every",
+        type=int,
+        default=5,
+        help="每 N 轮写一次心跳（首轮总是写；0 表示关闭心跳）",
     )
     return parser
 
@@ -104,6 +128,10 @@ def run(args: argparse.Namespace, logger: logging.Logger) -> int:
 
     drivers = [cs1000.CS1000(), hlb1400.HLB1400()]
     stop_requested = {"value": False}
+    db_storage: PgStorage | None = None
+    # 即使 DB 不可用，也用种子映射输出 device_id/channel_id（此时 id 为 null），
+    # 便于 JSONL 结构与落库对照。
+    channel_context = unresolved_context()
 
     def handle_signal(signum, _frame) -> None:
         logger.info("收到信号 %s，准备停止", signum)
@@ -139,7 +167,38 @@ def run(args: argparse.Namespace, logger: logging.Logger) -> int:
         )
         logger.info("RS485 连通确认 flags=%d sensors=%s", flags, [d.name for d in drivers])
 
-        writer = JsonlWriter(output_path)
+        if not args.no_db:
+            if not args.no_seed:
+                try:
+                    seed.seed_all(logger=logger)
+                except Exception as exc:
+                    logger.error(
+                        "HSI 配置种子执行失败（继续可用配置运行）: %s: %s",
+                        type(exc).__name__,
+                        exc,
+                    )
+            try:
+                db_storage = PgStorage(logger=logger)
+                db_storage.connect()
+                channel_context = db_storage.load_context()
+            except Exception as exc:
+                logger.error(
+                    "PostgreSQL 初始化失败，本次仅输出 JSONL（数据不入库）: %s: %s",
+                    type(exc).__name__,
+                    exc,
+                )
+                if db_storage is not None:
+                    db_storage.close()
+                    db_storage = None
+                channel_context = unresolved_context()
+            else:
+                logger.info(
+                    "PostgreSQL 落库已启用 device_id=%s channels=%d",
+                    channel_context.device_id,
+                    len(channel_context.bindings),
+                )
+
+        writer = None if args.no_jsonl else JsonlWriter(output_path)
         duration = None if args.duration <= 0 else args.duration
         stats = run_loop(
             transport,
@@ -151,14 +210,24 @@ def run(args: argparse.Namespace, logger: logging.Logger) -> int:
             retries=args.retries,
             logger=logger,
             should_stop=lambda: stop_requested["value"],
+            storage=db_storage,
+            channel_context=channel_context,
+            heartbeat_every=args.heartbeat_every,
         )
         summary = summarize(
             stats,
             flags=transport.rs485_flags,
             duration_s=time.monotonic() - started,
             rss_kb=read_rss_kb(),
-            jsonl_lines=writer.line_count,
+            jsonl_lines=writer.line_count if writer is not None else 0,
         )
+        summary["database"] = {
+            "enabled": db_storage is not None,
+            "device_id": channel_context.device_id,
+            "channels_resolved": sum(
+                1 for binding in channel_context.bindings if binding.channel_id is not None
+            ),
+        }
         logger.info("SUMMARY %s", json.dumps(summary, ensure_ascii=False))
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return 0
@@ -171,6 +240,8 @@ def run(args: argparse.Namespace, logger: logging.Logger) -> int:
     finally:
         if writer is not None:
             writer.close()
+        if db_storage is not None:
+            db_storage.close()
         if transport is not None:
             transport.close()
 

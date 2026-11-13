@@ -79,6 +79,7 @@ def parse_payload(data: bytes) -> dict:
     quality = 0 if flow_state in VALID_FLOW_STATES else 1
     return {
         "fields": fields,
+        "raw_fields": list(values),
         "quality": quality,
         "format": f"0x{MEASURE_LENGTH:02X}",
     }

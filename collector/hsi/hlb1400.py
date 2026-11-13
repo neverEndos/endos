@@ -68,6 +68,7 @@ def parse_payload_legacy(data: bytes) -> dict:
     }
     return {
         "fields": fields,
+        "raw_fields": list(values),
         "quality": 0,
         "format": f"0x{LEGACY_LENGTH:02X}",
     }
@@ -92,6 +93,7 @@ def parse_payload_extended(data: bytes) -> dict:
     }
     return {
         "fields": fields,
+        "raw_fields": list(values),
         "quality": 0,
         "format": f"0x{EXTENDED_LENGTH:02X}",
     }
