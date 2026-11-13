@@ -42,12 +42,6 @@ export namespace AuthApi {
     login?: LoginResult;
   }
 
-  /** 租户信息返回值 */
-  export interface TenantResult {
-    id: number;
-    name: string;
-  }
-
   /** 手机验证码获取接口参数 */
   export interface SmsCodeParams {
     mobile: string;
@@ -115,25 +109,6 @@ export async function logoutApi(accessToken: string) {
 export async function getAuthPermissionInfoApi() {
   return requestClient.get<AuthPermissionInfo>(
     '/system/auth/get-permission-info',
-    {
-      headers: {
-        isVisitTenant: false,
-      },
-    },
-  );
-}
-
-/** 获取租户列表 */
-export async function getTenantSimpleList() {
-  return requestClient.get<AuthApi.TenantResult[]>(
-    `/system/tenant/simple-list`,
-  );
-}
-
-/** 使用租户域名，获得租户信息 */
-export async function getTenantByWebsite(website: string) {
-  return requestClient.get<AuthApi.TenantResult>(
-    `/system/tenant/get-by-website?website=${website}`,
   );
 }
 
@@ -196,7 +171,7 @@ export async function createQrcode() {
   return requestClient.post<AuthApi.QrcodeCreateResult>(
     '/system/auth/create-qrcode',
     undefined,
-    { headers: { isToken: false, isVisitTenant: false } },
+    { headers: { isToken: false } },
   );
 }
 
@@ -205,6 +180,6 @@ export async function pollQrcode(data: AuthApi.QrcodePollParams) {
   return requestClient.post<AuthApi.QrcodePollResult>(
     '/system/auth/qrcode-login',
     data,
-    { headers: { isToken: false, isVisitTenant: false } },
+    { headers: { isToken: false } },
   );
 }
