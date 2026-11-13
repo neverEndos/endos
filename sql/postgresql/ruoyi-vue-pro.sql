@@ -63,8 +63,6 @@ DROP INDEX IF EXISTS public.idx_infra_api_access_log_01;
 ALTER TABLE IF EXISTS ONLY public.system_users DROP CONSTRAINT IF EXISTS pk_system_users;
 ALTER TABLE IF EXISTS ONLY public.system_user_role DROP CONSTRAINT IF EXISTS pk_system_user_role;
 ALTER TABLE IF EXISTS ONLY public.system_user_post DROP CONSTRAINT IF EXISTS pk_system_user_post;
-ALTER TABLE IF EXISTS ONLY public.system_tenant_package DROP CONSTRAINT IF EXISTS pk_system_tenant_package;
-ALTER TABLE IF EXISTS ONLY public.system_tenant DROP CONSTRAINT IF EXISTS pk_system_tenant;
 ALTER TABLE IF EXISTS ONLY public.system_social_user_bind DROP CONSTRAINT IF EXISTS pk_system_social_user_bind;
 ALTER TABLE IF EXISTS ONLY public.system_social_user DROP CONSTRAINT IF EXISTS pk_system_social_user;
 ALTER TABLE IF EXISTS ONLY public.system_social_client DROP CONSTRAINT IF EXISTS pk_system_social_client;
@@ -109,10 +107,6 @@ DROP SEQUENCE IF EXISTS public.system_user_role_seq;
 DROP TABLE IF EXISTS public.system_user_role;
 DROP SEQUENCE IF EXISTS public.system_user_post_seq;
 DROP TABLE IF EXISTS public.system_user_post;
-DROP SEQUENCE IF EXISTS public.system_tenant_seq;
-DROP SEQUENCE IF EXISTS public.system_tenant_package_seq;
-DROP TABLE IF EXISTS public.system_tenant_package;
-DROP TABLE IF EXISTS public.system_tenant;
 DROP SEQUENCE IF EXISTS public.system_social_user_seq;
 DROP SEQUENCE IF EXISTS public.system_social_user_bind_seq;
 DROP TABLE IF EXISTS public.system_social_user_bind;
@@ -239,7 +233,6 @@ CREATE TABLE public.infra_api_access_log (
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     deleted smallint DEFAULT 0 NOT NULL,
-    tenant_id bigint DEFAULT 0 NOT NULL
 );
 
 
@@ -419,13 +412,6 @@ COMMENT ON COLUMN public.infra_api_access_log.deleted IS '是否删除';
 
 
 --
--- Name: COLUMN infra_api_access_log.tenant_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.infra_api_access_log.tenant_id IS '租户编号';
-
-
---
 -- Name: infra_api_access_log_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -469,7 +455,6 @@ CREATE TABLE public.infra_api_error_log (
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     deleted smallint DEFAULT 0 NOT NULL,
-    tenant_id bigint DEFAULT 0 NOT NULL
 );
 
 
@@ -667,13 +652,6 @@ COMMENT ON COLUMN public.infra_api_error_log.update_time IS '更新时间';
 --
 
 COMMENT ON COLUMN public.infra_api_error_log.deleted IS '是否删除';
-
-
---
--- Name: COLUMN infra_api_error_log.tenant_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.infra_api_error_log.tenant_id IS '租户编号';
 
 
 --
@@ -1997,7 +1975,6 @@ CREATE TABLE public.system_dept (
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     deleted smallint DEFAULT 0 NOT NULL,
-    tenant_id bigint DEFAULT 0 NOT NULL
 );
 
 
@@ -2097,13 +2074,6 @@ COMMENT ON COLUMN public.system_dept.update_time IS '更新时间';
 --
 
 COMMENT ON COLUMN public.system_dept.deleted IS '是否删除';
-
-
---
--- Name: COLUMN system_dept.tenant_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_dept.tenant_id IS '租户编号';
 
 
 --
@@ -2391,7 +2361,6 @@ CREATE TABLE public.system_login_log (
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     deleted smallint DEFAULT 0 NOT NULL,
-    tenant_id bigint DEFAULT 0 NOT NULL
 );
 
 
@@ -2498,13 +2467,6 @@ COMMENT ON COLUMN public.system_login_log.update_time IS '更新时间';
 --
 
 COMMENT ON COLUMN public.system_login_log.deleted IS '是否删除';
-
-
---
--- Name: COLUMN system_login_log.tenant_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_login_log.tenant_id IS '租户编号';
 
 
 --
@@ -3202,7 +3164,6 @@ CREATE TABLE public.system_notice (
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     deleted smallint DEFAULT 0 NOT NULL,
-    tenant_id bigint DEFAULT 0 NOT NULL
 );
 
 
@@ -3284,13 +3245,6 @@ COMMENT ON COLUMN public.system_notice.deleted IS '是否删除';
 
 
 --
--- Name: COLUMN system_notice.tenant_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_notice.tenant_id IS '租户编号';
-
-
---
 -- Name: system_notice_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -3323,7 +3277,6 @@ CREATE TABLE public.system_notify_message (
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     deleted smallint DEFAULT 0 NOT NULL,
-    tenant_id bigint DEFAULT 0 NOT NULL
 );
 
 
@@ -3444,13 +3397,6 @@ COMMENT ON COLUMN public.system_notify_message.update_time IS '更新时间';
 --
 
 COMMENT ON COLUMN public.system_notify_message.deleted IS '是否删除';
-
-
---
--- Name: COLUMN system_notify_message.tenant_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_notify_message.tenant_id IS '租户编号';
 
 
 --
@@ -3623,7 +3569,6 @@ CREATE TABLE public.system_oauth2_access_token (
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     deleted smallint DEFAULT 0 NOT NULL,
-    tenant_id bigint DEFAULT 0 NOT NULL
 );
 
 
@@ -3733,13 +3678,6 @@ COMMENT ON COLUMN public.system_oauth2_access_token.deleted IS '是否删除';
 
 
 --
--- Name: COLUMN system_oauth2_access_token.tenant_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_oauth2_access_token.tenant_id IS '租户编号';
-
-
---
 -- Name: system_oauth2_access_token_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -3768,7 +3706,6 @@ CREATE TABLE public.system_oauth2_approve (
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     deleted smallint DEFAULT 0 NOT NULL,
-    tenant_id bigint DEFAULT 0 NOT NULL
 );
 
 
@@ -3861,13 +3798,6 @@ COMMENT ON COLUMN public.system_oauth2_approve.update_time IS '更新时间';
 --
 
 COMMENT ON COLUMN public.system_oauth2_approve.deleted IS '是否删除';
-
-
---
--- Name: COLUMN system_oauth2_approve.tenant_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_oauth2_approve.tenant_id IS '租户编号';
 
 
 --
@@ -4096,7 +4026,6 @@ CREATE TABLE public.system_oauth2_code (
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     deleted smallint DEFAULT 0 NOT NULL,
-    tenant_id bigint DEFAULT 0 NOT NULL
 );
 
 
@@ -4206,13 +4135,6 @@ COMMENT ON COLUMN public.system_oauth2_code.deleted IS '是否删除';
 
 
 --
--- Name: COLUMN system_oauth2_code.tenant_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_oauth2_code.tenant_id IS '租户编号';
-
-
---
 -- Name: system_oauth2_code_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -4241,7 +4163,6 @@ CREATE TABLE public.system_oauth2_refresh_token (
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     deleted smallint DEFAULT 0 NOT NULL,
-    tenant_id bigint DEFAULT 0 NOT NULL
 );
 
 
@@ -4337,13 +4258,6 @@ COMMENT ON COLUMN public.system_oauth2_refresh_token.deleted IS '是否删除';
 
 
 --
--- Name: COLUMN system_oauth2_refresh_token.tenant_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_oauth2_refresh_token.tenant_id IS '租户编号';
-
-
---
 -- Name: system_oauth2_refresh_token_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -4379,7 +4293,6 @@ CREATE TABLE public.system_operate_log (
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     deleted smallint DEFAULT 0 NOT NULL,
-    tenant_id bigint DEFAULT 0 NOT NULL
 );
 
 
@@ -4524,13 +4437,6 @@ COMMENT ON COLUMN public.system_operate_log.deleted IS '是否删除';
 
 
 --
--- Name: COLUMN system_operate_log.tenant_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_operate_log.tenant_id IS '租户编号';
-
-
---
 -- Name: system_operate_log_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -4558,7 +4464,6 @@ CREATE TABLE public.system_post (
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     deleted smallint DEFAULT 0 NOT NULL,
-    tenant_id bigint DEFAULT 0 NOT NULL
 );
 
 
@@ -4647,13 +4552,6 @@ COMMENT ON COLUMN public.system_post.deleted IS '是否删除';
 
 
 --
--- Name: COLUMN system_post.tenant_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_post.tenant_id IS '租户编号';
-
-
---
 -- Name: system_post_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -4684,7 +4582,6 @@ CREATE TABLE public.system_role (
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     deleted smallint DEFAULT 0 NOT NULL,
-    tenant_id bigint DEFAULT 0 NOT NULL
 );
 
 
@@ -4794,13 +4691,6 @@ COMMENT ON COLUMN public.system_role.deleted IS '是否删除';
 
 
 --
--- Name: COLUMN system_role.tenant_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_role.tenant_id IS '租户编号';
-
-
---
 -- Name: system_role_menu; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -4813,7 +4703,6 @@ CREATE TABLE public.system_role_menu (
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     deleted smallint DEFAULT 0 NOT NULL,
-    tenant_id bigint DEFAULT 0 NOT NULL
 );
 
 
@@ -4878,13 +4767,6 @@ COMMENT ON COLUMN public.system_role_menu.update_time IS '更新时间';
 --
 
 COMMENT ON COLUMN public.system_role_menu.deleted IS '是否删除';
-
-
---
--- Name: COLUMN system_role_menu.tenant_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_role_menu.tenant_id IS '租户编号';
 
 
 --
@@ -5061,7 +4943,6 @@ CREATE TABLE public.system_sms_code (
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     deleted smallint DEFAULT 0 NOT NULL,
-    tenant_id bigint DEFAULT 0 NOT NULL
 );
 
 
@@ -5168,13 +5049,6 @@ COMMENT ON COLUMN public.system_sms_code.update_time IS '更新时间';
 --
 
 COMMENT ON COLUMN public.system_sms_code.deleted IS '是否删除';
-
-
---
--- Name: COLUMN system_sms_code.tenant_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_sms_code.tenant_id IS '租户编号';
 
 
 --
@@ -5606,7 +5480,6 @@ CREATE TABLE public.system_social_client (
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     deleted smallint DEFAULT 0 NOT NULL,
-    tenant_id bigint DEFAULT 0 NOT NULL
 );
 
 
@@ -5716,13 +5589,6 @@ COMMENT ON COLUMN public.system_social_client.deleted IS '是否删除';
 
 
 --
--- Name: COLUMN system_social_client.tenant_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_social_client.tenant_id IS '租户编号';
-
-
---
 -- Name: system_social_client_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -5754,7 +5620,6 @@ CREATE TABLE public.system_social_user (
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     deleted smallint DEFAULT 0 NOT NULL,
-    tenant_id bigint DEFAULT 0 NOT NULL
 );
 
 
@@ -5871,13 +5736,6 @@ COMMENT ON COLUMN public.system_social_user.deleted IS '是否删除';
 
 
 --
--- Name: COLUMN system_social_user.tenant_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_social_user.tenant_id IS '租户编号';
-
-
---
 -- Name: system_social_user_bind; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -5892,7 +5750,6 @@ CREATE TABLE public.system_social_user_bind (
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     deleted smallint DEFAULT 0 NOT NULL,
-    tenant_id bigint DEFAULT 0 NOT NULL
 );
 
 
@@ -5974,13 +5831,6 @@ COMMENT ON COLUMN public.system_social_user_bind.deleted IS '是否删除';
 
 
 --
--- Name: COLUMN system_social_user_bind.tenant_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_social_user_bind.tenant_id IS '租户编号';
-
-
---
 -- Name: system_social_user_bind_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -6005,260 +5855,6 @@ CREATE SEQUENCE public.system_social_user_seq
 
 
 --
--- Name: system_tenant; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.system_tenant (
-    id bigint NOT NULL,
-    name character varying(30) NOT NULL,
-    contact_user_id bigint,
-    contact_name character varying(30) NOT NULL,
-    contact_mobile character varying(500) DEFAULT NULL::character varying,
-    status smallint DEFAULT 0 NOT NULL,
-    websites character varying(1024) DEFAULT ''::character varying,
-    package_id bigint NOT NULL,
-    expire_time timestamp without time zone NOT NULL,
-    account_count integer NOT NULL,
-    creator character varying(64) DEFAULT ''::character varying NOT NULL,
-    create_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updater character varying(64) DEFAULT ''::character varying,
-    update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted smallint DEFAULT 0 NOT NULL
-);
-
-
---
--- Name: TABLE system_tenant; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON TABLE public.system_tenant IS '租户表';
-
-
---
--- Name: COLUMN system_tenant.id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_tenant.id IS '租户编号';
-
-
---
--- Name: COLUMN system_tenant.name; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_tenant.name IS '租户名';
-
-
---
--- Name: COLUMN system_tenant.contact_user_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_tenant.contact_user_id IS '联系人的用户编号';
-
-
---
--- Name: COLUMN system_tenant.contact_name; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_tenant.contact_name IS '联系人';
-
-
---
--- Name: COLUMN system_tenant.contact_mobile; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_tenant.contact_mobile IS '联系手机';
-
-
---
--- Name: COLUMN system_tenant.status; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_tenant.status IS '租户状态';
-
-
---
--- Name: COLUMN system_tenant.websites; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_tenant.websites IS '绑定域名数组';
-
-
---
--- Name: COLUMN system_tenant.package_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_tenant.package_id IS '租户套餐编号';
-
-
---
--- Name: COLUMN system_tenant.expire_time; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_tenant.expire_time IS '过期时间';
-
-
---
--- Name: COLUMN system_tenant.account_count; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_tenant.account_count IS '账号数量';
-
-
---
--- Name: COLUMN system_tenant.creator; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_tenant.creator IS '创建者';
-
-
---
--- Name: COLUMN system_tenant.create_time; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_tenant.create_time IS '创建时间';
-
-
---
--- Name: COLUMN system_tenant.updater; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_tenant.updater IS '更新者';
-
-
---
--- Name: COLUMN system_tenant.update_time; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_tenant.update_time IS '更新时间';
-
-
---
--- Name: COLUMN system_tenant.deleted; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_tenant.deleted IS '是否删除';
-
-
---
--- Name: system_tenant_package; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.system_tenant_package (
-    id bigint NOT NULL,
-    name character varying(30) NOT NULL,
-    status smallint DEFAULT 0 NOT NULL,
-    remark character varying(256) DEFAULT ''::character varying,
-    menu_ids character varying(4096) NOT NULL,
-    creator character varying(64) DEFAULT ''::character varying NOT NULL,
-    create_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updater character varying(64) DEFAULT ''::character varying,
-    update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted smallint DEFAULT 0 NOT NULL
-);
-
-
---
--- Name: TABLE system_tenant_package; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON TABLE public.system_tenant_package IS '租户套餐表';
-
-
---
--- Name: COLUMN system_tenant_package.id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_tenant_package.id IS '套餐编号';
-
-
---
--- Name: COLUMN system_tenant_package.name; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_tenant_package.name IS '套餐名';
-
-
---
--- Name: COLUMN system_tenant_package.status; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_tenant_package.status IS '租户状态（0正常 1停用）';
-
-
---
--- Name: COLUMN system_tenant_package.remark; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_tenant_package.remark IS '备注';
-
-
---
--- Name: COLUMN system_tenant_package.menu_ids; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_tenant_package.menu_ids IS '关联的菜单编号';
-
-
---
--- Name: COLUMN system_tenant_package.creator; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_tenant_package.creator IS '创建者';
-
-
---
--- Name: COLUMN system_tenant_package.create_time; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_tenant_package.create_time IS '创建时间';
-
-
---
--- Name: COLUMN system_tenant_package.updater; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_tenant_package.updater IS '更新者';
-
-
---
--- Name: COLUMN system_tenant_package.update_time; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_tenant_package.update_time IS '更新时间';
-
-
---
--- Name: COLUMN system_tenant_package.deleted; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_tenant_package.deleted IS '是否删除';
-
-
---
--- Name: system_tenant_package_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.system_tenant_package_seq
-    START WITH 114
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: system_tenant_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.system_tenant_seq
-    START WITH 123
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
 -- Name: system_user_post; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -6271,7 +5867,6 @@ CREATE TABLE public.system_user_post (
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     deleted smallint DEFAULT 0 NOT NULL,
-    tenant_id bigint DEFAULT 0 NOT NULL
 );
 
 
@@ -6339,13 +5934,6 @@ COMMENT ON COLUMN public.system_user_post.deleted IS '是否删除';
 
 
 --
--- Name: COLUMN system_user_post.tenant_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_user_post.tenant_id IS '租户编号';
-
-
---
 -- Name: system_user_post_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -6370,7 +5958,6 @@ CREATE TABLE public.system_user_role (
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
     deleted smallint DEFAULT 0 NOT NULL,
-    tenant_id bigint DEFAULT 0 NOT NULL
 );
 
 
@@ -6438,13 +6025,6 @@ COMMENT ON COLUMN public.system_user_role.deleted IS '是否删除';
 
 
 --
--- Name: COLUMN system_user_role.tenant_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_user_role.tenant_id IS '租户编号';
-
-
---
 -- Name: system_user_role_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -6480,7 +6060,6 @@ CREATE TABLE public.system_users (
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     deleted smallint DEFAULT 0 NOT NULL,
-    tenant_id bigint DEFAULT 0 NOT NULL
 );
 
 
@@ -6625,13 +6204,6 @@ COMMENT ON COLUMN public.system_users.deleted IS '是否删除';
 
 
 --
--- Name: COLUMN system_users.tenant_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.system_users.tenant_id IS '租户编号';
-
-
---
 -- Name: system_users_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -6723,9 +6295,9 @@ INSERT INTO public.infra_file_config (id, name, storage, remark, master, config,
 -- Data for Name: system_dept; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-INSERT INTO public.system_dept (id, name, parent_id, sort, leader_user_id, phone, email, status, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (100, '默认部门', 0, 0, 1, NULL, NULL, 0, 'admin', '2021-01-05 17:03:47', '1', '2026-01-04 18:01:12', 0, 1);
-INSERT INTO public.system_dept (id, name, parent_id, sort, leader_user_id, phone, email, status, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (101, '总部', 100, 1, 1, NULL, NULL, 0, 'admin', '2021-01-05 17:03:47', '1', '2025-03-29 15:49:55', 0, 1);
-INSERT INTO public.system_dept (id, name, parent_id, sort, leader_user_id, phone, email, status, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (103, '研发部', 101, 1, 1, NULL, NULL, 0, 'admin', '2021-01-05 17:03:47', '1', '2026-01-04 18:01:24', 0, 1);
+INSERT INTO public.system_dept (id, name, parent_id, sort, leader_user_id, phone, email, status, creator, create_time, updater, update_time, deleted) VALUES (100, '默认部门', 0, 0, 1, NULL, NULL, 0, 'admin', '2021-01-05 17:03:47', '1', '2026-01-04 18:01:12', 0);
+INSERT INTO public.system_dept (id, name, parent_id, sort, leader_user_id, phone, email, status, creator, create_time, updater, update_time, deleted) VALUES (101, '总部', 100, 1, 1, NULL, NULL, 0, 'admin', '2021-01-05 17:03:47', '1', '2025-03-29 15:49:55', 0);
+INSERT INTO public.system_dept (id, name, parent_id, sort, leader_user_id, phone, email, status, creator, create_time, updater, update_time, deleted) VALUES (103, '研发部', 101, 1, 1, NULL, NULL, 0, 'admin', '2021-01-05 17:03:47', '1', '2026-01-04 18:01:24', 0);
 
 
 --
@@ -7022,18 +6594,6 @@ INSERT INTO public.system_menu (id, name, permission, type, sort, parent_id, pat
 INSERT INTO public.system_menu (id, name, permission, type, sort, parent_id, path, icon, component, component_name, status, visible, keep_alive, always_show, creator, create_time, updater, update_time, deleted) VALUES (111, '短信日志', '', 2, 2, 98, 'sms-log', 'fa:edit', 'system/sms/log/index', 'SystemSmsLog', 0, true, true, true, '', '2021-04-11 08:37:05', '1', '2026-08-14 01:49:42', 0);
 INSERT INTO public.system_menu (id, name, permission, type, sort, parent_id, path, icon, component, component_name, status, visible, keep_alive, always_show, creator, create_time, updater, update_time, deleted) VALUES (112, '短信日志查询', 'system:sms-log:query', 3, 1, 111, '', '', '', NULL, 0, true, true, true, '', '2021-04-11 08:37:05', '', '2026-08-14 01:49:42', 0);
 INSERT INTO public.system_menu (id, name, permission, type, sort, parent_id, path, icon, component, component_name, status, visible, keep_alive, always_show, creator, create_time, updater, update_time, deleted) VALUES (113, '短信日志导出', 'system:sms-log:export', 3, 5, 111, '', '', '', NULL, 0, true, true, true, '', '2021-04-11 08:37:05', '', '2026-08-14 01:49:42', 0);
-INSERT INTO public.system_menu (id, name, permission, type, sort, parent_id, path, icon, component, component_name, status, visible, keep_alive, always_show, creator, create_time, updater, update_time, deleted) VALUES (129, '租户列表', '', 2, 0, 181, 'list', 'ep:house', 'system/tenant/index', 'SystemTenant', 0, true, true, true, '', '2021-12-14 12:31:43', '1', '2026-08-14 01:49:42', 0);
-INSERT INTO public.system_menu (id, name, permission, type, sort, parent_id, path, icon, component, component_name, status, visible, keep_alive, always_show, creator, create_time, updater, update_time, deleted) VALUES (130, '租户查询', 'system:tenant:query', 3, 1, 129, '', '', '', NULL, 0, true, true, true, '', '2021-12-14 12:31:44', '', '2026-08-14 01:49:42', 0);
-INSERT INTO public.system_menu (id, name, permission, type, sort, parent_id, path, icon, component, component_name, status, visible, keep_alive, always_show, creator, create_time, updater, update_time, deleted) VALUES (131, '租户创建', 'system:tenant:create', 3, 2, 129, '', '', '', NULL, 0, true, true, true, '', '2021-12-14 12:31:44', '', '2026-08-14 01:49:42', 0);
-INSERT INTO public.system_menu (id, name, permission, type, sort, parent_id, path, icon, component, component_name, status, visible, keep_alive, always_show, creator, create_time, updater, update_time, deleted) VALUES (132, '租户更新', 'system:tenant:update', 3, 3, 129, '', '', '', NULL, 0, true, true, true, '', '2021-12-14 12:31:44', '', '2026-08-14 01:49:42', 0);
-INSERT INTO public.system_menu (id, name, permission, type, sort, parent_id, path, icon, component, component_name, status, visible, keep_alive, always_show, creator, create_time, updater, update_time, deleted) VALUES (133, '租户删除', 'system:tenant:delete', 3, 4, 129, '', '', '', NULL, 0, true, true, true, '', '2021-12-14 12:31:44', '', '2026-08-14 01:49:42', 0);
-INSERT INTO public.system_menu (id, name, permission, type, sort, parent_id, path, icon, component, component_name, status, visible, keep_alive, always_show, creator, create_time, updater, update_time, deleted) VALUES (134, '租户导出', 'system:tenant:export', 3, 5, 129, '', '', '', NULL, 0, true, true, true, '', '2021-12-14 12:31:44', '', '2026-08-14 01:49:42', 0);
-INSERT INTO public.system_menu (id, name, permission, type, sort, parent_id, path, icon, component, component_name, status, visible, keep_alive, always_show, creator, create_time, updater, update_time, deleted) VALUES (181, '租户管理', '', 2, 0, 1, 'tenant', 'fa-solid:house-user', NULL, NULL, 0, true, true, true, '1', '2022-02-20 01:41:13', '1', '2026-08-14 01:49:42', 0);
-INSERT INTO public.system_menu (id, name, permission, type, sort, parent_id, path, icon, component, component_name, status, visible, keep_alive, always_show, creator, create_time, updater, update_time, deleted) VALUES (182, '租户套餐', '', 2, 0, 181, 'package', 'fa:bars', 'system/tenantPackage/index', 'SystemTenantPackage', 0, true, true, true, '', '2022-02-19 17:44:06', '1', '2026-08-14 01:49:42', 0);
-INSERT INTO public.system_menu (id, name, permission, type, sort, parent_id, path, icon, component, component_name, status, visible, keep_alive, always_show, creator, create_time, updater, update_time, deleted) VALUES (183, '租户套餐查询', 'system:tenant-package:query', 3, 1, 182, '', '', '', NULL, 0, true, true, true, '', '2022-02-19 17:44:06', '', '2026-08-14 01:49:42', 0);
-INSERT INTO public.system_menu (id, name, permission, type, sort, parent_id, path, icon, component, component_name, status, visible, keep_alive, always_show, creator, create_time, updater, update_time, deleted) VALUES (184, '租户套餐创建', 'system:tenant-package:create', 3, 2, 182, '', '', '', NULL, 0, true, true, true, '', '2022-02-19 17:44:06', '', '2026-08-14 01:49:42', 0);
-INSERT INTO public.system_menu (id, name, permission, type, sort, parent_id, path, icon, component, component_name, status, visible, keep_alive, always_show, creator, create_time, updater, update_time, deleted) VALUES (185, '租户套餐更新', 'system:tenant-package:update', 3, 3, 182, '', '', '', NULL, 0, true, true, true, '', '2022-02-19 17:44:06', '', '2026-08-14 01:49:42', 0);
-INSERT INTO public.system_menu (id, name, permission, type, sort, parent_id, path, icon, component, component_name, status, visible, keep_alive, always_show, creator, create_time, updater, update_time, deleted) VALUES (186, '租户套餐删除', 'system:tenant-package:delete', 3, 4, 182, '', '', '', NULL, 0, true, true, true, '', '2022-02-19 17:44:06', '', '2026-08-14 01:49:42', 0);
 INSERT INTO public.system_menu (id, name, permission, type, sort, parent_id, path, icon, component, component_name, status, visible, keep_alive, always_show, creator, create_time, updater, update_time, deleted) VALUES (187, '文件配置', '', 2, 0, 193, 'file-config', 'fa-solid:file-signature', 'infra/fileConfig/index', 'InfraFileConfig', 0, true, true, true, '', '2022-03-15 14:35:28', '1', '2026-08-14 01:49:42', 0);
 INSERT INTO public.system_menu (id, name, permission, type, sort, parent_id, path, icon, component, component_name, status, visible, keep_alive, always_show, creator, create_time, updater, update_time, deleted) VALUES (188, '文件配置查询', 'infra:file-config:query', 3, 1, 187, '', '', '', NULL, 0, true, true, true, '', '2022-03-15 14:35:28', '', '2026-08-14 01:49:42', 0);
 INSERT INTO public.system_menu (id, name, permission, type, sort, parent_id, path, icon, component, component_name, status, visible, keep_alive, always_show, creator, create_time, updater, update_time, deleted) VALUES (189, '文件配置创建', 'infra:file-config:create', 3, 2, 187, '', '', '', NULL, 0, true, true, true, '', '2022-03-15 14:35:28', '', '2026-08-14 01:49:42', 0);
@@ -7107,7 +6667,6 @@ INSERT INTO public.system_menu (id, name, permission, type, sort, parent_id, pat
 INSERT INTO public.system_menu (id, name, permission, type, sort, parent_id, path, icon, component, component_name, status, visible, keep_alive, always_show, creator, create_time, updater, update_time, deleted) VALUES (565, 'WebSocket', '', 2, 5, 2, 'websocket', 'ep:connection', 'infra/webSocket/index', 'InfraWebSocket', 0, true, true, true, '1', '2023-11-23 19:41:55', '1', '2026-08-14 01:49:42', 0);
 INSERT INTO public.system_menu (id, name, permission, type, sort, parent_id, path, icon, component, component_name, status, visible, keep_alive, always_show, creator, create_time, updater, update_time, deleted) VALUES (772, '消息中心', '', 1, 7, 1, 'messages', 'ep:chat-dot-round', '', '', 0, true, true, true, '1', '2024-04-22 23:54:30', '1', '2026-08-14 01:49:42', 0);
 INSERT INTO public.system_menu (id, name, permission, type, sort, parent_id, path, icon, component, component_name, status, visible, keep_alive, always_show, creator, create_time, updater, update_time, deleted) VALUES (773, '监控中心', '', 1, 10, 2, 'monitors', 'ep:monitor', '', '', 0, true, true, true, '1', '2024-04-23 00:04:44', '1', '2026-08-14 01:49:42', 0);
-INSERT INTO public.system_menu (id, name, permission, type, sort, parent_id, path, icon, component, component_name, status, visible, keep_alive, always_show, creator, create_time, updater, update_time, deleted) VALUES (920, '租户切换', 'system:tenant:visit', 3, 999, 129, '', '', '', '', 0, true, true, true, '1', '2025-05-05 15:25:32', '1', '2026-08-14 01:49:42', 0);
 
 
 --
@@ -7175,211 +6734,198 @@ INSERT INTO public.system_oauth2_client (id, client_id, secret, name, logo, desc
 -- Data for Name: system_role; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-INSERT INTO public.system_role (id, name, code, sort, data_scope, data_scope_dept_ids, status, type, remark, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (1, '超级管理员', 'super_admin', 1, 1, '', 0, 1, '超级管理员', 'admin', '2021-01-05 17:03:48', '', '2022-02-22 05:08:21', 0, 1);
+INSERT INTO public.system_role (id, name, code, sort, data_scope, data_scope_dept_ids, status, type, remark, creator, create_time, updater, update_time, deleted) VALUES (1, '超级管理员', 'super_admin', 1, 1, '', 0, 1, '超级管理员', 'admin', '2021-01-05 17:03:48', '', '2022-02-22 05:08:21', 0);
 
 
 --
 -- Data for Name: system_role_menu; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9113, 1, 15, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9114, 1, 16, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9115, 1, 17, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9116, 1, 18, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9117, 1, 19, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9118, 1, 20, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9119, 1, 21, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9120, 1, 22, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9121, 1, 23, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9122, 1, 24, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9123, 1, 25, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9124, 1, 26, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9125, 1, 27, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9126, 1, 28, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9127, 1, 29, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9128, 1, 30, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9129, 1, 31, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9130, 1, 32, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9131, 1, 33, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9132, 1, 34, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9133, 1, 35, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9134, 1, 36, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9135, 1, 37, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9136, 1, 38, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9137, 1, 39, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9138, 1, 40, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9139, 1, 41, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9140, 1, 42, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9141, 1, 43, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9142, 1, 44, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9143, 1, 45, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9144, 1, 46, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9145, 1, 47, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9146, 1, 48, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9147, 1, 49, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9148, 1, 50, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9149, 1, 51, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9150, 1, 52, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9151, 1, 53, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9152, 1, 54, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9153, 1, 55, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9154, 1, 56, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9155, 1, 57, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9156, 1, 58, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9157, 1, 59, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9158, 1, 60, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9159, 1, 61, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9160, 1, 62, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9161, 1, 63, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9162, 1, 64, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9163, 1, 65, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9164, 1, 66, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9165, 1, 67, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9166, 1, 68, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9167, 1, 69, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9168, 1, 70, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9169, 1, 71, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9170, 1, 72, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9171, 1, 73, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9172, 1, 74, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9173, 1, 75, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9174, 1, 76, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9175, 1, 77, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9176, 1, 78, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9177, 1, 79, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9178, 1, 80, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9179, 1, 81, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9180, 1, 82, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9181, 1, 83, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9182, 1, 84, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9183, 1, 85, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9184, 1, 86, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9185, 1, 87, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9186, 1, 88, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9187, 1, 89, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9188, 1, 90, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9189, 1, 91, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9190, 1, 92, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9191, 1, 93, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9192, 1, 94, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9193, 1, 95, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9194, 1, 96, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9195, 1, 97, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9196, 1, 98, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9197, 1, 99, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9198, 1, 100, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9199, 1, 101, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9200, 1, 102, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9201, 1, 103, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9202, 1, 104, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9203, 1, 105, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9204, 1, 106, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9205, 1, 107, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9206, 1, 108, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9207, 1, 109, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9208, 1, 110, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9209, 1, 111, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9210, 1, 112, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9211, 1, 113, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9212, 1, 129, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9213, 1, 130, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9214, 1, 131, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9215, 1, 132, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9216, 1, 133, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9217, 1, 134, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9218, 1, 181, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9219, 1, 182, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9220, 1, 183, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9221, 1, 184, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9222, 1, 185, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9223, 1, 186, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9224, 1, 187, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9225, 1, 188, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9226, 1, 189, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9227, 1, 190, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9228, 1, 191, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9229, 1, 192, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9230, 1, 193, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9231, 1, 195, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9232, 1, 196, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9233, 1, 197, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9234, 1, 198, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9235, 1, 199, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9236, 1, 200, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9237, 1, 201, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9238, 1, 202, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9239, 1, 203, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9240, 1, 204, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9241, 1, 205, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9242, 1, 206, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9243, 1, 271, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9244, 1, 318, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9245, 1, 319, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9246, 1, 320, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9247, 1, 321, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9248, 1, 322, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9281, 1, 543, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9282, 1, 544, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9283, 1, 545, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9284, 1, 546, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9285, 1, 547, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9286, 1, 548, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9287, 1, 549, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9288, 1, 550, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9289, 1, 551, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9290, 1, 552, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9291, 1, 553, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9292, 1, 554, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9293, 1, 555, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9294, 1, 565, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9295, 1, 772, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9296, 1, 773, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9297, 1, 920, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9100, 1, 1, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9101, 1, 2, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9102, 1, 4, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9103, 1, 5, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9104, 1, 6, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9105, 1, 7, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9106, 1, 8, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9107, 1, 9, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9108, 1, 10, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9109, 1, 11, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9110, 1, 12, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9111, 1, 13, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9112, 1, 14, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9249, 1, 323, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9250, 1, 324, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9251, 1, 325, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9252, 1, 326, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9253, 1, 327, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9254, 1, 328, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9255, 1, 329, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9256, 1, 330, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9257, 1, 331, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9258, 1, 332, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9259, 1, 333, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9260, 1, 334, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9261, 1, 335, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9262, 1, 336, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9263, 1, 337, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9264, 1, 338, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9265, 1, 339, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9266, 1, 340, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9267, 1, 529, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9268, 1, 530, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9269, 1, 531, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9270, 1, 532, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9271, 1, 533, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9272, 1, 534, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9273, 1, 535, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9274, 1, 536, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9275, 1, 537, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9276, 1, 538, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9277, 1, 539, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9278, 1, 540, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9279, 1, 541, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
-INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (9280, 1, 542, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0, 1);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9113, 1, 15, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9114, 1, 16, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9115, 1, 17, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9116, 1, 18, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9117, 1, 19, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9118, 1, 20, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9119, 1, 21, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9120, 1, 22, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9121, 1, 23, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9122, 1, 24, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9123, 1, 25, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9124, 1, 26, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9125, 1, 27, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9126, 1, 28, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9127, 1, 29, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9128, 1, 30, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9129, 1, 31, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9130, 1, 32, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9131, 1, 33, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9132, 1, 34, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9133, 1, 35, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9134, 1, 36, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9135, 1, 37, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9136, 1, 38, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9137, 1, 39, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9138, 1, 40, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9139, 1, 41, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9140, 1, 42, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9141, 1, 43, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9142, 1, 44, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9143, 1, 45, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9144, 1, 46, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9145, 1, 47, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9146, 1, 48, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9147, 1, 49, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9148, 1, 50, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9149, 1, 51, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9150, 1, 52, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9151, 1, 53, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9152, 1, 54, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9153, 1, 55, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9154, 1, 56, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9155, 1, 57, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9156, 1, 58, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9157, 1, 59, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9158, 1, 60, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9159, 1, 61, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9160, 1, 62, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9161, 1, 63, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9162, 1, 64, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9163, 1, 65, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9164, 1, 66, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9165, 1, 67, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9166, 1, 68, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9167, 1, 69, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9168, 1, 70, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9169, 1, 71, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9170, 1, 72, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9171, 1, 73, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9172, 1, 74, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9173, 1, 75, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9174, 1, 76, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9175, 1, 77, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9176, 1, 78, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9177, 1, 79, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9178, 1, 80, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9179, 1, 81, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9180, 1, 82, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9181, 1, 83, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9182, 1, 84, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9183, 1, 85, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9184, 1, 86, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9185, 1, 87, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9186, 1, 88, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9187, 1, 89, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9188, 1, 90, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9189, 1, 91, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9190, 1, 92, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9191, 1, 93, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9192, 1, 94, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9193, 1, 95, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9194, 1, 96, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9195, 1, 97, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9196, 1, 98, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9197, 1, 99, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9198, 1, 100, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9199, 1, 101, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9200, 1, 102, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9201, 1, 103, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9202, 1, 104, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9203, 1, 105, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9204, 1, 106, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9205, 1, 107, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9206, 1, 108, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9207, 1, 109, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9208, 1, 110, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9209, 1, 111, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9210, 1, 112, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9211, 1, 113, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9224, 1, 187, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9225, 1, 188, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9226, 1, 189, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9227, 1, 190, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9228, 1, 191, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9229, 1, 192, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9230, 1, 193, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9231, 1, 195, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9232, 1, 196, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9233, 1, 197, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9234, 1, 198, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9235, 1, 199, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9236, 1, 200, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9237, 1, 201, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9238, 1, 202, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9239, 1, 203, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9240, 1, 204, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9241, 1, 205, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9242, 1, 206, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9243, 1, 271, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9244, 1, 318, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9245, 1, 319, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9246, 1, 320, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9247, 1, 321, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9248, 1, 322, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9281, 1, 543, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9282, 1, 544, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9283, 1, 545, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9284, 1, 546, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9285, 1, 547, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9286, 1, 548, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9287, 1, 549, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9288, 1, 550, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9289, 1, 551, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9290, 1, 552, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9291, 1, 553, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9292, 1, 554, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9293, 1, 555, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9294, 1, 565, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9295, 1, 772, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9296, 1, 773, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9100, 1, 1, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9101, 1, 2, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9102, 1, 4, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9103, 1, 5, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9104, 1, 6, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9105, 1, 7, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9106, 1, 8, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9107, 1, 9, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9108, 1, 10, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9109, 1, 11, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9110, 1, 12, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9111, 1, 13, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9112, 1, 14, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9249, 1, 323, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9250, 1, 324, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9251, 1, 325, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9252, 1, 326, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9253, 1, 327, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9254, 1, 328, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9255, 1, 329, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9256, 1, 330, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9257, 1, 331, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9258, 1, 332, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9259, 1, 333, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9260, 1, 334, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9261, 1, 335, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9262, 1, 336, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9263, 1, 337, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9264, 1, 338, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9265, 1, 339, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9266, 1, 340, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9267, 1, 529, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9268, 1, 530, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9269, 1, 531, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9270, 1, 532, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9271, 1, 533, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9272, 1, 534, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9273, 1, 535, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9274, 1, 536, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9275, 1, 537, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9276, 1, 538, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9277, 1, 539, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9278, 1, 540, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9279, 1, 541, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
+INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time, updater, update_time, deleted) VALUES (9280, 1, 542, '1', '2026-11-12 12:13:15.966342', '1', '2026-11-12 12:13:15.966342', 0);
 
 
 --
@@ -7425,20 +6971,6 @@ INSERT INTO public.system_role_menu (id, role_id, menu_id, creator, create_time,
 
 
 --
--- Data for Name: system_tenant; Type: TABLE DATA; Schema: public; Owner: -
---
-
-INSERT INTO public.system_tenant (id, name, contact_user_id, contact_name, contact_mobile, status, websites, package_id, expire_time, account_count, creator, create_time, updater, update_time, deleted) VALUES (1, '系统租户', NULL, '', NULL, 0, '', 0, '2099-02-19 17:14:16', 9999, '1', '2021-01-05 17:03:47', '1', '2025-08-19 05:18:41', 0);
-
-
---
--- Data for Name: system_tenant_package; Type: TABLE DATA; Schema: public; Owner: -
---
-
-INSERT INTO public.system_tenant_package (id, name, status, remark, menu_ids, creator, create_time, updater, update_time, deleted) VALUES (111, '普通套餐', 0, '', '[1,2,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,129,130,131,132,133,134,181,182,183,184,185,186,187,188,189,190,191,192,193,195,196,197,198,199,200,201,202,203,204,205,206,271,318,319,320,321,322,323,324,325,326,327,328,329,330,331,332,333,334,335,336,337,338,339,340,529,530,531,532,533,534,535,536,537,538,539,540,541,542,543,544,545,546,547,548,549,550,551,552,553,554,555,565,772,773,920]', '1', '2022-02-22 00:54:00', '1', '2026-08-14 01:49:42', 0);
-
-
---
 -- Data for Name: system_user_post; Type: TABLE DATA; Schema: public; Owner: -
 --
 
@@ -7448,14 +6980,14 @@ INSERT INTO public.system_tenant_package (id, name, status, remark, menu_ids, cr
 -- Data for Name: system_user_role; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-INSERT INTO public.system_user_role (id, user_id, role_id, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (1, 1, 1, '', '2022-01-11 13:19:45', '', '2022-05-12 12:35:17', 0, 1);
+INSERT INTO public.system_user_role (id, user_id, role_id, creator, create_time, updater, update_time, deleted) VALUES (1, 1, 1, '', '2022-01-11 13:19:45', '', '2022-05-12 12:35:17', 0);
 
 
 --
 -- Data for Name: system_users; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-INSERT INTO public.system_users (id, username, password, nickname, remark, dept_id, post_ids, email, mobile, sex, avatar, status, login_ip, login_date, creator, create_time, updater, update_time, deleted, tenant_id) VALUES (1, 'admin', '$2a$04$.vd8nPeLwxt6hnSzmAoAyul8BOLX7Cib6QhcxRe30rfvrIPQHH1OG', '系统管理员', '管理员', 103, '[]', '', '', 1, '', 0, '', NULL, 'admin', '2021-01-05 17:03:47', NULL, '2026-09-19 15:27:56', 0, 1);
+INSERT INTO public.system_users (id, username, password, nickname, remark, dept_id, post_ids, email, mobile, sex, avatar, status, login_ip, login_date, creator, create_time, updater, update_time, deleted) VALUES (1, 'admin', '$2a$04$.vd8nPeLwxt6hnSzmAoAyul8BOLX7Cib6QhcxRe30rfvrIPQHH1OG', '系统管理员', '管理员', 103, '[]', '', '', 1, '', 0, '', NULL, 'admin', '2021-01-05 17:03:47', NULL, '2026-09-19 15:27:56', 0);
 
 
 --
@@ -7722,20 +7254,6 @@ SELECT pg_catalog.setval('public.system_social_user_bind_seq', 1, false);
 --
 
 SELECT pg_catalog.setval('public.system_social_user_seq', 1, false);
-
-
---
--- Name: system_tenant_package_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.system_tenant_package_seq', 114, false);
-
-
---
--- Name: system_tenant_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.system_tenant_seq', 123, false);
 
 
 --
@@ -8061,22 +7579,6 @@ ALTER TABLE ONLY public.system_social_user
 
 ALTER TABLE ONLY public.system_social_user_bind
     ADD CONSTRAINT pk_system_social_user_bind PRIMARY KEY (id);
-
-
---
--- Name: system_tenant pk_system_tenant; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.system_tenant
-    ADD CONSTRAINT pk_system_tenant PRIMARY KEY (id);
-
-
---
--- Name: system_tenant_package pk_system_tenant_package; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.system_tenant_package
-    ADD CONSTRAINT pk_system_tenant_package PRIMARY KEY (id);
 
 
 --
