@@ -11,10 +11,43 @@
  3. collector_sample_raw 按天 RANGE 分区，本脚本创建示例日分区与 DEFAULT 分区；
     后续分区由维护任务按 collector_retention_policy.partition_lead_days 提前创建。
  4. 业务时间统一使用 timestamp(3) without time zone，语义为 Asia/Shanghai 本地墙钟时间。
- 5. 本脚本为初始化脚本，不含 DROP/TRUNCATE，请在空库中一次性执行。
+ 5. 本脚本支持重复执行：开头会删除并重建下述 14 张 collector 表与 9 个序列，
+    执行将清空采集器已有数据，请在确认后执行。
 */
 
 SET client_encoding = 'UTF8';
+
+
+-- =============================================================================
+-- 0. 删除旧对象（重建会清空采集器数据）
+--    先删表再删序列：部分列默认值依赖序列，避免残留依赖；
+--    分区表只 DROP 父表，分区及其索引/约束随父表一并删除，不单独 DROP。
+-- =============================================================================
+
+DROP TABLE IF EXISTS public.collector_protocol;
+DROP TABLE IF EXISTS public.collector_device;
+DROP TABLE IF EXISTS public.collector_channel;
+DROP TABLE IF EXISTS public.collector_poll_schedule;
+DROP TABLE IF EXISTS public.collector_config_version;
+DROP TABLE IF EXISTS public.collector_sample_raw;
+DROP TABLE IF EXISTS public.collector_aggregate_hour;
+DROP TABLE IF EXISTS public.collector_aggregate_day;
+DROP TABLE IF EXISTS public.collector_aggregate_watermark;
+DROP TABLE IF EXISTS public.collector_alarm;
+DROP TABLE IF EXISTS public.collector_device_status;
+DROP TABLE IF EXISTS public.collector_heartbeat;
+DROP TABLE IF EXISTS public.collector_command;
+DROP TABLE IF EXISTS public.collector_retention_policy;
+
+DROP SEQUENCE IF EXISTS public.collector_protocol_seq;
+DROP SEQUENCE IF EXISTS public.collector_device_seq;
+DROP SEQUENCE IF EXISTS public.collector_channel_seq;
+DROP SEQUENCE IF EXISTS public.collector_poll_schedule_seq;
+DROP SEQUENCE IF EXISTS public.collector_config_version_seq;
+DROP SEQUENCE IF EXISTS public.collector_alarm_seq;
+DROP SEQUENCE IF EXISTS public.collector_heartbeat_seq;
+DROP SEQUENCE IF EXISTS public.collector_command_seq;
+DROP SEQUENCE IF EXISTS public.collector_retention_policy_seq;
 
 
 -- =============================================================================
