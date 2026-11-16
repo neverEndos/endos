@@ -1,0 +1,3 @@
+# 部署模板会被直接拷贝到 Linux 板端使用，强制 LF 行尾，
+# 避免 Windows 检出时转成 CRLF 导致 systemd 单元解析异常。
+* text eol=lf
