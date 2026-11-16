@@ -1,0 +1,158 @@
+# 单板一体化部署：PostgreSQL + Redis + MinIO + 后端 + Nginx
+# 数据目录和发布目录均为显式 bind mount，禁止用 down -v 代替备份或清理。
+name: yudao-single
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      POSTGRES_DB: ${POSTGRES_DB:-ruoyi-vue-pro}
+      POSTGRES_USER: ${POSTGRES_USER:-yudao}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?请在 .env 中设置 MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?请在 .env 中设置 MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-yudao}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://minio:9000}
+      MINIO_PUBLIC_DOMAIN: ${MINIO_PUBLIC_DOMAIN:?请在 .env 中设置 MINIO_PUBLIC_DOMAIN}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - type: bind
+        source: ${POSTGRES_DATA_DIR:-/opt/yudao/data/postgres}
+        target: /var/lib/postgresql/data
+      - type: bind
+        source: ${SQL_DIR:-../../sql/postgresql}/ruoyi-vue-pro.sql
+        target: /docker-entrypoint-initdb.d/01-ruoyi-vue-pro.sql
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${SQL_DIR:-../../sql/postgresql}/quartz.sql
+        target: /docker-entrypoint-initdb.d/02-quartz.sql
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${SQL_DIR:-../../sql/postgresql}/collector.sql
+        target: /docker-entrypoint-initdb.d/03-collector.sql
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${SQL_DIR:-../../sql/postgresql}/collector_web_seed.sql
+        target: /docker-entrypoint-initdb.d/04-collector-web-seed.sql
+        read_only: true
+        bind:
+          create_host_path: false
+      - ./init/05-file-config.sh:/docker-entrypoint-initdb.d/05-file-config.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 60s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}"]
+    volumes:
+      - type: bind
+        source: ${REDIS_DATA_DIR:-/opt/yudao/data/redis}
+        target: /data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  minio:
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?请在 .env 中设置 MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?请在 .env 中设置 MINIO_ROOT_PASSWORD}
+    command: ["server", "/data", "--console-address", ":9001"]
+    ports:
+      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - type: bind
+        source: ${MINIO_DATA_DIR:-/opt/yudao/data/minio}
+        target: /data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  minio-init:
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+    restart: "no"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-yudao}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}" &&
+        mc mb --ignore-existing "local/$${MINIO_BUCKET}" &&
+        mc anonymous set none "local/$${MINIO_BUCKET}"
+    depends_on:
+      minio:
+        condition: service_healthy
+
+  yudao-server:
+    image: eclipse-temurin:25-jre
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      SPRING_DATASOURCE_DYNAMIC_DATASOURCE_MASTER_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-ruoyi-vue-pro}
+      SPRING_DATASOURCE_DYNAMIC_DATASOURCE_MASTER_USERNAME: ${POSTGRES_USER:-yudao}
+      SPRING_DATASOURCE_DYNAMIC_DATASOURCE_MASTER_PASSWORD: ${POSTGRES_PASSWORD}
+      SPRING_DATASOURCE_DYNAMIC_DATASOURCE_SLAVE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-ruoyi-vue-pro}
+      SPRING_DATASOURCE_DYNAMIC_DATASOURCE_SLAVE_USERNAME: ${POSTGRES_USER:-yudao}
+      SPRING_DATASOURCE_DYNAMIC_DATASOURCE_SLAVE_PASSWORD: ${POSTGRES_PASSWORD}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD}
+      YUDAO_DEMO: "false"
+    command: ["sh", "-c", "exec java $${JAVA_OPTS} -jar /app/current.jar"]
+    volumes:
+      - type: bind
+        source: ${BACKEND_RELEASES_DIR:-/opt/yudao/releases/backend}
+        target: /app
+        read_only: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  web:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-80}:80"
+    volumes:
+      - type: bind
+        source: ${WEB_RELEASES_DIR:-/opt/yudao/releases/web}
+        target: /usr/share/nginx/html
+        read_only: true
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - yudao-server
