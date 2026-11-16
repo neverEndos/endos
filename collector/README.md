@@ -138,8 +138,10 @@ WARN，并在后续轮询中跳过；`--require-sensors` 可恢复“所有已�
   缩放、单位、解析位置、四档阈值比例（默认 0.10/0.30/0.70/0.90）与开关；
 - `collector_channel`：16 条，由模板生成，保存 `sensor_template_id`、`value_kind`、
   量程、四档阈值与开关；`channel_config` 含 `address/message/fieldIndex/signed`。
-  数值通道 `alarm_enabled=1` 且四个阈值开关为 1；枚举通道 `flow_state` 为
-  `value_kind=enum`、`alarm_enabled=0` 且四个开关为 0。
+  数值通道 `alarm_enabled=1` 且四个阈值开关为 1；枚举通道 `flow_state` 保留
+  11~55 的枚举原始值展示量程，但四档阈值统一为 NULL、`alarm_enabled=0` 且四个开关为 0。
+  CS1000 数值量程为 ISO-4 8~25、ISO-6 7~24、ISO-14 6~23、SAE A/B/C/D 0~14、
+  温度 -60~150、Drive 0~100。
 
 已有旧版（仅两档阈值）数据库需先执行一次
 `sql/postgresql/collector_threshold_migration.sql`，再启动新版种子；新库直接执行

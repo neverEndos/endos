@@ -15,7 +15,7 @@
   ``sensor_type_id``，已存在但尚未关联模板的通道会补写 ``sensor_template_id``，
   不覆盖用户已修改的阈值等配置；
 - 数值通道按「下限 + 比例 × 量程」初始化四档阈值（比例 0.10/0.30/0.70/0.90），
-  枚举通道不产生阈值报警（``alarm_enabled=0`` 且四个开关为 0）；
+  枚举通道四档阈值均为 NULL，且不产生阈值报警（``alarm_enabled=0`` 且四个开关为 0）；
 - 连接参数全部来自 ``YUDAO_DB_*`` 环境变量（与板端 ``/etc/yudao/env.remote`` 一致）；
 - 仅在真正连接数据库时才导入 ``psycopg2``，便于在无 psycopg2 的开发机跑单元测试。
 """
@@ -171,13 +171,13 @@ SENSOR_TYPE_BY_SENSOR_CODE = {
 # 量程是初始模板默认值（依据协议文档/常见工况），不代表现场标定，可在 UI 调整。
 # 枚举通道 flow_state 不参与阈值报警。
 _TEMPLATE_RANGES = {
-    ("cs1000", "iso_4"): (0.0, 100.0, "number", 1, 1, 1, 1, 1),
-    ("cs1000", "iso_6"): (0.0, 100.0, "number", 1, 1, 1, 1, 1),
-    ("cs1000", "iso_14"): (0.0, 100.0, "number", 1, 1, 1, 1, 1),
-    ("cs1000", "sae_a"): (0.0, 20.0, "number", 1, 1, 1, 1, 1),
-    ("cs1000", "sae_b"): (0.0, 20.0, "number", 1, 1, 1, 1, 1),
-    ("cs1000", "sae_c"): (0.0, 20.0, "number", 1, 1, 1, 1, 1),
-    ("cs1000", "sae_d"): (0.0, 20.0, "number", 1, 1, 1, 1, 1),
+    ("cs1000", "iso_4"): (8.0, 25.0, "number", 1, 1, 1, 1, 1),
+    ("cs1000", "iso_6"): (7.0, 24.0, "number", 1, 1, 1, 1, 1),
+    ("cs1000", "iso_14"): (6.0, 23.0, "number", 1, 1, 1, 1, 1),
+    ("cs1000", "sae_a"): (0.0, 14.0, "number", 1, 1, 1, 1, 1),
+    ("cs1000", "sae_b"): (0.0, 14.0, "number", 1, 1, 1, 1, 1),
+    ("cs1000", "sae_c"): (0.0, 14.0, "number", 1, 1, 1, 1, 1),
+    ("cs1000", "sae_d"): (0.0, 14.0, "number", 1, 1, 1, 1, 1),
     ("cs1000", "temperature_c"): (-60.0, 150.0, "number", 1, 1, 1, 1, 1),
     ("cs1000", "flow_state"): (11.0, 55.0, "enum", 0, 0, 0, 0, 0),
     ("cs1000", "drive_pct"): (0.0, 100.0, "number", 1, 1, 1, 1, 1),
@@ -658,18 +658,24 @@ def _seed_channel(
         "unit": channel.unit,
         "decimals": channel.decimal_places,
     }
-    threshold_low_error = _initial_threshold(
-        template.value_min, template.value_max, 0.10
-    )
-    threshold_low_warning = _initial_threshold(
-        template.value_min, template.value_max, 0.30
-    )
-    threshold_high_warning = _initial_threshold(
-        template.value_min, template.value_max, 0.70
-    )
-    threshold_high_error = _initial_threshold(
-        template.value_min, template.value_max, 0.90
-    )
+    if template.value_kind == "enum":
+        threshold_low_error = None
+        threshold_low_warning = None
+        threshold_high_warning = None
+        threshold_high_error = None
+    else:
+        threshold_low_error = _initial_threshold(
+            template.value_min, template.value_max, 0.10
+        )
+        threshold_low_warning = _initial_threshold(
+            template.value_min, template.value_max, 0.30
+        )
+        threshold_high_warning = _initial_threshold(
+            template.value_min, template.value_max, 0.70
+        )
+        threshold_high_error = _initial_threshold(
+            template.value_min, template.value_max, 0.90
+        )
     cur.execute(
         """
         INSERT INTO public.collector_channel (
