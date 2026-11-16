@@ -252,7 +252,7 @@ yudao:
   captcha:
     enable: ${YUDAO_CAPTCHA_ENABLE:false} # 本地环境默认关闭图片验证码，方便登录等接口的测试
   security:
-    mock-enable: ${YUDAO_SECURITY_MOCK_ENABLE:true}
+    mock-enable: ${YUDAO_SECURITY_MOCK_ENABLE:false} # 板端默认关闭 mock 鉴权；离线演示需显式设为 true
   pay:
     order-notify-url: https://yutou.mynatapp.cc/admin-api/pay/notify/order # 支付渠道的【支付】回调地址
     refund-notify-url: https://yutou.mynatapp.cc/admin-api/pay/notify/refund # 支付渠道的【退款】回调地址

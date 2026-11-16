@@ -38,6 +38,8 @@ update-all.sh —— 板端按顺序更新多个组件
                         便于同批部署与回滚对应
   --keep N              每个组件 releases 保留版本数（默认 3，至少 1）
   --no-healthcheck      传给 deploy-backend.sh，跳过 48080 检查
+  --allow-mock          传给 deploy-backend.sh，允许 mock 可能开启时部署
+                        （默认 fail-closed，拒绝 mock/缺失键）
   --dry-run             只打印动作，不复制、不切换、不重启
   -h, --help            显示本帮助并退出 0
 
@@ -78,6 +80,7 @@ SKIP_COLLECTOR=0
 VERSION_FIXED=""
 KEEP=3
 NO_HEALTHCHECK=0
+ALLOW_MOCK=0
 JAR=""
 DIST_DIR=""
 SRC_DIR=""
@@ -124,6 +127,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --no-healthcheck)
       NO_HEALTHCHECK=1
+      shift
+      ;;
+    --allow-mock)
+      ALLOW_MOCK=1
       shift
       ;;
     --jar)
@@ -202,6 +209,7 @@ run_component() {
       [ -n "$JAR" ] || { usage >&2; die "更新 backend 需要 --jar <路径>"; }
       args=(--jar "$JAR")
       [ "$NO_HEALTHCHECK" -eq 1 ] && args+=(--no-healthcheck)
+      [ "$ALLOW_MOCK" -eq 1 ] && args+=(--allow-mock)
       ;;
     frontend)
       [ -n "$DIST_DIR" ] || { usage >&2; die "更新 frontend 需要 --dist <目录>"; }

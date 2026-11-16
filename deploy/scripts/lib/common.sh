@@ -70,11 +70,13 @@ require_cmd() {
 }
 
 # ---------- 版本 ----------
-# 输出 YYYYMMDD-HHMM-<sha 前 8 位>。
+# 输出 YYYYMMDD-HHMMSS-<sha 前 8 位>。
+# 秒级时间避免同一分钟内不同 sha 的版本名排序错乱；历史上 YYYYMMDD-HHMM
+# 目录仍可参与字典序比较（同一分钟内旧格式视为更早版本）。
 # sha 优先级：DEPLOY_GIT_SHA > 当前 git 仓库 > 源文件 sha256 > 无后缀。
 new_version() {
   local src="${1:-}" stamp sha=""
-  stamp="$(date +%Y%m%d-%H%M)"
+  stamp="$(date +%Y%m%d-%H%M%S)"
   if [ -n "${DEPLOY_GIT_SHA:-}" ]; then
     sha="${DEPLOY_GIT_SHA:0:8}"
   elif git -C "$DEPLOY_DIR" rev-parse --show-toplevel >/dev/null 2>&1; then
@@ -103,6 +105,9 @@ switch_symlink() {
   local target="$1" link="$2" tmp="$2.tmp.$$"
   if is_dry_run; then
     printf '[dry-run]'
+    printf ' %q' rm -f "$link.tmp."*
+    printf '\n'
+    printf '[dry-run]'
     printf ' %q' ln -s "$target" "$tmp"
     printf '\n'
     printf '[dry-run]'
@@ -110,6 +115,8 @@ switch_symlink() {
     printf '\n'
     return 0
   fi
+  # 清理上一次异常退出遗留的临时软链接，避免目录被 .tmp.* 垃圾堆积。
+  rm -f -- "$link".tmp.* 2>/dev/null || true
   ln -s "$target" "$tmp"
   mv -Tf "$tmp" "$link"
   [ -L "$link" ] || die "软链接切换失败：$link"
@@ -127,7 +134,8 @@ symlink_target_abs() {
 }
 
 # 找出严格小于 current 的最大版本名；没有则返回 1（调用方给出明确错误）。
-# 版本名按字典序比较（YYYYMMDD-HHMM[-sha] 前缀保证时间顺序）。
+# 版本名按字典序比较（YYYYMMDD-HHMMSS[-sha] 前缀保证时间顺序；旧的
+# YYYYMMDD-HHMM 目录视为同一分钟内更早的版本）。
 previous_release() {
   local dir="$1" current="${2:-}" v last=""
   [ -d "$dir" ] || return 1
@@ -141,7 +149,9 @@ previous_release() {
     if [ -z "$last" ] || [[ "$v" > "$last" ]]; then
       last="$v"
     fi
-  done < <(find "$dir" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)
+  # 过滤部署过程中的 .tmp.* 临时目录，避免被当作可回滚版本。
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 -type d ! -name '*.tmp.*' \
+    -printf '%f\n' 2>/dev/null | sort)
   [ -n "$last" ] || return 1
   printf '%s\n' "$last"
 }
@@ -159,7 +169,8 @@ prune_releases() {
 
   while IFS= read -r v; do
     [ -n "$v" ] && entries+=("$v")
-  done < <(find "$dir" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 -type d ! -name '*.tmp.*' \
+    -printf '%f\n' 2>/dev/null | sort)
 
   count=${#entries[@]}
   if [ "$count" -le "$keep" ]; then
@@ -178,6 +189,112 @@ prune_releases() {
     run rm -rf "$dir/$v"
     removed=$((removed + 1))
   done
+}
+
+# ---------- 后端 mock 鉴权门禁 ----------
+# 从 systemd EnvironmentFile 读取指定键的最后一次赋值（允许文件 0600 root）。
+# 返回值保留原始形态（未去引号/空白），便于调用方做 fail-closed 归一化。
+env_file_last_line() {
+  local file="$1" key="$2"
+  [ -f "$file" ] || return 0
+  if is_dry_run || [ -r "$file" ]; then
+    # dry-run 不执行 sudo（sudo_run 只会打印命令）；读不到就按缺失键处理。
+    grep -E "^${key}=" "$file" 2>/dev/null | tail -n 1 || true
+  else
+    sudo_run grep -E "^${key}=" "$file" 2>/dev/null | tail -n 1 || true
+  fi
+}
+
+# 归一化 mock 开关值：去 CR/空白、去 systemd 风格的成对引号、转小写。
+normalize_mock_value() {
+  local value="$1"
+  value="${value%$'\r'}"
+  value="$(printf '%s' "$value" | tr -d '[:space:]')"
+  case "$value" in
+    \"*\") value="${value#\"}"; value="${value%\"}" ;;
+    \'*\') value="${value#\'}"; value="${value%\'}" ;;
+  esac
+  value="$(printf '%s' "$value" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+  printf '%s' "$value"
+}
+
+# 确保后端不会以 mock 鉴权启动。fail-closed：只有明确 false/0/off/no 才放行；
+# 缺失文件/缺失键/空值/未知值/true/1/yes/on 等一律视为“可能开启 mock”。
+# 用法：ensure_backend_mock_disabled <env_file> [--allow-mock]
+# 返回：0 放行（含显式 --allow-mock），1 拒绝，2 参数错误。
+ensure_backend_mock_disabled() {
+  local env_file="${1:-}" allow_mock=0 raw value="" reason=""
+  shift || true
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --allow-mock) allow_mock=1; shift ;;
+      *)
+        error "ensure_backend_mock_disabled 未知参数：$1"
+        return 2
+        ;;
+    esac
+  done
+
+  if [ -z "$env_file" ] || [ ! -f "$env_file" ]; then
+    reason="环境变量文件不存在（${env_file:-未指定}）"
+  else
+    raw="$(env_file_last_line "$env_file" "YUDAO_SECURITY_MOCK_ENABLE")"
+    value="$(normalize_mock_value "${raw#*=}")"
+    case "$value" in
+      false|0|off|no)
+        info "YUDAO_SECURITY_MOCK_ENABLE=$value（mock 鉴权已确认关闭）"
+        return 0
+        ;;
+      "")
+        if [ -z "$raw" ]; then
+          reason="缺少 YUDAO_SECURITY_MOCK_ENABLE 键（按风险处理）"
+        else
+          reason="YUDAO_SECURITY_MOCK_ENABLE 为空值（按风险处理）"
+        fi
+        ;;
+      *)
+        reason="YUDAO_SECURITY_MOCK_ENABLE=${value}（只有 false/0/off/no 放行）"
+        ;;
+    esac
+  fi
+
+  if [ "$allow_mock" -eq 1 ]; then
+    warn "mock 门禁：$reason；已显式 --allow-mock，继续（仅限完全离线的演示环境）"
+    return 0
+  fi
+  error "mock 门禁拒绝：$reason"
+  error "mock 会跳过真实鉴权，禁止在局域网可达环境启用；请把 YUDAO_SECURITY_MOCK_ENABLE 改为 false"
+  error "确需离线演示请显式追加 --allow-mock"
+  return 1
+}
+
+# 校验 48080 只监听在回环地址；用于后端重启后确认 --server.address=127.0.0.1 生效。
+# 返回 0 通过，1 未监听或出现非回环地址。
+check_backend_listen_loopback() {
+  local addrs addr bad=0
+  if is_dry_run; then
+    info "[dry-run] 校验 ss -lnt：48080 仅监听 127.0.0.1"
+    return 0
+  fi
+  addrs="$(sudo_run ss -lnt 2>/dev/null \
+    | awk 'NR > 1 && $4 ~ /:48080$/ { print $4 }' || true)"
+  if [ -z "$addrs" ]; then
+    error "ss -lnt 未发现 48080 监听"
+    return 1
+  fi
+  while IFS= read -r addr; do
+    [ -n "$addr" ] || continue
+    case "$addr" in
+      127.0.0.1:48080|\[::ffff:127.0.0.1\]:48080)
+        info "48080 监听地址符合回环要求：$addr"
+        ;;
+      *)
+        error "48080 监听地址不符合回环要求：$addr（期望 127.0.0.1:48080）"
+        bad=1
+        ;;
+    esac
+  done <<< "$addrs"
+  [ "$bad" -eq 0 ]
 }
 
 # ---------- 健康检查 ----------

@@ -36,9 +36,10 @@ bootstrap-board.sh —— 新板初始化（幂等，在板端以 sudo 执行）
                         deploy/env.example 模板并提示后续手工填写。
   --keep-releases N     清理各组件 releases 目录，仅保留最近 N 个版本（默认 3）。
                         只删除 releases 下的版本目录，绝不删除 current 软链接。
-  --allow-mock          允许在 YUDAO_SECURITY_MOCK_ENABLE=true 时启动后端。
-                        仅限完全离线的演示环境；默认遇到 mock=true 会拒绝启动
-                        后端并给出错误，避免误把跳过鉴权的环境暴露到局域网。
+  --allow-mock          允许在 mock 可能开启时启动后端（fail-open 覆盖）。
+                        仅限完全离线的演示环境；默认 fail-closed：只有
+                        YUDAO_SECURITY_MOCK_ENABLE=false/0/off/no 才放行，
+                        缺失键、空值、true/1/yes/on 或未知值都会拒绝启动后端。
   -h, --help            显示本帮助并退出 0。
 
 作用与副作用：
@@ -48,8 +49,10 @@ bootstrap-board.sh —— 新板初始化（幂等，在板端以 sudo 执行）
     /var/log/yudao（alientek 所有）、/etc/yudao（root 所有）。
   - 安装 systemd 单元 yudao-server.service、collector.service。
     kiosk.service 不自动安装（依赖图形会话，按需手工启用）。
-  - 安装环境变量文件后读取 YUDAO_SECURITY_MOCK_ENABLE；为 true 且未传
-    --allow-mock 时只初始化其余组件，拒绝启动/启用 yudao-server 并以非 0 退出。
+  - 安装环境变量文件后读取 YUDAO_SECURITY_MOCK_ENABLE；只有明确
+    false/0/off/no 才放行。缺失键、空值、true/1/yes/on、未知值（含带引号/大小写
+    变体）都按“可能开启 mock”处理：未传 --allow-mock 时只初始化其余组件，
+    拒绝启动/启用 yudao-server 并以非 0 退出。
   - 通过 --env-file 上传的临时文件（/tmp/yudao-deploy/env.remote.upload）
     在安装结束后（成功或失败）由 EXIT trap 清理。
   - 安装 /etc/nginx/conf.d/collector.conf，禁用 Nginx 默认站点。
@@ -301,37 +304,16 @@ fi
 
 # ---------- 5.1 mock 鉴权门禁 ----------
 # mock=true 会跳过真实鉴权；除非开发者显式 --allow-mock，否则不启动后端。
+# fail-closed：只有明确 false/0/off/no 放行；缺失键、空值、未知值都按风险拒绝。
 BLOCK_BACKEND=0
 BLOCKED=0
-MOCK_VALUE=""
-if [ -f "$ENV_FILE" ]; then
-  if is_dry_run; then
-    MOCK_VALUE="$(grep -E '^YUDAO_SECURITY_MOCK_ENABLE=' "$ENV_FILE" 2>/dev/null \
-      | tail -n 1 | cut -d= -f2- | tr -d '[:space:]' || true)"
-  else
-    MOCK_VALUE="$(sudo_run grep -E '^YUDAO_SECURITY_MOCK_ENABLE=' "$ENV_FILE" 2>/dev/null \
-      | tail -n 1 | cut -d= -f2- | tr -d '[:space:]' || true)"
-  fi
+ALLOW_MOCK_ARG=()
+[ "$ALLOW_MOCK" -eq 1 ] && ALLOW_MOCK_ARG=(--allow-mock)
+if ! ensure_backend_mock_disabled "$ENV_FILE" ${ALLOW_MOCK_ARG[@]+"${ALLOW_MOCK_ARG[@]}"}; then
+  BLOCK_BACKEND=1
+  BLOCKED=1
+  error "已拒绝 yudao-server 的 enable/启动（其余组件仍会正常初始化）"
 fi
-case "$MOCK_VALUE" in
-  true|TRUE|True|1|yes|YES|on|ON)
-    if [ "$ALLOW_MOCK" -eq 1 ]; then
-      warn "YUDAO_SECURITY_MOCK_ENABLE=true 且显式 --allow-mock：跳过真实鉴权，仅限离线演示"
-    else
-      BLOCK_BACKEND=1
-      BLOCKED=1
-      error "拒绝启动 yudao-server：$ENV_FILE 中 YUDAO_SECURITY_MOCK_ENABLE=true"
-      error "mock 会跳过真实鉴权，禁止在局域网可达的环境启用；请改为 false"
-      error "确需离线演示请显式追加 --allow-mock（其余组件仍会正常初始化）"
-    fi
-    ;;
-  ""|false|FALSE|False|0|no|NO|off|OFF)
-    info "YUDAO_SECURITY_MOCK_ENABLE=${MOCK_VALUE:-未设置（默认 false）}"
-    ;;
-  *)
-    warn "无法识别的 YUDAO_SECURITY_MOCK_ENABLE=$MOCK_VALUE，按未开启处理"
-    ;;
-esac
 
 # ---------- 6. 时区 / 串口检查（只告警） ----------
 if command -v timedatectl >/dev/null 2>&1; then
