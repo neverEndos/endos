@@ -93,6 +93,9 @@ WARN，并在后续轮询中跳过；`--require-sensors` 可恢复“所有已�
 - `sensor_code` / `device_id`：启动时按种子业务键从 DB 解析；DB 不可用时为 `null`；
 - `fields`：解析器按协议换算后的数值，仅用于 JSONL 对照；
 - `raw`：msg=3 应答中的 int16 原始值（按字段顺序）；
+- `raw_by_field` / `field_names`：当前应答格式的“字段名 → 原始值”映射与字段顺序。
+  轮询层会把解析器的字段名映射原样透传到 JSONL 与落库记录，0x0E/0x12 都按字段名
+  取值；字段在当前格式中不存在时跳过并只记录一次 INFO，绝不回退到固定下标；
 - `channels`：通道级明细，`channel_id` 由启动时 `sensor_code + channel_code` 查询
   得到；`raw_value` 按字段名关联，`value` 按通道配置 `scale`/`value_offset`
   计算（与落库同一口径）；某通道未解析到 id 时仍输出该条目
@@ -150,9 +153,9 @@ WARN，并在后续轮询中跳过；`--require-sensors` 可恢复“所有已�
 - 分区维护：启动（或 DB 恢复）时以及每 `--partition-every` 轮（默认 60 轮），
   读取 `collector_retention_policy.data_class='sample_raw'` 的
   `partition_lead_days`（默认 3），为今天起该天数内缺失的日分区执行幂等
-  `CREATE TABLE IF NOT EXISTS ... PARTITION OF collector_sample_raw`；失败只
-  WARN 不退出，权限不足时提示运维手工创建。`collector_sample_raw_default`
-  正常应保持为空；
+  `CREATE TABLE IF NOT EXISTS ... PARTITION OF collector_sample_raw`；查询现有分区
+  限定 `public` schema；失败时重置数据库连接并只 WARN 不退出，权限不足时提示
+  运维手工创建。`collector_sample_raw_default` 正常应保持为空；
 - `collector_device_status`：任一颗传感器成功即视为本轮成功，更新 `online=1`、
   `last_success_at`、批次最大 `last_latency_ms`；连续 3 轮失败后 `online=0` 并写
   `last_error`；
@@ -192,7 +195,7 @@ STX(0x02) | Length | Address | Number | Data... | Checksum | ETX(0x03)
 
 | 功能码 | 用途 | 原型是否使用 |
 |---|---|---|
-| msg=1 | 状态查询，应答 Length=0x05，StatusCodeLo/Hi 组成 16 位状态码，0 表示有效 | 启动时用于 RS485 flags 连通确认 |
+| msg=1 | 状态查询，应答 Length=0x05，Data 为 StatusByte/StatusCodeLo/Hi 三字节，三字节全 0 才算有效 | 启动时用于 RS485 flags 连通确认 |
 | msg=3 | 测量值 | 每次轮询使用 |
 | msg=0 | 传感器 ID（本现场两颗传感器无应答） | 不使用 |
 | msg=2 | 传感器信息（本现场两颗传感器无应答） | 不使用 |
@@ -241,7 +244,9 @@ msg=3 按应答 Length 分支：
   `dc_change_pct`，且温度之后多了 3 个 Raw 字段）。
 
 两种格式的通道映射都**按字段名**关联（解析器输出的 `raw_by_field`），不再按
-固定 `fieldIndex` 顺序取 `raw`：0x0E 的 6 个字段全部有配置通道；0x12 中
+固定 `fieldIndex` 顺序取 `raw`。该映射由 `poll_sensor_once` 返回、`poll_cycle`
+原样透传到 JSONL 记录与落库记录，因此 0x12 在真实轮询链路上也不会错位。
+0x0E 的 6 个字段全部有配置通道；0x12 中
 `dc_change_pct` 不存在，该通道跳过，`raw_conductivity`/`raw_dc`/`raw_dac`
 未配置通道，默认只记录一次 INFO 后跳过。这样即使现场某天返回 0x12，也不会把
 饱和度写进 DC 变化、把温度写进原始电导率等错位行。该分支当前现场传感器不会
@@ -257,11 +262,14 @@ python -m unittest discover -s collector/tests -v
 ```
 
 覆盖：帧编码与校验和、错误帧拒绝、CS1000 10 字段解析、HLB1400 旧/扩展格式分支
-（含 0x12 按字段名映射、不错位）、状态应答 Length=0x05 与 StatusCodeLo/Hi、
-重试逻辑、RS485 flags 探测（宽松/严格两种策略）、JSONL 输出与统计摘要、
-配置驱动（scale/value_offset、enabled=0 跳过、poll_interval 继承、rs485Flags
-优先）、分区预创建（名称/边界/幂等/DDL 失败不中断轮询），以及 DB 首次不可用后
-恢复、映射解析失败后恢复、重连节流（不会每轮建连）、运行中写入失败自动重连。
+（0x12 全链路集成测试：`poll_sensor_once → poll_cycle → JSONL/落库` 按字段名映射、
+无 `dc_change_pct` 错位行、未配置 Raw 字段被跳过）、状态应答 Length=0x05 与
+StatusByte/StatusCodeLo/Hi 三字节判定、重试逻辑、RS485 flags 探测（宽松/严格
+两种策略）、JSONL 输出与统计摘要、配置驱动（scale/value_offset、enabled=0 跳过、
+poll_interval 继承、rs485Flags 优先）、分区预创建（名称/边界/幂等/schema 限定/
+DDL 失败不中断轮询），以及 DB 首次不可用后恢复、映射解析失败后恢复、重连节流
+（不会每轮建连）、运行中写入失败自动重连。板端脚本另有
+`deploy/tests/test_common.sh` 与 `deploy/tests/test_mock_gate.sh`。
 
 ## 约束与已知限制
 
@@ -269,8 +277,11 @@ python -m unittest discover -s collector/tests -v
 - 不依赖 msg=0 / msg=2（现场无应答）；
 - 当前两颗传感器处于自测随机模式，数值为随机值，不代表真实工况；本轮只验证
   通信成功率、解析正确性、稳定落库；
-- 状态应答按 Length=0x05 校验，Data 前两字节视为 StatusCodeLo/Hi（16 位状态码，
-  0 表示有效）；正式文档到位后需复核 Lo/Hi 具体语义；
+- 状态应答按 Length=0x05 校验，Data 三字节按 StatusByte/StatusCodeLo/StatusCodeHi
+  全部参与判定（三字节全 0 才有效）；正式文档到位后需复核三字节具体语义；
+- `enabled=0` 的传感器/通道不参与采集；若所有传感器都被禁用，进程记录 WARN 后
+  以退出码 0 正常退出，避免 `Restart=on-failure` 触发重启风暴，启用传感器后需
+  手动重启 collector；
 - 首期不做本地 spool：DB 不可用期间的数据直接丢弃；
 - 配置版本快照、聚合、报警尚未接入，`config_version_id` 等字段留空；
 - 默认宽松启动：单颗传感器无应答不会阻止启动，但该传感器在本次进程内会被跳过

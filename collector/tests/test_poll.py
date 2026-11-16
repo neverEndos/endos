@@ -1,5 +1,6 @@
 """轮询器单元测试（使用假 transport，不依赖串口）。"""
 
+import logging
 import os
 import struct
 import sys
@@ -8,6 +9,7 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import seed  # noqa: E402
 from hsi import cs1000, hlb1400  # noqa: E402
 from hsi.frame import RESPONSE_ADDRESS, build_frame, parse_frame  # noqa: E402
 from poll import (  # noqa: E402
@@ -15,10 +17,15 @@ from poll import (  # noqa: E402
     PollError,
     SensorStats,
     discover_rs485_flags,
+    poll_cycle,
     poll_sensor_once,
     run_loop,
     summarize,
 )
+from storage import build_sample_rows, context_from_rows  # noqa: E402
+
+DEVICE_ID = 7
+SENSOR_ID = 12
 
 
 def response(number, data):
@@ -31,6 +38,33 @@ def cs1000_measure(values=(100, 200, 300, 21, 22, 23, 24, 250, 11, 55)):
 
 def hlb1400_measure(values=(100, 200, 300, 400, 55, 250)):
     return response(3, struct.pack("<6h", *values))
+
+
+def hlb1400_extended_measure(values=(100, 200, 300, 55, 250, 111, 222, 333)):
+    return response(3, struct.pack("<8h", *values))
+
+
+def resolved_hlb_context():
+    """把 HLB1400 的 6 个种子通道全部解析出 id（111..116）。"""
+
+    rows = []
+    hlb_channels = [
+        channel
+        for channel in seed.CHANNEL_SEEDS
+        if channel.sensor_code == "hlb1400-01"
+    ]
+    for index, channel in enumerate(hlb_channels, start=1):
+        rows.append(
+            (
+                "hlb1400-01",
+                channel.channel_code,
+                SENSOR_ID,
+                110 + index,
+                DEVICE_ID,
+                {"field": channel.field, "fieldIndex": channel.field_index},
+            )
+        )
+    return context_from_rows(DEVICE_ID, rows)
 
 
 def status_ok():
@@ -291,6 +325,130 @@ class RunLoopTest(unittest.TestCase):
         self.assertEqual(stats["CS1000"].successes, 1)
         self.assertEqual(stats["HLB1400"].failures, 1)
         self.assertEqual(stats["HLB1400"].last_error.startswith("TimeoutError"), True)
+
+
+class ExtendedFormatEndToEndTest(unittest.TestCase):
+    """0x12 全链路：poll_sensor_once → poll_cycle → JSONL/落库行。
+
+    使用假 transport 返回 0x12 报文，验证 raw_by_field 不会被轮询层丢弃，
+    从而不会退回 0x0E 的 field_index 顺序造成错位。
+    """
+
+    def _run_cycle(self, measure_frame):
+        transport = FakeTransport(lambda request, flags, seq: measure_frame)
+        context = resolved_hlb_context()
+        writer = ListWriter()
+        stats = {"HLB1400": SensorStats("HLB1400", hlb1400.HLB1400.field_count)}
+        logger = logging.getLogger("test-poll-extended")
+        records = poll_cycle(
+            transport,
+            [hlb1400.HLB1400()],
+            stats,
+            writer=writer,
+            cycle=1,
+            timeout=0.1,
+            retries=0,
+            logger=logger,
+            channel_context=context,
+        )
+        return context, writer, records, logger
+
+    def test_extended_format_maps_by_field_name_end_to_end(self):
+        context, writer, records, logger = self._run_cycle(
+            hlb1400_extended_measure()
+        )
+        self.assertEqual(writer.line_count, 1)
+        record = writer.records[0]
+        self.assertEqual(record["format"], "0x12")
+        # 轮询层必须透传字段名映射（这是本轮修复的核心）。
+        self.assertEqual(
+            record["raw_by_field"]["saturation_pct"], 55
+        )
+        self.assertEqual(record["raw_by_field"]["temperature_c"], 250)
+        self.assertNotIn("dc_change_pct", record["raw_by_field"])
+        self.assertEqual(
+            list(record["field_names"]), list(hlb1400.EXTENDED_FIELD_NAMES)
+        )
+
+        entries = {entry["channel_id"]: entry for entry in record["channels"]}
+        # 0x12 中存在的 5 个旧通道按字段名取值；dc_change_pct(114) 不存在。
+        self.assertEqual(sorted(entries), [111, 112, 113, 115, 116])
+        self.assertEqual(entries[111]["raw_value"], 100)
+        self.assertEqual(entries[111]["value"], 10.0)
+        self.assertEqual(entries[112]["raw_value"], 200)
+        self.assertEqual(entries[112]["value"], 20.0)
+        self.assertEqual(entries[113]["raw_value"], 300)
+        self.assertEqual(entries[113]["value"], 3.0)
+        self.assertEqual(entries[115]["raw_value"], 55)
+        self.assertEqual(entries[115]["value"], 55.0)
+        self.assertEqual(entries[116]["raw_value"], 250)
+        self.assertEqual(entries[116]["value"], 25.0)
+        self.assertEqual(len(entries), 5)
+        # raw_conductivity/raw_dc/raw_dac 未配置通道，不产生条目。
+        for name in ("raw_conductivity", "raw_dc", "raw_dac"):
+            self.assertIn(name, record["raw_by_field"])
+            self.assertNotIn(name, {entry["field"] for entry in entries.values()})
+
+        rows = build_sample_rows(
+            context.bindings,
+            records,
+            datetime(2026, 11, 13, 20, 30),
+            DEVICE_ID,
+            logger=logger,
+        )
+        by_id = {row[0]: row for row in rows}
+        self.assertEqual(sorted(by_id), [111, 112, 113, 115, 116])
+        self.assertEqual(by_id[111][4], 100)
+        self.assertEqual(by_id[111][3], 10.0)
+        self.assertEqual(by_id[112][4], 200)
+        self.assertEqual(by_id[112][3], 20.0)
+        self.assertEqual(by_id[113][4], 300)
+        self.assertEqual(by_id[113][3], 3.0)
+        self.assertEqual(by_id[115][4], 55)
+        self.assertEqual(by_id[115][3], 55.0)
+        self.assertEqual(by_id[116][4], 250)
+        self.assertEqual(by_id[116][3], 25.0)
+        self.assertNotIn(114, by_id)
+
+    def test_legacy_format_regression_on_same_chain(self):
+        context, writer, records, logger = self._run_cycle(hlb1400_measure())
+        record = writer.records[0]
+        self.assertEqual(record["format"], "0x0E")
+        entries = {entry["channel_id"]: entry for entry in record["channels"]}
+        self.assertEqual(sorted(entries), [111, 112, 113, 114, 115, 116])
+        self.assertEqual(entries[114]["field"], "dc_change_pct")
+        self.assertEqual(entries[114]["raw_value"], 400)
+        self.assertEqual(entries[114]["value"], 40.0)
+        self.assertEqual(entries[116]["raw_value"], 250)
+        self.assertEqual(entries[116]["value"], 25.0)
+
+        rows = build_sample_rows(
+            context.bindings,
+            records,
+            datetime(2026, 11, 13, 20, 30),
+            DEVICE_ID,
+            logger=logger,
+        )
+        by_id = {row[0]: row for row in rows}
+        self.assertEqual(sorted(by_id), [111, 112, 113, 114, 115, 116])
+        self.assertEqual(by_id[114][4], 400)
+        self.assertEqual(by_id[114][3], 40.0)
+        self.assertEqual(by_id[116][4], 250)
+        self.assertEqual(by_id[116][3], 25.0)
+
+    def test_poll_sensor_once_preserves_raw_by_field(self):
+        result = poll_sensor_once(
+            FakeTransport(lambda request, flags, seq: hlb1400_extended_measure()),
+            hlb1400.HLB1400(),
+            timeout=0.1,
+            retries=0,
+            logger=logging.getLogger("test-poll-extended"),
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["raw_by_field"]["saturation_pct"], 55)
+        self.assertEqual(
+            list(result["field_names"]), list(hlb1400.EXTENDED_FIELD_NAMES)
+        )
 
 
 class SummaryTest(unittest.TestCase):

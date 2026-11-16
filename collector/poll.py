@@ -139,7 +139,9 @@ def poll_sensor_once(
     """对单个传感器执行一次测量，失败时按 ``retries`` 重试。
 
     返回字典包含 ``ok``、``attempts``、``latency_ms``，成功时还有
-    ``fields``/``quality``/``format``/``request_hex``/``response_hex``。
+    ``fields``/``raw_fields``/``raw_by_field``/``field_names``/``quality``/
+    ``format``/``request_hex``/``response_hex``。``raw_by_field`` 是后续按字段名
+    关联通道的**唯一依据**，必须随结果一路透传到 JSONL 与落库。
     """
     if retries < 0:
         raise ValueError("retries 不能为负数")
@@ -180,6 +182,10 @@ def poll_sensor_once(
                 "total_latency_ms": round((time.monotonic() - started_all) * 1000.0, 2),
                 "fields": parsed["fields"],
                 "raw_fields": parsed.get("raw_fields", []),
+                # 0x0E/0x12 的字段顺序不同，必须保留字段名映射；
+                # 丢失该映射会让落库退回 field_index，导致 0x12 全部错位。
+                "raw_by_field": parsed.get("raw_by_field"),
+                "field_names": parsed.get("field_names"),
                 "quality": parsed.get("quality", 0),
                 "format": parsed.get("format"),
                 "request_hex": request.hex(),
@@ -450,6 +456,10 @@ def poll_cycle(
                 "device_id": device_id,
                 "fields": result["fields"],
                 "raw": result.get("raw_fields", []),
+                # JSONL 与落库记录都带字段名映射：build_channel_entries /
+                # build_sample_rows 优先按字段名取 raw，不再回退到固定下标。
+                "raw_by_field": result.get("raw_by_field"),
+                "field_names": result.get("field_names"),
                 "channels": entries,
                 "quality": result["quality"],
                 "latency_ms": result["latency_ms"],
