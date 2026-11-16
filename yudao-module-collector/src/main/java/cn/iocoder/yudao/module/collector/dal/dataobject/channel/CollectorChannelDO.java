@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.collector.dal.dataobject.channel;
 
 import cn.iocoder.yudao.framework.mybatis.core.dataobject.BaseDO;
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import com.baomidou.mybatisplus.annotation.KeySequence;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
@@ -136,6 +137,7 @@ public class CollectorChannelDO extends BaseDO {
     /**
      * 独立轮询周期（NULL 继承设备）
      */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private Integer pollIntervalMs;
     /**
      * 描述
