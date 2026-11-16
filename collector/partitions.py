@@ -98,8 +98,10 @@ def fetch_existing_partition_names(conn) -> set[str]:
             SELECT child.relname
             FROM pg_inherits
             JOIN pg_class parent ON parent.oid = pg_inherits.inhparent
+            JOIN pg_namespace ns ON ns.oid = parent.relnamespace
             JOIN pg_class child ON child.oid = pg_inherits.inhrelid
             WHERE parent.relname = 'collector_sample_raw'
+              AND ns.nspname = 'public'
             """
         )
         return {str(row[0]) for row in cur.fetchall()}

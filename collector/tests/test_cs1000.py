@@ -66,25 +66,35 @@ class Cs1000ParseTest(unittest.TestCase):
         with self.assertRaises(FrameError):
             cs1000.parse_measure(frame)
 
-    def test_status_parse(self):
-        frame = parse_frame(build_frame(RESPONSE_ADDRESS, 1, b"\x00\x00\x02"))
+    def test_status_parse_all_zero_valid(self):
+        frame = parse_frame(build_frame(RESPONSE_ADDRESS, 1, b"\x00\x00\x00"))
         status = cs1000.parse_status(frame)
+        self.assertEqual(status["status_byte"], 0)
         self.assertEqual(status["status_code_lo"], 0)
         self.assertEqual(status["status_code_hi"], 0)
         self.assertEqual(status["status_code"], 0)
         self.assertTrue(status["valid"])
-        self.assertEqual(status["raw_data_hex"], "000002")
+        self.assertEqual(status["raw_data_hex"], "000000")
 
-    def test_status_nonzero_lo_invalid(self):
+    def test_status_nonzero_status_byte_invalid(self):
+        # StatusByte（Data 第 1 字节）必须参与判定。
         frame = parse_frame(build_frame(RESPONSE_ADDRESS, 1, b"\x07\x00\x00"))
         status = cs1000.parse_status(frame)
         self.assertEqual(status["status_byte"], 7)
-        self.assertEqual(status["status_code"], 7)
+        self.assertEqual(status["status_code"], 0)
+        self.assertFalse(status["valid"])
+
+    def test_status_nonzero_lo_invalid(self):
+        frame = parse_frame(build_frame(RESPONSE_ADDRESS, 1, b"\x00\x01\x00"))
+        status = cs1000.parse_status(frame)
+        self.assertEqual(status["status_code_lo"], 1)
+        self.assertEqual(status["status_code"], 1)
         self.assertFalse(status["valid"])
 
     def test_status_nonzero_hi_invalid(self):
-        frame = parse_frame(build_frame(RESPONSE_ADDRESS, 1, b"\x00\x01\x00"))
+        frame = parse_frame(build_frame(RESPONSE_ADDRESS, 1, b"\x00\x00\x01"))
         status = cs1000.parse_status(frame)
+        self.assertEqual(status["status_code_hi"], 1)
         self.assertEqual(status["status_code"], 0x0100)
         self.assertFalse(status["valid"])
 

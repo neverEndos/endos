@@ -79,9 +79,22 @@ class Hlb1400ExtendedTest(unittest.TestCase):
     def test_status_parse_has_lo_hi(self):
         frame = parse_frame(build_frame(RESPONSE_ADDRESS, 1, b"\x00\x00\x00"))
         status = hlb1400.parse_status(frame)
+        self.assertEqual(status["status_byte"], 0)
         self.assertEqual(status["status_code_lo"], 0)
         self.assertEqual(status["status_code_hi"], 0)
         self.assertTrue(status["valid"])
+
+    def test_status_all_three_bytes_participate(self):
+        for data, code in (
+            (b"\x01\x00\x00", 0),
+            (b"\x00\x01\x00", 1),
+            (b"\x00\x00\x01", 0x0100),
+            (b"\x00\x01\x01", 0x0101),
+        ):
+            frame = parse_frame(build_frame(RESPONSE_ADDRESS, 1, data))
+            status = hlb1400.parse_status(frame)
+            self.assertEqual(status["status_code"], code)
+            self.assertFalse(status["valid"], data)
 
     def test_status_wrong_length_rejected(self):
         frame = parse_frame(build_frame(RESPONSE_ADDRESS, 1, b"\x00"))

@@ -116,6 +116,15 @@ class PartitionEnsureTest(unittest.TestCase):
         ddl = [sql for sql in conn.state["executed"] if sql.startswith("CREATE")]
         self.assertEqual(len(ddl), 2)
 
+    def test_partition_query_is_schema_qualified(self):
+        conn = FakeConn(lead_days=0, existing=["collector_sample_raw_p20261113"])
+        partitions.ensure_partitions(conn, today=TODAY)
+        query = [
+            sql for sql in conn.state["executed"] if "pg_inherits" in sql
+        ][0]
+        self.assertIn("pg_namespace", query)
+        self.assertIn("ns.nspname = 'public'", query)
+
     def test_ensure_idempotent_when_nothing_missing(self):
         conn = FakeConn(
             lead_days=0,

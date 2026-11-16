@@ -9,6 +9,7 @@ Type=simple
 User=alientek
 Group=alientek
 WorkingDirectory=/opt/yudao/collector/current
+Environment=TZ=Asia/Shanghai
 EnvironmentFile=/etc/yudao/env.remote
 # 串口属于 dialout 组；用户 alientek 已在 dialout 组，这里再显式补充一次，
 # 避免因登录会话/组变更导致服务拿不到 /dev/ttyS4 权限。
@@ -19,7 +20,8 @@ SupplementaryGroups=dialout
 #   --duration   0 表示一直运行（原型默认 600 秒后退出）
 #   --output     JSONL 输出，进程每次启动会覆盖该文件
 #   --log        原型日志，进程每次启动会覆盖该文件
-#   --flags      auto：依次探测 1,3,5,7 并回退 0（本现场实际使用 0）
+#   --flags      auto：优先使用 collector_sensor.connection_config.rs485Flags，
+#                缺失时依次探测 1,3,5,7 并回退 0（本现场实际使用 0）
 #   --db-retry-interval  DB 不可用时的重连/重新种子间隔（秒）
 ExecStart=/usr/bin/python3 /opt/yudao/collector/current/main.py \
     --port /dev/ttyS4 \

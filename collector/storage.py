@@ -772,16 +772,21 @@ class PgStorage:
     def ensure_partitions(
         self, today=None, lead_days: int | None = None
     ) -> list[str]:
-        """确保未来日分区存在；失败向上抛异常，由 DatabaseManager 告警。"""
+        """确保未来日分区存在；失败时重置连接并向上抛异常，由 DatabaseManager 告警。"""
 
         self._ensure_conn()
-        with self._conn:
-            return partition_maintenance.ensure_partitions(
-                self._conn,
-                today=today,
-                lead_days=lead_days,
-                logger=self.logger,
-            )
+        try:
+            with self._conn:
+                return partition_maintenance.ensure_partitions(
+                    self._conn,
+                    today=today,
+                    lead_days=lead_days,
+                    logger=self.logger,
+                )
+        except Exception:
+            # DDL 失败可能留下未完成事务/坏连接；重置后由下一次写入重连。
+            self._reset_conn()
+            raise
 
     def write_heartbeat(self) -> int | None:
         """插入一行心跳，返回心跳 id；DB 不可用时由调用方处理异常。"""

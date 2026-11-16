@@ -65,10 +65,11 @@ def build_measure_request() -> bytes:
 
 
 def parse_status(frame: HsiFrame) -> dict:
-    """解析 msg=1 状态应答（Length=0x05，Data=StatusCodeLo/Hi+保留字节）。
+    """解析 msg=1 状态应答（Length=0x05，Data=StatusByte/StatusCodeLo/Hi）。
 
-    StatusCodeLo/Hi 组成 16 位状态码，0 表示有效；非 0 只记录，不在这里决定
-    采集是否继续（是否跳过传感器由轮询器按统计策略判断）。
+    Data 三字节全部参与判定：``StatusByte`` 非 0 或由 ``StatusCodeLo/Hi``
+    组成的 16 位状态码非 0 都视为无效（``valid=False``）。无效只记录，
+    不在这里决定采集是否继续（是否跳过传感器由轮询器按统计策略判断）。
     """
     validate_response(frame, 1)
     if frame.length != STATUS_LENGTH:
@@ -77,16 +78,21 @@ def parse_status(frame: HsiFrame) -> dict:
             f"期望 0x{STATUS_LENGTH:02X}"
         )
     data = frame.data
-    status_lo = data[0] if len(data) >= 1 else 0xFF
-    status_hi = data[1] if len(data) >= 2 else 0x00
-    status_code = status_lo | (status_hi << 8)
+    if len(data) < 3:
+        raise FrameError(
+            f"HLB1400 状态应答 Data 长度错误: {len(data)} 字节，期望 3 字节"
+        )
+    status_byte = data[0]
+    status_code_lo = data[1]
+    status_code_hi = data[2]
+    status_code = status_code_lo | (status_code_hi << 8)
     return {
-        "status_code_lo": status_lo,
-        "status_code_hi": status_hi,
+        "status_byte": status_byte,
+        "status_code_lo": status_code_lo,
+        "status_code_hi": status_code_hi,
         "status_code": status_code,
-        # 兼容旧字段：状态码低字节
-        "status_byte": status_lo,
-        "valid": status_code == 0,
+        # 三字节任一非 0 都视为无效，避免只看前两字节漏判 StatusByte。
+        "valid": status_byte == 0 and status_code == 0,
         "raw_data_hex": frame.data.hex(),
     }
 

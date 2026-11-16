@@ -242,7 +242,14 @@ def run(args: argparse.Namespace, logger: logging.Logger) -> int:
             )
         ]
         if not target_drivers:
-            raise PollError("DB 中所有传感器均为 enabled=0，没有可轮询的传感器")
+            # 不要以退出码 2 结束：systemd Restart=on-failure 会把它当成故障并
+            # 反复重启。这里明确记录后正常退出（0），等待人工启用传感器后重启。
+            logger.warning(
+                "DB 中所有传感器均为 enabled=0，没有可轮询的传感器；"
+                "本次正常退出（exit 0，不触发 systemd 重启），"
+                "启用至少一个传感器后请手动重启 collector"
+            )
+            return 0
 
         auto_flags = args.flags.strip().lower() == "auto"
         if auto_flags:
