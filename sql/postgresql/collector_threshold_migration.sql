@@ -19,6 +19,8 @@
       并为已有通道补充量程、四档阈值与开关；已关联模板的通道不再更新。
       首次升级时，旧 threshold_low/threshold_high 分别保留为下/上 warning；
       对应旧值存在时，该侧新增 error 档保持 NULL，旧值缺失的档才按模板比例补全。
+      未匹配模板的通道也会保留旧 warning 值，其余新增阈值保持 NULL；若旧值无法完整
+      回填，脚本会报错并整体回滚，不会继续删除旧列。
    3. 四档阈值按 value_min + 比例 × (value_max - value_min) 计算，
       比例默认 0.10 / 0.30 / 0.70 / 0.90；enum 通道四档阈值均为 NULL，
       alarm_enabled=0、四个阈值开关均为 0。
@@ -506,7 +508,32 @@ WHERE c.sensor_id = s.id
   AND s.deleted = 0
   AND c.sensor_template_id IS NULL;
 
--- 未匹配到模板的通道保持原有可空字段与默认开关；给出提示，不阻断迁移。
+-- 所有未被模板回填的通道也必须保留旧两档值；旧值只进入 warning，error 保持原值（通常为 NULL）。
+UPDATE public.collector_channel c
+SET threshold_low_warning = COALESCE(c.threshold_low_warning, legacy.legacy_low),
+    threshold_high_warning = COALESCE(c.threshold_high_warning, legacy.legacy_high)
+FROM pg_temp.collector_legacy_threshold legacy
+WHERE legacy.channel_id = c.id
+  AND ((legacy.legacy_low IS NOT NULL AND c.threshold_low_warning IS NULL)
+       OR (legacy.legacy_high IS NOT NULL AND c.threshold_high_warning IS NULL));
+
+-- 删除旧列前严格核对旧值已完整保留，避免映射条件遗漏时静默丢失自定义阈值。
+DO $$
+DECLARE
+    unprocessed_count integer;
+BEGIN
+    SELECT count(*) INTO unprocessed_count
+    FROM pg_temp.collector_legacy_threshold legacy
+    JOIN public.collector_channel c ON c.id = legacy.channel_id
+    WHERE (legacy.legacy_low IS NOT NULL AND c.threshold_low_warning IS DISTINCT FROM legacy.legacy_low)
+       OR (legacy.legacy_high IS NOT NULL AND c.threshold_high_warning IS DISTINCT FROM legacy.legacy_high);
+
+    IF unprocessed_count > 0 THEN
+        RAISE EXCEPTION '有 % 条 collector_channel 的旧阈值未能保留，已终止迁移并回滚', unprocessed_count;
+    END IF;
+END $$;
+
+-- 未匹配到模板的通道除旧 warning 值外保持原有可空字段与默认开关；给出提示，不阻断迁移。
 DO $$
 DECLARE
     unmatched_count integer;
