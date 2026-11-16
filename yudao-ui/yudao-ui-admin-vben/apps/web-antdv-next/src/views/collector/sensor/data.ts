@@ -39,6 +39,17 @@ export function getDefaultConnectionConfig(protocolCode?: string): string {
         2,
       );
     }
+    case 'modbus_tcp': {
+      return JSON.stringify(
+        {
+          host: '127.0.0.1',
+          port: 502,
+          unitId: 1,
+        },
+        null,
+        2,
+      );
+    }
     default: {
       return '{}';
     }

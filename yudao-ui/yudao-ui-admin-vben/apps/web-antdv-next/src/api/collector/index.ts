@@ -177,6 +177,8 @@ export namespace CollectorApi {
     channelName?: string;
     enabled?: number;
     channelConfig?: Record<string, any>;
+    scale?: number;
+    valueOffset?: number;
     unit?: string;
     icon?: string;
     decimalPlaces?: number;

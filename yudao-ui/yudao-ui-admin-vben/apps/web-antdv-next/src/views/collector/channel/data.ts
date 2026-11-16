@@ -112,6 +112,27 @@ export function useChannelFormSchema(): VbenFormSchema[] {
       rules: z.string().max(64, '图标长度不能超过 64 个字符').nullish(),
     },
     {
+      fieldName: 'scale',
+      label: '缩放系数',
+      component: 'InputNumber',
+      componentProps: {
+        class: '!w-full',
+        step: 0.001,
+        placeholder: '原始值 × 系数',
+      },
+      rules: z.number().finite('缩放系数必须是有限数').default(1),
+    },
+    {
+      fieldName: 'valueOffset',
+      label: '偏移量',
+      component: 'InputNumber',
+      componentProps: {
+        class: '!w-full',
+        placeholder: '请输入偏移量',
+      },
+      rules: z.number().finite('偏移量必须是有限数').default(0),
+    },
+    {
       fieldName: 'decimalPlaces',
       label: '小数位',
       component: 'InputNumber',
