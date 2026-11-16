@@ -7,7 +7,9 @@ import cn.iocoder.yudao.module.collector.controller.admin.sensor.vo.CollectorSen
 import cn.iocoder.yudao.module.collector.controller.admin.sensor.vo.CollectorSensorSaveReqVO;
 import cn.iocoder.yudao.module.collector.dal.dataobject.sensor.CollectorSensorDO;
 
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 采集传感器 Service 接口
@@ -15,6 +17,8 @@ import java.util.List;
 public interface CollectorSensorService {
 
     PageResult<CollectorSensorDO> getSensorPage(CollectorSensorPageReqVO pageReqVO);
+
+    Map<Long, Long> getChannelCountMapBySensorIds(Collection<Long> sensorIds);
 
     List<CollectorSensorDO> getSensorList(Long deviceId, Integer enabled);
 

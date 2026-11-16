@@ -3,6 +3,9 @@ package cn.iocoder.yudao.module.collector.util;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 
+import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
+import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.CHANNEL_THRESHOLD_INVALID;
+
 /**
  * 采集器阈值计算工具。
  *
@@ -26,7 +29,16 @@ public final class CollectorThresholdUtils {
         if (valueMin == null || valueMax == null || ratio == null) {
             return null;
         }
-        return round4(valueMin + ratio * (valueMax - valueMin));
+        if (!Double.isFinite(valueMin) || !Double.isFinite(valueMax) || !Double.isFinite(ratio)) {
+            throw exception(CHANNEL_THRESHOLD_INVALID);
+        }
+        BigDecimal result = BigDecimal.valueOf(valueMin).add(BigDecimal.valueOf(ratio)
+                .multiply(BigDecimal.valueOf(valueMax).subtract(BigDecimal.valueOf(valueMin))));
+        double threshold = result.setScale(4, RoundingMode.HALF_UP).doubleValue();
+        if (!Double.isFinite(threshold)) {
+            throw exception(CHANNEL_THRESHOLD_INVALID);
+        }
+        return threshold;
     }
 
     /**

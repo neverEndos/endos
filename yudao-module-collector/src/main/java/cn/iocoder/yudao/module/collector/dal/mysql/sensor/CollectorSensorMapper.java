@@ -6,11 +6,16 @@ import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
 import cn.iocoder.yudao.module.collector.controller.admin.sensor.vo.CollectorSensorPageReqVO;
 import cn.iocoder.yudao.module.collector.dal.dataobject.sensor.CollectorSensorDO;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Select;
 
+import java.util.Collection;
 import java.util.List;
 
 @Mapper
 public interface CollectorSensorMapper extends BaseMapperX<CollectorSensorDO> {
+
+    @Select("SELECT id FROM collector_sensor WHERE id = #{id} AND deleted = 0 FOR UPDATE")
+    Long selectIdForUpdate(Long id);
 
     default PageResult<CollectorSensorDO> selectPage(CollectorSensorPageReqVO reqVO) {
         return selectPage(reqVO, new LambdaQueryWrapperX<CollectorSensorDO>()
@@ -37,6 +42,14 @@ public interface CollectorSensorMapper extends BaseMapperX<CollectorSensorDO> {
                 .eqIfPresent(CollectorSensorDO::getEnabled, enabled)
                 .orderByAsc(CollectorSensorDO::getSort)
                 .orderByAsc(CollectorSensorDO::getId));
+    }
+
+    default List<CollectorSensorDO> selectListBySensorTypeIds(Collection<Long> sensorTypeIds) {
+        if (sensorTypeIds == null || sensorTypeIds.isEmpty()) {
+            return List.of();
+        }
+        return selectList(new LambdaQueryWrapperX<CollectorSensorDO>()
+                .in(CollectorSensorDO::getSensorTypeId, sensorTypeIds));
     }
 
     default Long selectCountByDeviceId(Long deviceId) {

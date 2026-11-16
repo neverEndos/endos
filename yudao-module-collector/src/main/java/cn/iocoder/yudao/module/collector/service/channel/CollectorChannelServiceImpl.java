@@ -8,12 +8,19 @@ import cn.iocoder.yudao.module.collector.controller.admin.channel.vo.CollectorCh
 import cn.iocoder.yudao.module.collector.controller.admin.channel.vo.CollectorChannelThresholdUpdateReqVO;
 import cn.iocoder.yudao.module.collector.controller.admin.channel.vo.CollectorChannelUpdateReqVO;
 import cn.iocoder.yudao.module.collector.dal.dataobject.channel.CollectorChannelDO;
+import cn.iocoder.yudao.module.collector.dal.dataobject.protocol.CollectorProtocolDO;
+import cn.iocoder.yudao.module.collector.dal.dataobject.sensor.CollectorSensorDO;
 import cn.iocoder.yudao.module.collector.dal.mysql.channel.CollectorChannelMapper;
 import cn.iocoder.yudao.module.collector.dal.mysql.reference.CollectorReferenceMapper;
+import cn.iocoder.yudao.module.collector.service.protocol.CollectorProtocolService;
+import cn.iocoder.yudao.module.collector.service.sensor.CollectorSensorService;
+import cn.iocoder.yudao.module.collector.util.CollectorJsonSchemaValidator;
 import cn.iocoder.yudao.module.collector.util.CollectorThresholdUtils;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import jakarta.annotation.Resource;
 import org.springframework.stereotype.Service;
+
+import java.util.Map;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.CHANNEL_HAS_CHILDREN;
@@ -32,6 +39,15 @@ public class CollectorChannelServiceImpl implements CollectorChannelService {
     @Resource
     private CollectorReferenceMapper referenceMapper;
 
+    @Resource
+    private CollectorSensorService sensorService;
+
+    @Resource
+    private CollectorProtocolService protocolService;
+
+    @Resource
+    private CollectorJsonSchemaValidator jsonSchemaValidator;
+
     @Override
     public PageResult<CollectorChannelDO> getChannelPage(CollectorChannelPageReqVO pageReqVO) {
         return channelMapper.selectPage(pageReqVO);
@@ -44,11 +60,16 @@ public class CollectorChannelServiceImpl implements CollectorChannelService {
 
     @Override
     public void updateChannel(CollectorChannelUpdateReqVO updateReqVO) {
-        validateChannelExists(updateReqVO.getId());
+        CollectorChannelDO channel = validateChannelExists(updateReqVO.getId());
         if (!CollectorThresholdUtils.isFinite(updateReqVO.getScale())
                 || !CollectorThresholdUtils.isFinite(updateReqVO.getValueOffset())) {
             throw exception(CHANNEL_VALUE_INVALID);
         }
+        CollectorSensorDO sensor = sensorService.validateSensorExists(channel.getSensorId());
+        CollectorProtocolDO protocol = protocolService.validateProtocolExists(sensor.getProtocolCode());
+        Map<String, Object> effectiveConfig = updateReqVO.getChannelConfig() != null
+                ? updateReqVO.getChannelConfig() : channel.getChannelConfig();
+        jsonSchemaValidator.validate(protocol.getChannelSchema(), effectiveConfig);
         CollectorChannelDO updateObj = BeanUtils.toBean(updateReqVO, CollectorChannelDO.class);
         channelMapper.updateById(updateObj);
     }

@@ -4,16 +4,22 @@ import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.framework.common.util.object.BeanUtils;
 import cn.iocoder.yudao.module.collector.controller.admin.sensortemplate.vo.CollectorSensorTemplatePageReqVO;
 import cn.iocoder.yudao.module.collector.controller.admin.sensortemplate.vo.CollectorSensorTemplateSaveReqVO;
+import cn.iocoder.yudao.module.collector.dal.dataobject.protocol.CollectorProtocolDO;
 import cn.iocoder.yudao.module.collector.dal.dataobject.sensortemplate.CollectorSensorTemplateDO;
+import cn.iocoder.yudao.module.collector.dal.dataobject.sensortype.CollectorSensorTypeDO;
 import cn.iocoder.yudao.module.collector.dal.mysql.channel.CollectorChannelMapper;
 import cn.iocoder.yudao.module.collector.dal.mysql.sensortemplate.CollectorSensorTemplateMapper;
+import cn.iocoder.yudao.module.collector.service.protocol.CollectorProtocolService;
 import cn.iocoder.yudao.module.collector.service.sensortype.CollectorSensorTypeService;
+import cn.iocoder.yudao.module.collector.util.CollectorJsonSchemaValidator;
 import cn.iocoder.yudao.module.collector.util.CollectorThresholdUtils;
 import jakarta.annotation.Resource;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Objects;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.SENSOR_TEMPLATE_CODE_DUPLICATE;
@@ -24,6 +30,7 @@ import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstant
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.SENSOR_TEMPLATE_RATIO_INVALID;
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.SENSOR_TEMPLATE_SCALE_INVALID;
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.SENSOR_TEMPLATE_SWITCH_INVALID;
+import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.SENSOR_TEMPLATE_TYPE_CHANGE_FORBIDDEN;
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.SENSOR_TEMPLATE_VALUE_KIND_INVALID;
 
 @Service
@@ -40,6 +47,12 @@ public class CollectorSensorTemplateServiceImpl implements CollectorSensorTempla
 
     @Resource
     private CollectorSensorTypeService sensorTypeService;
+
+    @Resource
+    private CollectorProtocolService protocolService;
+
+    @Resource
+    private CollectorJsonSchemaValidator jsonSchemaValidator;
 
     @Override
     public PageResult<CollectorSensorTemplateDO> getTemplatePage(CollectorSensorTemplatePageReqVO pageReqVO) {
@@ -63,24 +76,35 @@ public class CollectorSensorTemplateServiceImpl implements CollectorSensorTempla
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public Long createTemplate(CollectorSensorTemplateSaveReqVO createReqVO) {
-        sensorTypeService.validateSensorTypeExists(createReqVO.getSensorTypeId());
+        CollectorSensorTypeDO sensorType = sensorTypeService.validateSensorTypeExists(createReqVO.getSensorTypeId());
+        CollectorProtocolDO protocol = protocolService.validateProtocolExists(sensorType.getProtocolCode());
         validateChannelCodeUnique(null, createReqVO.getSensorTypeId(), createReqVO.getChannelCode());
         CollectorSensorTemplateDO template = BeanUtils.toBean(createReqVO, CollectorSensorTemplateDO.class);
         fillCreateDefaults(template);
         validateAndNormalize(template);
+        jsonSchemaValidator.validate(protocol.getChannelSchema(), template.getChannelConfig());
         sensorTemplateMapper.insert(template);
         return template.getId();
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void updateTemplate(CollectorSensorTemplateSaveReqVO updateReqVO) {
         CollectorSensorTemplateDO existing = validateTemplateExists(updateReqVO.getId());
-        sensorTypeService.validateSensorTypeExists(updateReqVO.getSensorTypeId());
+        CollectorSensorTypeDO sensorType = sensorTypeService.validateSensorTypeExists(updateReqVO.getSensorTypeId());
+        if (!Objects.equals(existing.getSensorTypeId(), updateReqVO.getSensorTypeId())
+                && channelMapper.selectCountBySensorTemplateId(existing.getId()) > 0) {
+            throw exception(SENSOR_TEMPLATE_TYPE_CHANGE_FORBIDDEN);
+        }
+        CollectorProtocolDO protocol = protocolService.validateProtocolExists(sensorType.getProtocolCode());
         validateChannelCodeUnique(updateReqVO.getId(), updateReqVO.getSensorTypeId(), updateReqVO.getChannelCode());
         CollectorSensorTemplateDO updateObj = BeanUtils.toBean(updateReqVO, CollectorSensorTemplateDO.class);
-        fillMissingFromExisting(updateObj, existing);
+        // 修改为全量更新语义：可选字段未传时使用默认值，valueMin/valueMax 传 null 即明确清空。
+        fillCreateDefaults(updateObj);
         validateAndNormalize(updateObj);
+        jsonSchemaValidator.validate(protocol.getChannelSchema(), updateObj.getChannelConfig());
         sensorTemplateMapper.updateById(updateObj);
     }
 
@@ -161,63 +185,6 @@ public class CollectorSensorTemplateServiceImpl implements CollectorSensorTempla
         }
         if (template.getEnabled() == null) {
             template.setEnabled(1);
-        }
-    }
-
-    private void fillMissingFromExisting(CollectorSensorTemplateDO updateObj, CollectorSensorTemplateDO existing) {
-        if (updateObj.getValueKind() == null) {
-            updateObj.setValueKind(existing.getValueKind());
-        }
-        if (updateObj.getValueMin() == null) {
-            updateObj.setValueMin(existing.getValueMin());
-        }
-        if (updateObj.getValueMax() == null) {
-            updateObj.setValueMax(existing.getValueMax());
-        }
-        if (updateObj.getScale() == null) {
-            updateObj.setScale(existing.getScale());
-        }
-        if (updateObj.getValueOffset() == null) {
-            updateObj.setValueOffset(existing.getValueOffset());
-        }
-        if (updateObj.getDecimalPlaces() == null) {
-            updateObj.setDecimalPlaces(existing.getDecimalPlaces());
-        }
-        if (updateObj.getThresholdLowErrorRatio() == null) {
-            updateObj.setThresholdLowErrorRatio(existing.getThresholdLowErrorRatio());
-        }
-        if (updateObj.getThresholdLowWarningRatio() == null) {
-            updateObj.setThresholdLowWarningRatio(existing.getThresholdLowWarningRatio());
-        }
-        if (updateObj.getThresholdHighWarningRatio() == null) {
-            updateObj.setThresholdHighWarningRatio(existing.getThresholdHighWarningRatio());
-        }
-        if (updateObj.getThresholdHighErrorRatio() == null) {
-            updateObj.setThresholdHighErrorRatio(existing.getThresholdHighErrorRatio());
-        }
-        if (updateObj.getAlarmEnabled() == null) {
-            updateObj.setAlarmEnabled(existing.getAlarmEnabled());
-        }
-        if (updateObj.getThresholdLowErrorEnabled() == null) {
-            updateObj.setThresholdLowErrorEnabled(existing.getThresholdLowErrorEnabled());
-        }
-        if (updateObj.getThresholdLowWarningEnabled() == null) {
-            updateObj.setThresholdLowWarningEnabled(existing.getThresholdLowWarningEnabled());
-        }
-        if (updateObj.getThresholdHighWarningEnabled() == null) {
-            updateObj.setThresholdHighWarningEnabled(existing.getThresholdHighWarningEnabled());
-        }
-        if (updateObj.getThresholdHighErrorEnabled() == null) {
-            updateObj.setThresholdHighErrorEnabled(existing.getThresholdHighErrorEnabled());
-        }
-        if (updateObj.getChannelConfig() == null) {
-            updateObj.setChannelConfig(existing.getChannelConfig());
-        }
-        if (updateObj.getSort() == null) {
-            updateObj.setSort(existing.getSort());
-        }
-        if (updateObj.getEnabled() == null) {
-            updateObj.setEnabled(existing.getEnabled());
         }
     }
 

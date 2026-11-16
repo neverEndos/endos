@@ -7,6 +7,7 @@ import cn.iocoder.yudao.module.collector.controller.admin.sensor.vo.CollectorGen
 import cn.iocoder.yudao.module.collector.controller.admin.sensor.vo.CollectorSensorPageReqVO;
 import cn.iocoder.yudao.module.collector.controller.admin.sensor.vo.CollectorSensorSaveReqVO;
 import cn.iocoder.yudao.module.collector.dal.dataobject.channel.CollectorChannelDO;
+import cn.iocoder.yudao.module.collector.dal.dataobject.protocol.CollectorProtocolDO;
 import cn.iocoder.yudao.module.collector.dal.dataobject.sensor.CollectorSensorDO;
 import cn.iocoder.yudao.module.collector.dal.dataobject.sensortemplate.CollectorSensorTemplateDO;
 import cn.iocoder.yudao.module.collector.dal.dataobject.sensortype.CollectorSensorTypeDO;
@@ -17,6 +18,7 @@ import cn.iocoder.yudao.module.collector.service.device.CollectorDeviceService;
 import cn.iocoder.yudao.module.collector.service.protocol.CollectorProtocolService;
 import cn.iocoder.yudao.module.collector.service.sensortemplate.CollectorSensorTemplateService;
 import cn.iocoder.yudao.module.collector.service.sensortype.CollectorSensorTypeService;
+import cn.iocoder.yudao.module.collector.util.CollectorJsonSchemaValidator;
 import cn.iocoder.yudao.module.collector.util.CollectorThresholdUtils;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import jakarta.annotation.Resource;
@@ -24,14 +26,18 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.SENSOR_CODE_DUPLICATE;
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.SENSOR_HAS_CHILDREN;
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.SENSOR_NOT_EXISTS;
+import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.SENSOR_TYPE_CHANGE_FORBIDDEN;
 
 @Service
 public class CollectorSensorServiceImpl implements CollectorSensorService {
@@ -59,9 +65,18 @@ public class CollectorSensorServiceImpl implements CollectorSensorService {
     @Resource
     private CollectorProtocolService protocolService;
 
+    @Resource
+    private CollectorJsonSchemaValidator jsonSchemaValidator;
+
     @Override
     public PageResult<CollectorSensorDO> getSensorPage(CollectorSensorPageReqVO pageReqVO) {
         return sensorMapper.selectPage(pageReqVO);
+    }
+
+    @Override
+    public Map<Long, Long> getChannelCountMapBySensorIds(Collection<Long> sensorIds) {
+        return channelMapper.selectListBySensorIds(sensorIds).stream()
+                .collect(Collectors.groupingBy(CollectorChannelDO::getSensorId, Collectors.counting()));
     }
 
     @Override
@@ -79,13 +94,14 @@ public class CollectorSensorServiceImpl implements CollectorSensorService {
     public Long createSensor(CollectorSensorSaveReqVO createReqVO) {
         deviceService.validateDeviceExists(createReqVO.getDeviceId());
         CollectorSensorTypeDO sensorType = sensorTypeService.validateSensorTypeEnabled(createReqVO.getSensorTypeId());
-        protocolService.validateProtocolEnabled(sensorType.getProtocolCode());
+        CollectorProtocolDO protocol = protocolService.validateProtocolEnabled(sensorType.getProtocolCode());
         validateSensorCodeUnique(null, createReqVO.getDeviceId(), createReqVO.getSensorCode());
 
         CollectorSensorDO sensor = BeanUtils.toBean(createReqVO, CollectorSensorDO.class);
         sensor.setProtocolCode(sensorType.getProtocolCode());
         sensor.setConnectionConfig(createReqVO.getConnectionConfig() != null
                 ? createReqVO.getConnectionConfig() : new LinkedHashMap<>());
+        jsonSchemaValidator.validate(protocol.getConnectionSchema(), sensor.getConnectionConfig());
         if (sensor.getEnabled() == null) {
             sensor.setEnabled(1);
         }
@@ -106,13 +122,19 @@ public class CollectorSensorServiceImpl implements CollectorSensorService {
         CollectorSensorDO existing = validateSensorExists(updateReqVO.getId());
         deviceService.validateDeviceExists(updateReqVO.getDeviceId());
         CollectorSensorTypeDO sensorType = sensorTypeService.validateSensorTypeExists(updateReqVO.getSensorTypeId());
+        if (!Objects.equals(existing.getSensorTypeId(), updateReqVO.getSensorTypeId())
+                && channelMapper.selectCountBySensorId(existing.getId()) > 0) {
+            throw exception(SENSOR_TYPE_CHANGE_FORBIDDEN);
+        }
+        CollectorProtocolDO protocol = protocolService.validateProtocolExists(sensorType.getProtocolCode());
+        Map<String, Object> effectiveConfig = updateReqVO.getConnectionConfig() != null
+                ? updateReqVO.getConnectionConfig() : existing.getConnectionConfig();
+        jsonSchemaValidator.validate(protocol.getConnectionSchema(), effectiveConfig);
         validateSensorCodeUnique(updateReqVO.getId(), updateReqVO.getDeviceId(), updateReqVO.getSensorCode());
 
         CollectorSensorDO updateObj = BeanUtils.toBean(updateReqVO, CollectorSensorDO.class);
         updateObj.setProtocolCode(sensorType.getProtocolCode());
-        if (updateReqVO.getConnectionConfig() != null) {
-            updateObj.setConnectionConfig(updateReqVO.getConnectionConfig());
-        } else {
+        if (updateReqVO.getConnectionConfig() == null) {
             updateObj.setConnectionConfig(null);
         }
         sensorMapper.updateById(updateObj);
@@ -171,6 +193,8 @@ public class CollectorSensorServiceImpl implements CollectorSensorService {
         if (sensor.getSensorTypeId() == null) {
             return new CollectorGenerateChannelsRespVO(0, 0, List.of());
         }
+        // 同一传感器的生成请求串行化；后获得锁的请求会查到已提交通道并返回跳过，避免唯一键冲突。
+        sensorMapper.selectIdForUpdate(sensor.getId());
         List<CollectorSensorTemplateDO> templates =
                 sensorTemplateService.getEnabledTemplateListByType(sensor.getSensorTypeId());
         int createdCount = 0;
@@ -239,6 +263,10 @@ public class CollectorSensorServiceImpl implements CollectorSensorService {
     private void fillThresholdPreview(CollectorGenerateChannelPreviewRespVO item,
                                       CollectorSensorTemplateDO template) {
         if (VALUE_KIND_ENUM.equals(effectiveValueKind(template))) {
+            item.setThresholdLowError(null);
+            item.setThresholdLowWarning(null);
+            item.setThresholdHighWarning(null);
+            item.setThresholdHighError(null);
             item.setThresholdLowErrorEnabled(0);
             item.setThresholdLowWarningEnabled(0);
             item.setThresholdHighWarningEnabled(0);
@@ -263,6 +291,10 @@ public class CollectorSensorServiceImpl implements CollectorSensorService {
 
     private void fillChannelThreshold(CollectorChannelDO channel, CollectorSensorTemplateDO template) {
         if (VALUE_KIND_ENUM.equals(effectiveValueKind(template))) {
+            channel.setThresholdLowError(null);
+            channel.setThresholdLowWarning(null);
+            channel.setThresholdHighWarning(null);
+            channel.setThresholdHighError(null);
             channel.setThresholdLowErrorEnabled(0);
             channel.setThresholdLowWarningEnabled(0);
             channel.setThresholdHighWarningEnabled(0);

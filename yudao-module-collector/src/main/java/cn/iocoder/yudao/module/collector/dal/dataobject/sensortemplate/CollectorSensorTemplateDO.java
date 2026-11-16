@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.collector.dal.dataobject.sensortemplate;
 
 import cn.iocoder.yudao.framework.mybatis.core.dataobject.BaseDO;
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import com.baomidou.mybatisplus.annotation.KeySequence;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
@@ -53,10 +54,12 @@ public class CollectorSensorTemplateDO extends BaseDO {
     /**
      * 量程下限
      */
+    @TableField(value = "value_min", updateStrategy = FieldStrategy.ALWAYS)
     private Double valueMin;
     /**
      * 量程上限
      */
+    @TableField(value = "value_max", updateStrategy = FieldStrategy.ALWAYS)
     private Double valueMax;
     /**
      * 数值缩放系数

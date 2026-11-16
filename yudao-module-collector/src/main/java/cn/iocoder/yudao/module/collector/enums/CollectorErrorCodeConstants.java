@@ -12,6 +12,7 @@ public interface CollectorErrorCodeConstants {
     // ========== 协议 1-023-000-000 ==========
     ErrorCode PROTOCOL_NOT_EXISTS = new ErrorCode(1_023_000_000, "协议不存在");
     ErrorCode PROTOCOL_NOT_ENABLED = new ErrorCode(1_023_000_001, "协议({})已停用，不允许新增引用");
+    ErrorCode COLLECTOR_SCHEMA_INVALID = new ErrorCode(1_023_000_002, "协议参数不符合 JSON Schema：{}");
 
     // ========== 设备 1-023-001-000 ==========
     ErrorCode DEVICE_NOT_EXISTS = new ErrorCode(1_023_001_000, "采集设备不存在");
@@ -34,11 +35,13 @@ public interface CollectorErrorCodeConstants {
     ErrorCode SENSOR_TEMPLATE_SCALE_INVALID = new ErrorCode(1_023_003_006, "缩放系数与偏移量必须为有限数值");
     ErrorCode SENSOR_TEMPLATE_SWITCH_INVALID = new ErrorCode(1_023_003_007, "报警与阈值开关只能为 0 或 1");
     ErrorCode SENSOR_TEMPLATE_DECIMAL_INVALID = new ErrorCode(1_023_003_008, "展示小数位必须在 0~6 之间");
+    ErrorCode SENSOR_TEMPLATE_TYPE_CHANGE_FORBIDDEN = new ErrorCode(1_023_003_009, "参数模板已被通道引用，不允许修改所属传感器类型");
 
     // ========== 传感器 1-023-004-000 ==========
     ErrorCode SENSOR_NOT_EXISTS = new ErrorCode(1_023_004_000, "传感器不存在");
     ErrorCode SENSOR_CODE_DUPLICATE = new ErrorCode(1_023_004_001, "同一设备下传感器编码({})已存在");
     ErrorCode SENSOR_HAS_CHILDREN = new ErrorCode(1_023_004_002, "传感器下存在通道或轮询策略，无法删除");
+    ErrorCode SENSOR_TYPE_CHANGE_FORBIDDEN = new ErrorCode(1_023_004_003, "传感器下已存在通道，不允许修改传感器类型");
 
     // ========== 通道 1-023-005-000 ==========
     ErrorCode CHANNEL_NOT_EXISTS = new ErrorCode(1_023_005_000, "通道不存在");
