@@ -53,8 +53,8 @@ deploy-collector.sh —— 板端 collector 代码版本化部署
   bash deploy/scripts/deploy-collector.sh --src ./collector --dry-run
 
 说明：
-  - /var/log/yudao/ 下的 JSONL 与日志不随代码目录删除。
-  - 开发机通常通过 release.sh collector 调用本脚本。
+  - /opt/yudao/logs/ 下的 JSONL 与日志不随代码目录删除。
+  - 开发机通常通过 deploy/compose-single/scripts/release-collector.sh 调用本脚本。
 EOF
 }
 
@@ -227,16 +227,25 @@ switch_symlink "releases/$VERSION" "$LINK"
 # ---------- 3. systemd 单元（如有变化） ----------
 UNIT_TEMPLATE="$DEPLOY_DIR/systemd/collector.service"
 if [ -f "$UNIT_TEMPLATE" ]; then
-  if [ -f "$UNIT_DST" ] && cmp -s "$UNIT_TEMPLATE" "$UNIT_DST"; then
-    info "systemd 单元未变化：$UNIT_DST"
-  else
-    info "安装变更后的 systemd 单元：$UNIT_DST"
-    run_sudo install -m 0644 "$UNIT_TEMPLATE" "$UNIT_DST"
-    info "执行 systemd daemon-reload"
+  UNIT_RENDERED="$TARGET_DIR/.collector.service.rendered"
+  if is_dry_run; then
+    info "[dry-run] 按 SERVICE_USER=$SERVICE_USER 渲染并安装 collector.service"
     run_sudo systemctl daemon-reload
+  else
+    sed -e "s/^User=.*/User=$SERVICE_USER/" -e "s/^Group=.*/Group=$SERVICE_GROUP/" \
+      "$UNIT_TEMPLATE" > "$UNIT_RENDERED"
+    if [ -f "$UNIT_DST" ] && cmp -s "$UNIT_RENDERED" "$UNIT_DST"; then
+      info "systemd 单元未变化：$UNIT_DST"
+    else
+      info "安装变更后的 systemd 单元：$UNIT_DST（User=$SERVICE_USER）"
+      run_sudo install -m 0644 "$UNIT_RENDERED" "$UNIT_DST"
+      info "执行 systemd daemon-reload"
+      run_sudo systemctl daemon-reload
+    fi
+    rm -f "$UNIT_RENDERED"
   fi
 else
-  warn "未随包提供 systemd 单元模板（$UNIT_TEMPLATE），跳过单元更新；请确认 release.sh 已上传 systemd/"
+  warn "未随包提供 systemd 单元模板（$UNIT_TEMPLATE），跳过单元更新；请确认已上传 deploy/systemd/"
 fi
 
 # ---------- 4. 重启并做稳定窗口检查 ----------

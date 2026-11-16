@@ -29,8 +29,8 @@ ExecStart=/usr/bin/python3 /opt/yudao/collector/current/main.py \
     --duration 0 \
     --timeout 1.0 \
     --retries 1 \
-    --output /var/log/yudao/collector-data.jsonl \
-    --log /var/log/yudao/collector.log \
+    --output /opt/yudao/logs/collector-data.jsonl \
+    --log /opt/yudao/logs/collector.log \
     --flags auto \
     --db-retry-interval 60
 # Python 收到 SIGTERM 后会关闭串口并正常退出；异常退出时重启
