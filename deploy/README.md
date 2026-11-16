@@ -44,12 +44,19 @@ collector（板端 alientek）── /dev/ttyS4（RS485 / HSI）── sensors
 
 - `yudao-server.service` 的 `ExecStart` 固定带 `--server.address=127.0.0.1`，
   48080 只在板端回环地址监听；局域网无法直连 48080，Nginx（80）是唯一入口。
-- `deploy/env.example` 的 `YUDAO_SECURITY_MOCK_ENABLE` 默认 `false`。mock 会
-  跳过真实鉴权，只允许完全离线的演示环境显式开启；`bootstrap-board.sh` 检测到
-  `true` 且未传 `--allow-mock` 时会拒绝启动后端服务并给出错误。
-- 验证端口边界：`ss -lnt` 中 48080 必须是 `127.0.0.1:48080`，不能出现
-  `0.0.0.0:48080` 或 `*:48080`；从其他主机访问 `http://192.168.0.105:48080`
-  应连接失败。
+- `application-remote.yaml` 的 mock 默认值已改为 `false`，`deploy/env.example`
+  的 `YUDAO_SECURITY_MOCK_ENABLE` 默认也是 `false`。mock 门禁为 **fail-closed**：
+  只有明确 `false/0/off/no` 才放行；缺失键、空值、`true/1/yes/on`、大小写变体、
+  带引号值或未知值都按“可能开启 mock”处理，`bootstrap-board.sh` 与
+  `deploy-backend.sh` 会拒绝启动/部署后端并给出实际值与原因；确需离线演示时
+  显式追加 `--allow-mock`。
+- 验证端口边界：`ss -lnt` 中 48080 必须是 `127.0.0.1:48080`（允许
+  `[::ffff:127.0.0.1]:48080`），不能出现 `0.0.0.0:48080` 或 `*:48080`；
+  从其他主机访问 `http://192.168.0.105:48080` 应连接失败。`deploy-backend.sh`
+  重启后会自动执行该校验，不符合则回滚到上一版本。
+- 常规部署（`release.sh backend/frontend/collector`）也会上传并刷新
+  `deploy/systemd/` 单元（前端同时上传 `deploy/nginx/`），不再只在 bootstrap
+  时安装，确保 `--server.address=127.0.0.1` 等启动参数能落地。
 
 ### 1.2 资源预算（含旧板实测值）
 
@@ -384,7 +391,7 @@ jar 时用的可选路径）。
 | `YUDAO_REDIS_HOST` / `PORT` | `192.168.0.23` / `6379` | 远程 Redis |
 | `SPRING_DATA_REDIS_DATABASE` | `1` | 覆盖 YAML 中写死的 `database: 0`，无需改代码 |
 | `YUDAO_REDIS_PASSWORD` | 空 | 无密码 Redis；YAML 的 password 行默认注释 |
-| `YUDAO_SECURITY_MOCK_ENABLE` | `false` | **默认关闭**；mock=true 会跳过真实鉴权，仅限完全离线的演示环境，且 bootstrap 未收到 `--allow-mock` 时会拒绝启动后端 |
+| `YUDAO_SECURITY_MOCK_ENABLE` | `false` | **默认关闭**；mock 会跳过真实鉴权。门禁 fail-closed：只有 false/0/off/no 放行，缺失键/空值/true/1/yes/on/未知值都会拒绝启动或部署，除非显式 `--allow-mock`（仅限完全离线的演示环境） |
 | `YUDAO_CAPTCHA_ENABLE` | `false` | 与前端 `VITE_APP_CAPTCHA_ENABLE=false` 对齐 |
 | `YUDAO_ACCESS_LOG_ENABLE` | `false` | 关闭访问日志，降低板端写入压力 |
 | `LOGGING_FILE_NAME` | `/var/log/yudao/yudao-server.log` | 覆盖 `${user.home}/logs` 默认路径 |
@@ -406,7 +413,7 @@ scp yudao-server/target/yudao-server.jar alientek@192.168.0.105:/tmp/
 板端（`alientek` 用户，目录已归属该用户）：
 
 ```bash
-VERSION=$(date +%Y%m%d-%H%M)-$(sha256sum /tmp/yudao-server.jar | cut -c1-8)
+VERSION=$(date +%Y%m%d-%H%M%S)-$(sha256sum /tmp/yudao-server.jar | cut -c1-8)
 install -d /opt/yudao/backend/releases/$VERSION
 cp /tmp/yudao-server.jar /opt/yudao/backend/releases/$VERSION/
 # systemd 的 ExecStart 固定为 /opt/yudao/backend/yudao-server.jar
@@ -482,13 +489,13 @@ collector 与后端/前端一致，采用“版本目录 + `current` 软链接�
 `collector.service` 的 `WorkingDirectory` 与 `ExecStart` 均指向
 `/opt/yudao/collector/current`，升级时只需切换软链接并重启服务。
 
-版本命名与后端一致：`YYYYMMDD-HHMM-<git sha 前 8 位>`。开发机在仓库根目录先
+版本命名与后端一致：`YYYYMMDD-HHMMSS-<git sha 前 8 位>`。开发机在仓库根目录先
 生成版本号，再把整个 `collector/` 目录（含 `hsi/`、`tests/`、`README.md`）上传到
 板端临时目录：
 
 ```bash
 # 开发机，源代码仓库根目录（或功能 worktree）
-VERSION=$(date +%Y%m%d-%H%M)-$(git rev-parse --short=8 HEAD)
+VERSION=$(date +%Y%m%d-%H%M%S)-$(git rev-parse --short=8 HEAD)
 echo "collector 版本: $VERSION"
 ssh alientek@192.168.0.105 "mkdir -p /tmp/yudao-collector-$VERSION"
 scp -r collector alientek@192.168.0.105:/tmp/yudao-collector-$VERSION/
@@ -671,7 +678,7 @@ sudo systemctl reload nginx
 
 ```bash
 # 开发机：生成版本号并上传（命令同第 9 节）
-VERSION=$(date +%Y%m%d-%H%M)-$(git rev-parse --short=8 HEAD)
+VERSION=$(date +%Y%m%d-%H%M%S)-$(git rev-parse --short=8 HEAD)
 ssh alientek@192.168.0.105 "mkdir -p /tmp/yudao-collector-$VERSION"
 scp -r collector alientek@192.168.0.105:/tmp/yudao-collector-$VERSION/
 
@@ -755,8 +762,9 @@ systemctl status collector --no-pager
    kiosk 单元仅在具备图形会话时使用。
 5. **安全**：`YUDAO_SECURITY_MOCK_ENABLE` 默认 `false`，后端只监听
    `127.0.0.1:48080`，Nginx 是唯一入口；但仍使用数据库 `root` 超级用户。
-   开启 mock 会跳过真实鉴权，只允许完全离线的演示环境；
-   `bootstrap-board.sh` 未收到 `--allow-mock` 时会拒绝启动后端。
+   开启 mock 会跳过真实鉴权，只允许完全离线的演示环境；mock 门禁 fail-closed，
+   缺失键也按风险处理，`bootstrap-board.sh` 与 `deploy-backend.sh` 未收到
+   `--allow-mock` 时会拒绝启动/部署后端。
 6. **无 HTTPS**：Nginx 仅监听 80，建议限制在受信内网网段（防火墙只放行
    80/22 等必要端口）。
 7. **collector 为原型**：已写 `collector_sample_raw` / `collector_device_status` /
@@ -807,12 +815,12 @@ systemctl status collector --no-pager
 |---|---|---|
 | `deploy/release.sh` | 开发机 | 构建 + 上传 + 调用板端脚本；子命令 `bootstrap` / `backend` / `frontend` / `collector` / `all` / `rollback` |
 | `deploy/scripts/bootstrap-board.sh` | 板端 | 新板初始化（apt 包、目录、systemd、Nginx、enable 服务、清理旧版本） |
-| `deploy/scripts/deploy-backend.sh` | 板端 | jar 放入 `releases/<版本>`，切 jar 软链接，重启并等待 48080 |
-| `deploy/scripts/deploy-frontend.sh` | 板端 | dist 放入 `releases/<版本>`，切 `current`，`nginx -t` + reload，检查 200 |
-| `deploy/scripts/deploy-collector.sh` | 板端 | 代码放入 `releases/<版本>`，切 `current`，重启并执行 `--health-wait` 稳定窗口检查 |
+| `deploy/scripts/deploy-backend.sh` | 板端 | mock 门禁 → jar 放入 `releases/<版本>`，刷新 systemd 单元，重启并等待 48080 + 回环监听校验 |
+| `deploy/scripts/deploy-frontend.sh` | 板端 | dist 放入 `releases/<版本>`，切 `current`，刷新 Nginx 配置，`nginx -t` + reload，检查 200 |
+| `deploy/scripts/deploy-collector.sh` | 板端 | 代码放入 `releases/<版本>`，切 `current`，刷新 collector 单元，重启并执行 `--health-wait` 稳定窗口检查 |
 | `deploy/scripts/update-all.sh` | 板端 | 按 backend → frontend → collector 顺序调用上述三个脚本 |
 | `deploy/scripts/rollback.sh` | 板端 | 按组件切回上一版本（或 `--version` 指定版本）并做健康检查 |
-| `deploy/scripts/lib/common.sh` | 板端 | 日志、sudo、版本号、软链接、清理、健康检查公共函数 |
+| `deploy/scripts/lib/common.sh` | 板端 | 日志、sudo、版本号、软链接、清理、mock 门禁、回环监听校验、健康检查公共函数 |
 
 ### 16.2 快速上手
 
@@ -849,7 +857,7 @@ cp deploy/deploy.env.example deploy/deploy.env   # 填板端地址；sudo 密码
 
 ```bash
 # 上传脚本（示例；release.sh 会自动完成）
-tar -C deploy -czf - scripts | ssh alientek@192.168.0.105 \
+tar -C deploy -czf - scripts systemd nginx | ssh alientek@192.168.0.105 \
   'mkdir -p /tmp/yudao-deploy && tar -xzf - -C /tmp/yudao-deploy'
 
 # 板端（alientek，systemctl/nginx 动作内部使用 sudo）
@@ -862,7 +870,8 @@ bash /tmp/yudao-deploy/scripts/rollback.sh collector --dry-run
 
 ### 16.3 版本号与保留策略
 
-- 后端/collector 默认版本：`YYYYMMDD-HHMM-<git sha 前 8 位>`；板端没有 git
+- 后端/collector 默认版本：`YYYYMMDD-HHMMSS-<git sha 前 8 位>`（秒级时间，避免
+  同一分钟内不同 sha 排序错乱，兼容已有的 `YYYYMMDD-HHMM` 目录）；板端没有 git
   仓库时后端退化为 jar 的 sha256 前 8 位，前端/collector 退化为时间戳。
 - `release.sh backend|frontend|collector` 每次在开发机生成版本号并回显；
   `release.sh all` 生成一次版本号，三个组件共用，便于对应回滚。
@@ -870,7 +879,8 @@ bash /tmp/yudao-deploy/scripts/rollback.sh collector --dry-run
   版本目录，`current` 软链接与 `/var/log/yudao/` 不会被清理。
 - 三个部署脚本都会**拒绝同版本重部署**（避免覆盖正在运行的版本）；新内容先写
   临时目录/临时文件，再切换软链接（临时软链接 + `mv -Tf`）与版本目录。
-- 后端健康检查失败会自动切回上一版本并重启；collector 重启命令失败或
+- 后端健康检查（端口可连接 + `ss -lnt` 仅回环监听）失败会自动切回上一版本并
+  重启；collector 重启命令失败或
   `--health-wait`（默认 30 秒）稳定窗口检查失败（服务退出、journal 出现
   `PollError`/`轮询器无法启动`/`Traceback`、主进程消失）同样自动回滚。
   `rollback.sh collector` 也执行同一稳定窗口检查。
@@ -894,7 +904,8 @@ bash /tmp/yudao-deploy/scripts/rollback.sh collector --dry-run
   shell 历史，推荐写入 `deploy.env`。
 - `deploy.env` 只作为当前 shell 变量读取，**不使用 `set -a` 导出**；构建时还会
   `env -u BOARD_SUDO_PASSWORD`，避免 sudo 密码进入 `mvn`/`pnpm` 子进程环境。
-- `release.sh bootstrap --env-file` 上传 env 后立即 `chmod 600`；板端
+- `release.sh bootstrap --env-file` 通过远端 `umask 077` 直接创建（初始即 0600，
+  不再有 scp 的 0644 窗口），随后再 `chmod 600`；板端
   `bootstrap-board.sh` 在安装结束（成功或失败）时删除
   `/tmp/yudao-deploy/env.remote.upload`，release.sh 还会再兜底清理一次。
 - 远端脚本以 sudo 执行，部署产物会自动 `chown` 回 `alientek`，不影响后续

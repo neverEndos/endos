@@ -8,6 +8,9 @@ source "$SCRIPT_DIR/lib/common.sh"
 BASE="${YUDAO_BASE:-/opt/yudao}"
 BACKEND_DIR="$BASE/backend"
 LINK="$BACKEND_DIR/yudao-server.jar"
+ENV_FILE="${YUDAO_ENV_FILE:-${YUDAO_ENV_DIR:-/etc/yudao}/env.remote}"
+UNIT_TEMPLATE="$DEPLOY_DIR/systemd/yudao-server.service"
+UNIT_DST="/etc/systemd/system/yudao-server.service"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-240}"
 
 usage() {
@@ -22,20 +25,27 @@ deploy-backend.sh —— 板端后端 jar 版本化部署
 必须：
   --jar <路径>          新构建的 yudao-server.jar 路径（板端本地路径）
 选项：
-  --version V           版本号（默认 YYYYMMDD-HHMM-<jar sha256 前 8 位>）
+  --version V           版本号（默认 YYYYMMDD-HHMMSS-<jar sha256 前 8 位>）
                         取值只能包含字母、数字、点、下划线、连字符
   --keep N              releases 目录保留版本数（默认 3，至少 1）
   --no-healthcheck     重启后不等待 48080 端口（不推荐）
+  --allow-mock         允许在 mock 可能开启时部署（fail-open，仅限离线演示）
+  --env-file <路径>     mock 门禁读取的环境变量文件
+                       （默认 $YUDAO_ENV_FILE 或 /etc/yudao/env.remote）
   --dry-run            只打印动作，不复制、不切软链接、不重启
   -h, --help           显示本帮助并退出 0
 
 部署流程与副作用：
+  0. mock 门禁：只有 YUDAO_SECURITY_MOCK_ENABLE=false/0/off/no 放行；
+     缺失键、空值、true/1/yes/on 或未知值默认拒绝部署（--allow-mock 可覆盖）；
   1. 复制 jar 到 /opt/yudao/backend/releases/<版本>/yudao-server.jar；
   2. 切换软链接 /opt/yudao/backend/yudao-server.jar 指向新版本；
-  3. sudo systemctl restart yudao-server；
-  4. 等待 127.0.0.1:48080 可连接（默认最长 240 秒）；
-  5. 健康检查失败时自动切回上一版本并重启，然后以非 0 退出；
-  6. 成功后清理旧版本目录，保留最近 --keep 个。
+  3. 若随包提供新版 systemd/yudao-server.service，则安装并 daemon-reload；
+  4. sudo systemctl restart yudao-server；
+  5. 等待 127.0.0.1:48080 可连接（默认最长 240 秒），并校验 ss -lnt
+     只出现回环地址（127.0.0.1:48080，允许 [::ffff:127.0.0.1]:48080）；
+  6. 健康检查或监听校验失败时统一回滚到上一版本并重启，然后以非 0 退出；
+  7. 成功后清理旧版本目录，保留最近 --keep 个。
 
 前置条件：
   - 已执行 bootstrap-board.sh --run，目录与 systemd 单元就绪；
@@ -66,9 +76,19 @@ JAR=""
 VERSION=""
 KEEP=3
 HEALTHCHECK=1
+ALLOW_MOCK=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --allow-mock)
+      ALLOW_MOCK=1
+      shift
+      ;;
+    --env-file)
+      [ "$#" -ge 2 ] || { usage >&2; die "--env-file 缺少参数"; }
+      ENV_FILE="$2"
+      shift 2
+      ;;
     --jar)
       [ "$#" -ge 2 ] || { usage >&2; die "--jar 缺少参数"; }
       JAR="$2"
@@ -130,6 +150,14 @@ valid_version "$VERSION" || { usage >&2; die "非法版本号：$VERSION"; }
 
 [ -d "$BACKEND_DIR/releases" ] || die "缺少目录 $BACKEND_DIR/releases，请先运行 bootstrap-board.sh --run"
 
+# mock 门禁必须在任何部署副作用之前执行：默认 fail-closed，拒绝部署并退出。
+ALLOW_MOCK_ARG=()
+[ "$ALLOW_MOCK" -eq 1 ] && ALLOW_MOCK_ARG=(--allow-mock)
+if ! ensure_backend_mock_disabled "$ENV_FILE" ${ALLOW_MOCK_ARG[@]+"${ALLOW_MOCK_ARG[@]}"}; then
+  error "已拒绝部署后端（mock 鉴权未确认关闭）；如确需离线演示请追加 --allow-mock"
+  exit 1
+fi
+
 export DRY_RUN
 TARGET_DIR="$BACKEND_DIR/releases/$VERSION"
 TARGET_JAR="$TARGET_DIR/yudao-server.jar"
@@ -171,6 +199,22 @@ fi
 info "切换软链接：$LINK -> releases/$VERSION/yudao-server.jar"
 switch_symlink "releases/$VERSION/yudao-server.jar" "$LINK"
 
+# ---------- 2.5 刷新 systemd 单元 ----------
+# 常规部署也会随包上传 deploy/systemd/；单元有变化时必须安装并 daemon-reload，
+# 否则新的 --server.address=127.0.0.1 等启动参数无法落地。
+if [ -f "$UNIT_TEMPLATE" ]; then
+  if [ -f "$UNIT_DST" ] && cmp -s "$UNIT_TEMPLATE" "$UNIT_DST"; then
+    info "systemd 单元未变化：$UNIT_DST"
+  else
+    info "安装变更后的 systemd 单元：$UNIT_DST"
+    run_sudo install -m 0644 "$UNIT_TEMPLATE" "$UNIT_DST"
+    info "执行 systemd daemon-reload"
+    run_sudo systemctl daemon-reload
+  fi
+else
+  warn "未随包提供 systemd 单元模板（$UNIT_TEMPLATE），跳过单元刷新"
+fi
+
 rollback_backend() {
   local reason="$1"
   if [ -z "$PREV_TARGET" ]; then
@@ -210,22 +254,23 @@ if [ "$HEALTHCHECK" -eq 1 ]; then
     info "等待后端监听 127.0.0.1:48080（最长 ${HEALTH_TIMEOUT} 秒）"
     if ! wait_port 127.0.0.1 48080 "$HEALTH_TIMEOUT"; then
       error "健康检查失败：48080 未在 ${HEALTH_TIMEOUT} 秒内监听"
-      if [ -n "$PREV_TARGET" ]; then
-        warn "自动回滚到上一版本：$PREV_TARGET"
-        switch_symlink "$PREV_TARGET" "$LINK"
-        run_sudo systemctl restart yudao-server
-        info "等待回滚后的后端启动（最长 240 秒）"
-        if wait_port 127.0.0.1 48080 240; then
-          error "新版本 $VERSION 健康检查失败，已回滚到上一版本"
-        else
-          error "新版本 $VERSION 健康检查失败，且回滚后仍未监听 48080，请人工检查"
-        fi
+      if rollback_backend "新版本 $VERSION 健康检查失败"; then
+        error "新版本 $VERSION 健康检查失败，已回滚到上一版本"
       else
-        error "没有可回滚的上一版本，请人工检查 journalctl -u yudao-server"
+        error "新版本 $VERSION 健康检查失败，且回滚失败，请人工检查 journalctl -u yudao-server"
       fi
       exit 1
     fi
-    info "后端健康检查通过：48080 可连接"
+    # 端口可连接还不够：必须确认只监听回环地址，避免 0.0.0.0/*:48080 暴露到局域网。
+    if ! check_backend_listen_loopback; then
+      if rollback_backend "新版本 $VERSION 监听地址不符合回环要求"; then
+        error "新版本 $VERSION 监听校验失败，已回滚到上一版本"
+      else
+        error "新版本 $VERSION 监听校验失败，且回滚失败，请人工检查 journalctl -u yudao-server"
+      fi
+      exit 1
+    fi
+    info "后端健康检查通过：48080 仅回环监听"
   fi
 else
   warn "已指定 --no-healthcheck，跳过 48080 端口检查"

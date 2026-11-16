@@ -23,8 +23,8 @@ deploy-collector.sh —— 板端 collector 代码版本化部署
 必须：
   --src <目录>          collector 源码目录（必须包含 main.py）
 选项：
-  --version V           版本号（默认 YYYYMMDD-HHMM；也可用
-                        YYYYMMDD-HHMM-<git sha 前 8 位>）
+  --version V           版本号（默认 YYYYMMDD-HHMMSS；也可用
+                        YYYYMMDD-HHMMSS-<git sha 前 8 位>）
                         取值只能包含字母、数字、点、下划线、连字符
   --keep N              releases 目录保留版本数（默认 3，至少 1）
   --health-wait <秒>    collector 稳定窗口（默认 30 秒）：期间服务必须保持 active，
@@ -236,7 +236,7 @@ if [ -f "$UNIT_TEMPLATE" ]; then
     run_sudo systemctl daemon-reload
   fi
 else
-  info "未随包提供 systemd 单元模板，跳过单元更新"
+  warn "未随包提供 systemd 单元模板（$UNIT_TEMPLATE），跳过单元更新；请确认 release.sh 已上传 systemd/"
 fi
 
 # ---------- 4. 重启并做稳定窗口检查 ----------

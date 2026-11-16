@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # deploy/release.sh —— 开发机入口：构建、上传并调用板端部署脚本
 set -euo pipefail
+# 凭据与临时压缩包只允许当前用户读写，避免 /tmp 下出现 0644 窗口。
+umask 077
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/common.sh
 source "$SCRIPT_DIR/scripts/lib/common.sh"
@@ -49,9 +51,11 @@ release.sh —— 开发机部署入口（构建 → 上传 → 调用板端脚�
 
 backend 选项：
   --skip-build           跳过 mvn 构建，直接使用 yudao-server/target/yudao-server.jar
-  --version V            指定版本号（默认自动生成 YYYYMMDD-HHMM-<git sha 前 8 位>）
+  --version V            指定版本号（默认自动生成 YYYYMMDD-HHMMSS-<git sha 前 8 位>）
   --keep N               releases 保留版本数（默认 3）
   --no-healthcheck       传给板端脚本，跳过 48080 健康检查
+  --allow-mock           传给板端 deploy-backend.sh，允许 mock 可能开启时部署
+                         （默认 fail-closed，拒绝 mock/缺失键）
 
 frontend 选项：
   --skip-build           跳过 pnpm build，直接使用 apps/web-antdv-next/dist
@@ -68,6 +72,7 @@ all 选项：
   --version V            三组件共用版本号（默认自动生成一次）
   --keep N               releases 保留版本数（默认 3）
   --no-healthcheck       传给后端部署脚本
+  --allow-mock           传给后端部署脚本（默认 fail-closed）
 
 rollback 参数/选项：
   <组件>                 backend | frontend | collector（必需位置参数）
@@ -87,7 +92,8 @@ bootstrap 选项：
   - frontend：在 apps/web-antdv-next 执行 pnpm build，dist 以 tar 流上传解包到
     /tmp/yudao-web-<版本>；
   - collector：直接打包 collector/ 目录，上传解包到 /tmp/yudao-collector-<版本>；
-  - 每个子命令都会把 deploy/scripts 上传到板端 /tmp/yudao-deploy/scripts 后调用；
+  - 每个子命令都会把 deploy/scripts 连同 deploy/systemd（及 deploy/nginx）上传到
+    板端 /tmp/yudao-deploy 后调用，常规部署也会刷新 systemd 单元与 Nginx 配置；
   - deploy.env 不会随 deploy/ 上传（bootstrap 打包时已排除）。
 
 配置来源：
@@ -112,7 +118,7 @@ bootstrap 选项：
   ./deploy/release.sh collector
   ./deploy/release.sh all --dry-run
   ./deploy/release.sh rollback frontend
-  ./deploy/release.sh rollback backend --version 20261113-1842-d785623e
+  ./deploy/release.sh rollback backend --version 20261113-184200-d785623e
 EOF
 }
 
@@ -270,15 +276,21 @@ remote_bash_sudo() {
 
 # ---------- 上传 ----------
 upload_scripts() {
-  local tgz size
+  local tgz size paths=(scripts) d
+  # 常规部署同样上传 systemd/ 与 nginx/：否则 /tmp/yudao-deploy 被清理后，
+  # deploy-*.sh 会因找不到模板而静默跳过单元/Nginx 刷新。
+  for d in systemd nginx; do
+    [ -d "$DEPLOY_DIR/$d" ] && paths+=("$d")
+  done
   tgz="$(mktemp "${TMPDIR:-/tmp}/yudao-scripts.XXXXXX.tgz")"
-  tar -C "$DEPLOY_DIR" -czf "$tgz" scripts
+  tar -C "$DEPLOY_DIR" -czf "$tgz" "${paths[@]}"
   size="$(du -h "$tgz" | cut -f1)"
-  info "上传部署脚本（$size）到 $REMOTE_SCRIPTS"
+  info "上传部署脚本与模板（$size：${paths[*]}）到 $REMOTE_STAGE"
   if is_dry_run; then
-    info "[dry-run] tar -C deploy -czf - scripts | ssh $TARGET 'tar -xzf - -C $REMOTE_STAGE'"
+    info "[dry-run] tar -C deploy -czf - ${paths[*]} | ssh $TARGET 'rm -rf $REMOTE_STAGE/{scripts,systemd,nginx} && mkdir -p $REMOTE_STAGE && tar -xzf - -C $REMOTE_STAGE'"
   else
-    ssh "${SSH_OPTS[@]}" "$TARGET" "mkdir -p $REMOTE_STAGE"
+    ssh "${SSH_OPTS[@]}" "$TARGET" \
+      "rm -rf $REMOTE_STAGE/scripts $REMOTE_STAGE/systemd $REMOTE_STAGE/nginx && mkdir -p $REMOTE_STAGE"
     ssh "${SSH_OPTS[@]}" "$TARGET" "tar -xzf - -C $REMOTE_STAGE" < "$tgz"
   fi
   rm -f "$tgz"
@@ -320,15 +332,28 @@ upload_file() {
   scp "${SCP_OPTS[@]}" "$src" "$TARGET:$dst"
 }
 
-# 上传含密码的文件：scp 后立即 chmod 600，避免 /tmp 下被其他本机用户读取。
+# 上传含密码/凭据的文件：远端用 umask 077 直接重定向创建（初始即 0600，
+# 不会像 scp 那样先出现 0644 窗口），随后再确认一次 chmod 600。
 upload_private_file() {
-  local src="$1" dst="$2"
-  upload_file "$src" "$dst"
+  local src="$1" dst="$2" size parent q_dst q_parent
+  if [ -f "$src" ]; then
+    size="$(du -h "$src" | cut -f1)"
+  else
+    size="缺失"
+    is_dry_run || die "上传源文件不存在：$src"
+    warn "上传源文件不存在（dry-run 继续）：$src"
+  fi
+  parent="$(dirname "$dst")"
+  q_dst="$(printf '%q' "$dst")"
+  q_parent="$(printf '%q' "$parent")"
+  info "上传凭据文件（$size，umask 077）：$src -> $TARGET:$dst"
   if is_dry_run; then
-    info "[dry-run] ssh $TARGET 'chmod 600 $dst'"
+    info "[dry-run] ssh $TARGET 'umask 077; mkdir -p $parent; cat > $dst' < $src"
     return 0
   fi
-  ssh "${SSH_OPTS[@]}" "$TARGET" "chmod 600 $(printf '%q' "$dst")"
+  ssh "${SSH_OPTS[@]}" "$TARGET" \
+    "umask 077; mkdir -p $q_parent; cat > $q_dst" < "$src"
+  ssh "${SSH_OPTS[@]}" "$TARGET" "chmod 600 $q_dst"
 }
 
 upload_dir() {
@@ -452,6 +477,7 @@ do_backend() {
 
   remote_args=(--jar "$remote_jar" --version "$version" --keep "$KEEP")
   [ "${NO_HEALTHCHECK:-0}" -eq 1 ] && remote_args+=(--no-healthcheck)
+  [ "${ALLOW_MOCK:-0}" -eq 1 ] && remote_args+=(--allow-mock)
   remote_bash_sudo deploy-backend.sh "${remote_args[@]}"
   cleanup_remote "$remote_jar"
   info "后端发布完成：$version"
@@ -498,12 +524,14 @@ cmd_backend() {
   VERSION=""
   KEEP=3
   NO_HEALTHCHECK=0
+  ALLOW_MOCK=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --skip-build) SKIP_BUILD=1; shift ;;
       --version) [ "$#" -ge 2 ] || die_usage "--version 缺少参数"; VERSION="$2"; shift 2 ;;
       --keep) [ "$#" -ge 2 ] || die_usage "--keep 缺少参数"; KEEP="$2"; shift 2 ;;
       --no-healthcheck) NO_HEALTHCHECK=1; shift ;;
+      --allow-mock) ALLOW_MOCK=1; shift ;;
       *) die_usage "backend 未知参数：$1" ;;
     esac
   done
@@ -563,6 +591,7 @@ cmd_all() {
   SKIP_COLLECTOR=0
   KEEP=3
   NO_HEALTHCHECK=0
+  ALLOW_MOCK=0
   VERSION=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -573,6 +602,7 @@ cmd_all() {
       --version) [ "$#" -ge 2 ] || die_usage "--version 缺少参数"; VERSION="$2"; shift 2 ;;
       --keep) [ "$#" -ge 2 ] || die_usage "--keep 缺少参数"; KEEP="$2"; shift 2 ;;
       --no-healthcheck) NO_HEALTHCHECK=1; shift ;;
+      --allow-mock) ALLOW_MOCK=1; shift ;;
       *) die_usage "all 未知参数：$1" ;;
     esac
   done

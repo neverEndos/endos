@@ -22,8 +22,8 @@ deploy-frontend.sh —— 板端前端 dist 版本化部署（Nginx 静态站点
 必须：
   --dist <目录>         构建产物目录（必须包含 index.html）
 选项：
-  --version V           版本号（默认 YYYYMMDD-HHMM；也可用
-                        YYYYMMDD-HHMM-<git sha 前 8 位>）
+  --version V           版本号（默认 YYYYMMDD-HHMMSS；也可用
+                        YYYYMMDD-HHMMSS-<git sha 前 8 位>）
                         取值只能包含字母、数字、点、下划线、连字符
   --keep N              releases 目录保留版本数（默认 3，至少 1）
   --dry-run            只打印动作，不复制、不切软链接、不重载 Nginx
@@ -32,9 +32,10 @@ deploy-frontend.sh —— 板端前端 dist 版本化部署（Nginx 静态站点
 部署流程与副作用：
   1. 复制 dist 内容到 /opt/yudao/web/releases/<版本>/；
   2. 切换软链接 /opt/yudao/web/current 指向新版本（Nginx root）；
-  3. sudo nginx -t 校验配置，sudo systemctl reload nginx；
-  4. 请求 http://127.0.0.1/，要求返回 200，否则非 0 退出；
-  5. 成功后清理旧版本目录，保留最近 --keep 个。
+  3. 若随包提供 nginx/collector.conf，安装/刷新 /etc/nginx/conf.d/collector.conf；
+  4. sudo nginx -t 校验配置，sudo systemctl reload nginx；
+  5. 请求 http://127.0.0.1/，要求返回 200，否则非 0 退出；
+  6. 成功后清理旧版本目录，保留最近 --keep 个。
 
 前置条件：
   - 已执行 bootstrap-board.sh --run（Nginx 站点与目录就绪）；
@@ -182,12 +183,26 @@ fi
 info "切换软链接：$CURRENT -> releases/$VERSION"
 switch_symlink "releases/$VERSION" "$CURRENT"
 
-# ---------- 3. Nginx 校验与重载 ----------
+# ---------- 3. Nginx 站点配置（随包刷新） ----------
+NGINX_TEMPLATE="$DEPLOY_DIR/nginx/collector.conf"
+NGINX_CONF="/etc/nginx/conf.d/collector.conf"
+if [ -f "$NGINX_TEMPLATE" ]; then
+  if [ -f "$NGINX_CONF" ] && cmp -s "$NGINX_TEMPLATE" "$NGINX_CONF"; then
+    info "Nginx 站点配置未变化：$NGINX_CONF"
+  else
+    info "安装 Nginx 站点配置：$NGINX_CONF"
+    run_sudo install -m 0644 "$NGINX_TEMPLATE" "$NGINX_CONF"
+  fi
+else
+  warn "未随包提供 Nginx 站点模板（$NGINX_TEMPLATE）；将使用板端已有配置"
+fi
+
+# ---------- 4. Nginx 校验与重载 ----------
 info "校验并重载 Nginx"
 run_sudo nginx -t
 run_sudo systemctl reload nginx
 
-# ---------- 4. 健康检查 ----------
+# ---------- 5. 健康检查 ----------
 if is_dry_run; then
   info "[dry-run] 跳过请求 http://127.0.0.1/ 检查 200"
 elif wait_http "http://127.0.0.1/" "$HEALTH_TIMEOUT" 200; then
@@ -198,7 +213,7 @@ else
   exit 1
 fi
 
-# ---------- 5. 清理旧版本 ----------
+# ---------- 6. 清理旧版本 ----------
 prune_releases "$WEB_DIR/releases" "$KEEP" "$VERSION"
 
 info "前端部署完成：$VERSION"
