@@ -46,10 +46,10 @@ public class CollectorSensorTemplateSaveReqVO {
     @Size(max = 64, message = "图标长度不能超过 64 个字符")
     private String icon;
 
-    @Schema(description = "量程下限", example = "0")
+    @Schema(description = "量程下限；创建/修改均为全量语义，显式 null 可清空", example = "0")
     private Double valueMin;
 
-    @Schema(description = "量程上限", example = "100")
+    @Schema(description = "量程上限；创建/修改均为全量语义，显式 null 可清空", example = "100")
     private Double valueMax;
 
     @Schema(description = "数值缩放系数，默认 1", example = "0.1")
@@ -115,6 +115,8 @@ public class CollectorSensorTemplateSaveReqVO {
     private Integer sort;
 
     @Schema(description = "是否启用：0 否、1 是；默认 1", example = "1")
+    @Min(value = 0, message = "启用开关只能是 0 或 1")
+    @Max(value = 1, message = "启用开关只能是 0 或 1")
     private Integer enabled;
 
 }

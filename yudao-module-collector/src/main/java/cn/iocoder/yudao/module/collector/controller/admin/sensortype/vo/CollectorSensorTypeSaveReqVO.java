@@ -1,6 +1,8 @@
 package cn.iocoder.yudao.module.collector.controller.admin.sensortype.vo;
 
 import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
@@ -36,6 +38,8 @@ public class CollectorSensorTypeSaveReqVO {
     private String description;
 
     @Schema(description = "是否启用：0 否、1 是；默认 1", example = "1")
+    @Min(value = 0, message = "启用开关只能是 0 或 1")
+    @Max(value = 1, message = "启用开关只能是 0 或 1")
     private Integer enabled;
 
     @Schema(description = "排序值，默认 0", example = "1")

@@ -25,14 +25,18 @@ public class CollectorDeviceSaveReqVO {
     private String deviceName;
 
     @Schema(description = "是否启用：0 否、1 是；默认 1", example = "1")
+    @Min(value = 0, message = "启用开关只能是 0 或 1")
+    @Max(value = 1, message = "启用开关只能是 0 或 1")
     private Integer enabled;
 
     @Schema(description = "设备默认轮询周期（毫秒），默认 5000", example = "5000")
     @Min(value = 100, message = "轮询周期不能小于 100 毫秒")
+    @Max(value = 86400000, message = "轮询周期不能超过 86400000 毫秒")
     private Integer pollIntervalMs;
 
     @Schema(description = "单次请求超时（毫秒），默认 1000", example = "1000")
     @Min(value = 10, message = "请求超时不能小于 10 毫秒")
+    @Max(value = 60000, message = "请求超时不能超过 60000 毫秒")
     private Integer timeoutMs;
 
     @Schema(description = "失败重试次数，默认 2", example = "2")
@@ -42,6 +46,7 @@ public class CollectorDeviceSaveReqVO {
 
     @Schema(description = "断线重连间隔（毫秒），默认 5000", example = "5000")
     @Min(value = 100, message = "重连间隔不能小于 100 毫秒")
+    @Max(value = 86400000, message = "重连间隔不能超过 86400000 毫秒")
     private Integer reconnectIntervalMs;
 
     @Schema(description = "描述")

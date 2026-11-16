@@ -50,6 +50,7 @@ public class CollectorChannelUpdateReqVO {
 
     @Schema(description = "独立轮询周期（毫秒），为空继承设备", example = "5000")
     @Min(value = 100, message = "轮询周期不能小于 100 毫秒")
+    @Max(value = 86400000, message = "轮询周期不能超过 86400000 毫秒")
     private Integer pollIntervalMs;
 
     @Schema(description = "描述")
