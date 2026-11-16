@@ -3,7 +3,8 @@
 这是采集器功能的最小实现：在 RK3568 板端通过 `/dev/ttyS4` + RS485 轮询两颗
 HYDAC HSI 传感器，验证帧协议与解析正确性，把原始采样、设备状态和心跳写入
 PostgreSQL（`yudao_board`），同时保留 JSONL 输出便于对照。启动时自动执行幂等的
-HSI 演示配置种子（协议、1 台设备、2 个传感器、16 个通道）。
+HSI 演示配置种子（协议、2 个传感器类型、1 台设备、2 个传感器、16 个参数模板、
+16 个通道）。
 
 - 串口与协议全部使用 Python 3.12 标准库（`os` / `termios` / `select` /
   `fcntl` / `struct`），不引入 pyserial 等第三方依赖，板端无需 `pip install`；
@@ -18,7 +19,7 @@ HSI 演示配置种子（协议、1 台设备、2 个传感器、16 个通道）
 collector/
 ├── main.py              # CLI 入口
 ├── poll.py              # 轮询器、RS485 flags 探测、统计与 JSONL 输出
-├── seed.py              # 幂等 HSI 演示配置种子（协议/设备/传感器/通道）
+├── seed.py              # 幂等 HSI 演示配置种子（协议/类型/设备/传感器/模板/通道）
 ├── storage.py           # PostgreSQL 落库（raw/设备状态/心跳）与通道映射解析
 ├── partitions.py        # collector_sample_raw 未来日分区预创建（纯函数 + DDL）
 ├── transport.py         # Linux 串口 + TIOCSRS485 传输层
@@ -127,12 +128,25 @@ WARN，并在后续轮询中跳过；`--require-sensors` 可恢复“所有已�
 种子内容：
 
 - `collector_protocol`：`hsi_rs485`（HYDAC HSI (RS485)，`driver_key=hsi_rs485_driver`）；
+- `collector_sensor_type`：`cs1000`、`hlb1400`（含制造商与型号说明）；
 - `collector_device`：`rk3568-hsi-01`，`poll_interval_ms=60000`、`timeout_ms=1000`、
   `retries=1`；
-- `collector_sensor`：`cs1000-01`（0x61）、`hlb1400-01`（0x63），连接参数为
-  `/dev/ttyS4` 9600 8N1 + `rs485=true`、`rs485Flags=0`；
-- `collector_channel`：16 条（CS1000 10 条、HLB1400 6 条），`value_type=number`，
-  `channel_config` 含 `address/message/fieldIndex/signed`。
+- `collector_sensor`：`cs1000-01`（0x61）、`hlb1400-01`（0x63），通过
+  `sensor_type_id` 关联类型；连接参数为 `/dev/ttyS4` 9600 8N1 + `rs485=true`、
+  `rs485Flags=0`；
+- `collector_sensor_template`：16 条（CS1000 10 条、HLB1400 6 条），保存量程、
+  缩放、单位、解析位置、四档阈值比例（默认 0.10/0.30/0.70/0.90）与开关；
+- `collector_channel`：16 条，由模板生成，保存 `sensor_template_id`、`value_kind`、
+  量程、四档阈值与开关；`channel_config` 含 `address/message/fieldIndex/signed`。
+  数值通道 `alarm_enabled=1` 且四个阈值开关为 1；枚举通道 `flow_state` 保留
+  11~55 的枚举原始值展示量程，但四档阈值统一为 NULL、`alarm_enabled=0` 且四个开关为 0。
+  CS1000 数值量程为 ISO-4 8~25、ISO-6 7~24、ISO-14 6~23、SAE A/B/C/D 0~14、
+  温度 -60~150、Drive 0~100。
+
+已有旧版（仅两档阈值）数据库需先执行一次
+`sql/postgresql/collector_threshold_migration.sql`，再启动新版种子；新库直接执行
+`sql/postgresql/collector.sql` 即可。种子可重复执行，不会重复创建类型、模板、
+设备、传感器或通道。
 
 配置消费（不再“只写不读”）：
 
@@ -140,6 +154,9 @@ WARN，并在后续轮询中跳过；`--require-sensors` 可恢复“所有已�
   `raw * scale + value_offset` 计算，解析器内置缩放只用于 JSONL 的 `fields` 对照；
 - `collector_channel.enabled` / `collector_sensor.enabled`：`enabled=0` 的传感器
   与通道在启动解析时被过滤，不探测、不轮询、不输出/落库，日志记录跳过数量；
+- `collector_channel.value_kind` / 量程 / 四档阈值 / 单档开关：当前采集进程只消费
+  `scale`、`value_offset` 与 `enabled`，阈值供后续报警判断与 UI 编辑使用；
+  枚举通道不参与阈值报警；
 - `collector_device.poll_interval_ms`：作为默认轮询间隔（CLI `--interval` 优先）；
 - `collector_sensor.connection_config.rs485Flags`：`--flags auto` 时作为首选候选，
   显式逗号列表仍可覆盖；

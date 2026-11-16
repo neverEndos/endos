@@ -1,8 +1,9 @@
 /*
  采集器采集数据表初始化脚本（PostgreSQL 17）
 
- 适用范围：collector 首期 15 张表（协议注册表、设备、传感器、通道、分时段轮询、配置版本、
- 原始采样、小时/天聚合、聚合水位、报警、设备状态、心跳、命令、保留策略）。
+ 适用范围：collector 首期 17 张表（协议注册表、设备、传感器类型、参数模板、传感器、
+ 通道、分时段轮询、配置版本、原始采样、小时/天聚合、聚合水位、报警、设备状态、心跳、
+ 命令、保留策略）。
 
  说明：
  1. 所有表位于 public schema；不建外键，表之间只做逻辑关联，引用完整性由 Service 校验。
@@ -11,8 +12,9 @@
  3. collector_sample_raw 按天 RANGE 分区，本脚本创建示例日分区与 DEFAULT 分区；
     后续分区由维护任务按 collector_retention_policy.partition_lead_days 提前创建。
  4. 业务时间统一使用 timestamp(3) without time zone，语义为 Asia/Shanghai 本地墙钟时间。
- 5. 本脚本支持重复执行：开头会删除并重建下述 15 张 collector 表与 10 个序列，
-    执行将清空采集器已有数据，请在确认后执行。
+ 5. 本脚本支持重复执行：开头会删除并重建下述 17 张 collector 表与 12 个序列，
+    执行将清空采集器已有数据，请在确认后执行。已有库的阈值结构升级请使用
+    collector_threshold_migration.sql，不要直接重跑本脚本。
  6. 数值有限性约束显式排除 NaN 与正负 Infinity（数值类型没有可用的内置有限性判断
     函数）；配置版本 snapshot 必须为 JSON 对象，checksum 必须为 64 位小写十六进制字符串。
 */
@@ -29,6 +31,8 @@ SET client_encoding = 'UTF8';
 
 DROP TABLE IF EXISTS public.collector_protocol;
 DROP TABLE IF EXISTS public.collector_device;
+DROP TABLE IF EXISTS public.collector_sensor_template;
+DROP TABLE IF EXISTS public.collector_sensor_type;
 DROP TABLE IF EXISTS public.collector_sensor;
 DROP TABLE IF EXISTS public.collector_channel;
 DROP TABLE IF EXISTS public.collector_poll_schedule;
@@ -45,6 +49,8 @@ DROP TABLE IF EXISTS public.collector_retention_policy;
 
 DROP SEQUENCE IF EXISTS public.collector_protocol_seq;
 DROP SEQUENCE IF EXISTS public.collector_device_seq;
+DROP SEQUENCE IF EXISTS public.collector_sensor_type_seq;
+DROP SEQUENCE IF EXISTS public.collector_sensor_template_seq;
 DROP SEQUENCE IF EXISTS public.collector_sensor_seq;
 DROP SEQUENCE IF EXISTS public.collector_channel_seq;
 DROP SEQUENCE IF EXISTS public.collector_poll_schedule_seq;
@@ -67,6 +73,20 @@ CREATE SEQUENCE public.collector_protocol_seq
     CACHE 1;
 
 CREATE SEQUENCE public.collector_device_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+CREATE SEQUENCE public.collector_sensor_type_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+CREATE SEQUENCE public.collector_sensor_template_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -235,12 +255,200 @@ COMMENT ON COLUMN public.collector_device.deleted IS '是否删除：0 否、1 �
 
 
 -- =============================================================================
--- 4. 采集传感器
+-- 4. 传感器类型
+-- =============================================================================
+
+CREATE TABLE public.collector_sensor_type (
+    id bigint NOT NULL,
+    type_code character varying(64) NOT NULL,
+    type_name character varying(100) NOT NULL,
+    protocol_code character varying(64) NOT NULL,
+    manufacturer character varying(100),
+    description character varying(255),
+    enabled smallint DEFAULT 1 NOT NULL,
+    sort integer DEFAULT 0 NOT NULL,
+    creator character varying(64) DEFAULT ''::character varying,
+    create_time timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updater character varying(64) DEFAULT ''::character varying,
+    update_time timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    deleted smallint DEFAULT 0 NOT NULL,
+    CONSTRAINT pk_collector_sensor_type PRIMARY KEY (id),
+    CONSTRAINT chk_collector_sensor_type_code CHECK (length(type_code) > 0),
+    CONSTRAINT chk_collector_sensor_type_name CHECK (length(type_name) > 0),
+    CONSTRAINT chk_collector_sensor_type_protocol CHECK (length(protocol_code) > 0),
+    CONSTRAINT chk_collector_sensor_type_enabled CHECK (enabled IN (0, 1))
+);
+
+CREATE UNIQUE INDEX uk_collector_sensor_type_code
+    ON public.collector_sensor_type USING btree (type_code)
+    WHERE (deleted = 0);
+
+CREATE INDEX idx_collector_sensor_type_protocol
+    ON public.collector_sensor_type USING btree (protocol_code)
+    WHERE (deleted = 0);
+
+COMMENT ON TABLE public.collector_sensor_type IS '传感器类型/型号定义表（型号下的通道参数模板归属）';
+COMMENT ON COLUMN public.collector_sensor_type.id IS '主键编号';
+COMMENT ON COLUMN public.collector_sensor_type.type_code IS '类型/型号业务编码（业务唯一）';
+COMMENT ON COLUMN public.collector_sensor_type.type_name IS '类型/型号展示名称';
+COMMENT ON COLUMN public.collector_sensor_type.protocol_code IS '协议编码（逻辑关联 collector_protocol.protocol_code，不建 FK）';
+COMMENT ON COLUMN public.collector_sensor_type.manufacturer IS '制造商';
+COMMENT ON COLUMN public.collector_sensor_type.description IS '型号说明、固件差异与字段映射备注';
+COMMENT ON COLUMN public.collector_sensor_type.enabled IS '是否启用：0 否、1 是；停用只限制新增传感器引用';
+COMMENT ON COLUMN public.collector_sensor_type.sort IS '排序值';
+COMMENT ON COLUMN public.collector_sensor_type.creator IS '创建者';
+COMMENT ON COLUMN public.collector_sensor_type.create_time IS '创建时间';
+COMMENT ON COLUMN public.collector_sensor_type.updater IS '更新者';
+COMMENT ON COLUMN public.collector_sensor_type.update_time IS '更新时间';
+COMMENT ON COLUMN public.collector_sensor_type.deleted IS '是否删除：0 否、1 是';
+
+
+-- =============================================================================
+-- 5. 传感器参数模板
+-- =============================================================================
+
+CREATE TABLE public.collector_sensor_template (
+    id bigint NOT NULL,
+    sensor_type_id bigint NOT NULL,
+    channel_code character varying(64) NOT NULL,
+    channel_name character varying(100) NOT NULL,
+    value_kind character varying(16) DEFAULT 'number'::character varying NOT NULL,
+    unit character varying(32),
+    icon character varying(64),
+    value_min double precision,
+    value_max double precision,
+    scale double precision DEFAULT 1 NOT NULL,
+    value_offset double precision DEFAULT 0 NOT NULL,
+    decimal_places smallint DEFAULT 0 NOT NULL,
+    threshold_low_error_ratio double precision DEFAULT 0.10 NOT NULL,
+    threshold_low_warning_ratio double precision DEFAULT 0.30 NOT NULL,
+    threshold_high_warning_ratio double precision DEFAULT 0.70 NOT NULL,
+    threshold_high_error_ratio double precision DEFAULT 0.90 NOT NULL,
+    alarm_enabled smallint DEFAULT 1 NOT NULL,
+    threshold_low_error_enabled smallint DEFAULT 1 NOT NULL,
+    threshold_low_warning_enabled smallint DEFAULT 1 NOT NULL,
+    threshold_high_warning_enabled smallint DEFAULT 1 NOT NULL,
+    threshold_high_error_enabled smallint DEFAULT 1 NOT NULL,
+    channel_config jsonb DEFAULT '{}'::jsonb NOT NULL,
+    sort integer DEFAULT 0 NOT NULL,
+    enabled smallint DEFAULT 1 NOT NULL,
+    creator character varying(64) DEFAULT ''::character varying,
+    create_time timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updater character varying(64) DEFAULT ''::character varying,
+    update_time timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    deleted smallint DEFAULT 0 NOT NULL,
+    CONSTRAINT pk_collector_sensor_template PRIMARY KEY (id),
+    CONSTRAINT chk_collector_sensor_template_code CHECK (length(channel_code) > 0),
+    CONSTRAINT chk_collector_sensor_template_name CHECK (length(channel_name) > 0),
+    CONSTRAINT chk_collector_sensor_template_value_kind CHECK (value_kind IN ('number', 'enum')),
+    CONSTRAINT chk_collector_sensor_template_value_finite CHECK (
+        (value_min IS NULL OR (
+            value_min <> 'Infinity'::float8
+            AND value_min <> '-Infinity'::float8
+            AND value_min <> 'NaN'::float8
+        ))
+        AND (value_max IS NULL OR (
+            value_max <> 'Infinity'::float8
+            AND value_max <> '-Infinity'::float8
+            AND value_max <> 'NaN'::float8
+        ))
+    ),
+    CONSTRAINT chk_collector_sensor_template_value_range CHECK (
+        value_min IS NULL OR value_max IS NULL OR value_min <= value_max
+    ),
+    CONSTRAINT chk_collector_sensor_template_scale CHECK (
+        scale <> 'Infinity'::float8
+        AND scale <> '-Infinity'::float8
+        AND scale <> 'NaN'::float8
+    ),
+    CONSTRAINT chk_collector_sensor_template_offset CHECK (
+        value_offset <> 'Infinity'::float8
+        AND value_offset <> '-Infinity'::float8
+        AND value_offset <> 'NaN'::float8
+    ),
+    CONSTRAINT chk_collector_sensor_template_decimal CHECK (decimal_places BETWEEN 0 AND 6),
+    CONSTRAINT chk_collector_sensor_template_ratios CHECK (
+        threshold_low_error_ratio <> 'Infinity'::float8
+        AND threshold_low_error_ratio <> '-Infinity'::float8
+        AND threshold_low_error_ratio <> 'NaN'::float8
+        AND threshold_low_error_ratio BETWEEN 0 AND 1
+        AND threshold_low_warning_ratio <> 'Infinity'::float8
+        AND threshold_low_warning_ratio <> '-Infinity'::float8
+        AND threshold_low_warning_ratio <> 'NaN'::float8
+        AND threshold_low_warning_ratio BETWEEN 0 AND 1
+        AND threshold_high_warning_ratio <> 'Infinity'::float8
+        AND threshold_high_warning_ratio <> '-Infinity'::float8
+        AND threshold_high_warning_ratio <> 'NaN'::float8
+        AND threshold_high_warning_ratio BETWEEN 0 AND 1
+        AND threshold_high_error_ratio <> 'Infinity'::float8
+        AND threshold_high_error_ratio <> '-Infinity'::float8
+        AND threshold_high_error_ratio <> 'NaN'::float8
+        AND threshold_high_error_ratio BETWEEN 0 AND 1
+    ),
+    CONSTRAINT chk_collector_sensor_template_ratio_order CHECK (
+        threshold_low_error_ratio <= threshold_low_warning_ratio
+        AND threshold_low_warning_ratio <= threshold_high_warning_ratio
+        AND threshold_high_warning_ratio <= threshold_high_error_ratio
+    ),
+    CONSTRAINT chk_collector_sensor_template_switches CHECK (
+        alarm_enabled IN (0, 1)
+        AND threshold_low_error_enabled IN (0, 1)
+        AND threshold_low_warning_enabled IN (0, 1)
+        AND threshold_high_warning_enabled IN (0, 1)
+        AND threshold_high_error_enabled IN (0, 1)
+    ),
+    CONSTRAINT chk_collector_sensor_template_enabled CHECK (enabled IN (0, 1)),
+    CONSTRAINT chk_collector_sensor_template_config CHECK (jsonb_typeof(channel_config) = 'object')
+);
+
+CREATE UNIQUE INDEX uk_collector_sensor_template_code
+    ON public.collector_sensor_template USING btree (sensor_type_id, channel_code)
+    WHERE (deleted = 0);
+
+CREATE INDEX idx_collector_sensor_template_type
+    ON public.collector_sensor_template USING btree (sensor_type_id)
+    WHERE (deleted = 0);
+
+COMMENT ON TABLE public.collector_sensor_template IS '传感器参数模板表（类型下的通道编码、量程、比例与四档阈值开关）';
+COMMENT ON COLUMN public.collector_sensor_template.id IS '主键编号';
+COMMENT ON COLUMN public.collector_sensor_template.sensor_type_id IS '所属传感器类型编号（逻辑关联 collector_sensor_type.id）';
+COMMENT ON COLUMN public.collector_sensor_template.channel_code IS '通道编码（类型内唯一，生成实例通道时沿用）';
+COMMENT ON COLUMN public.collector_sensor_template.channel_name IS '通道名称（生成实例通道时沿用）';
+COMMENT ON COLUMN public.collector_sensor_template.value_kind IS '值类别：number 数值、enum 枚举；枚举不产生阈值报警';
+COMMENT ON COLUMN public.collector_sensor_template.unit IS '工程单位（可空；空表示无量纲/状态量）';
+COMMENT ON COLUMN public.collector_sensor_template.icon IS '图标标识（可空，实例通道可覆盖）';
+COMMENT ON COLUMN public.collector_sensor_template.value_min IS '量程下限（数值通道用于初始化四档阈值）';
+COMMENT ON COLUMN public.collector_sensor_template.value_max IS '量程上限（数值通道用于初始化四档阈值）';
+COMMENT ON COLUMN public.collector_sensor_template.scale IS '数值缩放系数（生成实例通道的默认值）';
+COMMENT ON COLUMN public.collector_sensor_template.value_offset IS '工程值偏移量（生成实例通道的默认值）';
+COMMENT ON COLUMN public.collector_sensor_template.decimal_places IS '展示小数位';
+COMMENT ON COLUMN public.collector_sensor_template.threshold_low_error_ratio IS '下严重阈值比例，默认 0.10；阈值 = value_min + 比例 × (value_max - value_min)';
+COMMENT ON COLUMN public.collector_sensor_template.threshold_low_warning_ratio IS '下警告阈值比例，默认 0.30';
+COMMENT ON COLUMN public.collector_sensor_template.threshold_high_warning_ratio IS '上警告阈值比例，默认 0.70';
+COMMENT ON COLUMN public.collector_sensor_template.threshold_high_error_ratio IS '上严重阈值比例，默认 0.90';
+COMMENT ON COLUMN public.collector_sensor_template.alarm_enabled IS '是否启用阈值报警：0 否、1 是；enum 默认 0';
+COMMENT ON COLUMN public.collector_sensor_template.threshold_low_error_enabled IS '下严重阈值开关：0 否、1 是；enum 默认 0';
+COMMENT ON COLUMN public.collector_sensor_template.threshold_low_warning_enabled IS '下警告阈值开关：0 否、1 是；enum 默认 0';
+COMMENT ON COLUMN public.collector_sensor_template.threshold_high_warning_enabled IS '上警告阈值开关：0 否、1 是；enum 默认 0';
+COMMENT ON COLUMN public.collector_sensor_template.threshold_high_error_enabled IS '上严重阈值开关：0 否、1 是；enum 默认 0';
+COMMENT ON COLUMN public.collector_sensor_template.channel_config IS '协议专用模板参数 JSON，生成实例通道时复制；由所属传感器协议的 channel_schema 校验';
+COMMENT ON COLUMN public.collector_sensor_template.sort IS '排序值';
+COMMENT ON COLUMN public.collector_sensor_template.enabled IS '是否启用：0 否、1 是；停用只影响新增生成';
+COMMENT ON COLUMN public.collector_sensor_template.creator IS '创建者';
+COMMENT ON COLUMN public.collector_sensor_template.create_time IS '创建时间';
+COMMENT ON COLUMN public.collector_sensor_template.updater IS '更新者';
+COMMENT ON COLUMN public.collector_sensor_template.update_time IS '更新时间';
+COMMENT ON COLUMN public.collector_sensor_template.deleted IS '是否删除：0 否、1 是';
+
+
+-- =============================================================================
+-- 6. 采集传感器
 -- =============================================================================
 
 CREATE TABLE public.collector_sensor (
     id bigint NOT NULL,
     device_id bigint NOT NULL,
+    sensor_type_id bigint,
     sensor_code character varying(64) NOT NULL,
     sensor_name character varying(100) NOT NULL,
     protocol_code character varying(64) NOT NULL,
@@ -273,9 +481,14 @@ CREATE INDEX idx_collector_sensor_protocol
     ON public.collector_sensor USING btree (protocol_code)
     WHERE (deleted = 0);
 
-COMMENT ON TABLE public.collector_sensor IS '采集传感器表（设备下级，绑定协议与连接参数）';
+CREATE INDEX idx_collector_sensor_type
+    ON public.collector_sensor USING btree (sensor_type_id)
+    WHERE (sensor_type_id IS NOT NULL AND deleted = 0);
+
+COMMENT ON TABLE public.collector_sensor IS '采集传感器表（设备下级，绑定协议、型号与连接参数）';
 COMMENT ON COLUMN public.collector_sensor.id IS '主键编号';
 COMMENT ON COLUMN public.collector_sensor.device_id IS '所属设备编号（逻辑关联 collector_device.id）';
+COMMENT ON COLUMN public.collector_sensor.sensor_type_id IS '传感器类型编号（逻辑关联 collector_sensor_type.id，可空；用于生成参数模板通道）';
 COMMENT ON COLUMN public.collector_sensor.sensor_code IS '传感器编码（设备内唯一）';
 COMMENT ON COLUMN public.collector_sensor.sensor_name IS '传感器名称';
 COMMENT ON COLUMN public.collector_sensor.protocol_code IS '协议编码（逻辑关联 collector_protocol.protocol_code，不建 FK）';
@@ -291,17 +504,19 @@ COMMENT ON COLUMN public.collector_sensor.deleted IS '是否删除：0 否、1 �
 
 
 -- =============================================================================
--- 5. 采集通道
+-- 7. 采集通道
 -- =============================================================================
 
 CREATE TABLE public.collector_channel (
     id bigint NOT NULL,
     device_id bigint NOT NULL,
     sensor_id bigint NOT NULL,
+    sensor_template_id bigint,
     channel_code character varying(64) NOT NULL,
     channel_name character varying(100) NOT NULL,
     enabled smallint DEFAULT 1 NOT NULL,
     value_type character varying(16) NOT NULL,
+    value_kind character varying(16) DEFAULT 'number'::character varying NOT NULL,
     channel_config jsonb DEFAULT '{}'::jsonb NOT NULL,
     scale double precision DEFAULT 1 NOT NULL,
     value_offset double precision DEFAULT 0 NOT NULL,
@@ -309,8 +524,16 @@ CREATE TABLE public.collector_channel (
     icon character varying(64),
     decimal_places smallint DEFAULT 0 NOT NULL,
     deadband double precision DEFAULT 0 NOT NULL,
-    threshold_low double precision,
-    threshold_high double precision,
+    value_min double precision,
+    value_max double precision,
+    threshold_low_error double precision,
+    threshold_low_warning double precision,
+    threshold_high_warning double precision,
+    threshold_high_error double precision,
+    threshold_low_error_enabled smallint DEFAULT 1 NOT NULL,
+    threshold_low_warning_enabled smallint DEFAULT 1 NOT NULL,
+    threshold_high_warning_enabled smallint DEFAULT 1 NOT NULL,
+    threshold_high_error_enabled smallint DEFAULT 1 NOT NULL,
     alarm_deadband double precision DEFAULT 0 NOT NULL,
     alarm_enabled smallint DEFAULT 0 NOT NULL,
     poll_interval_ms integer,
@@ -325,6 +548,7 @@ CREATE TABLE public.collector_channel (
     CONSTRAINT chk_collector_channel_code CHECK (length(channel_code) > 0),
     CONSTRAINT chk_collector_channel_enabled CHECK (enabled IN (0, 1)),
     CONSTRAINT chk_collector_channel_value_type CHECK (value_type = 'number'),
+    CONSTRAINT chk_collector_channel_value_kind CHECK (value_kind IN ('number', 'enum')),
     CONSTRAINT chk_collector_channel_scale CHECK (
         scale <> 'Infinity'::float8
         AND scale <> '-Infinity'::float8
@@ -341,17 +565,47 @@ CREATE TABLE public.collector_channel (
         AND deadband <> 'NaN'::float8
         AND deadband >= 0
     ),
-    CONSTRAINT chk_collector_channel_threshold_finite CHECK (
-        (threshold_low IS NULL OR (
-            threshold_low <> 'Infinity'::float8
-            AND threshold_low <> '-Infinity'::float8
-            AND threshold_low <> 'NaN'::float8
+    CONSTRAINT chk_collector_channel_value_finite CHECK (
+        (value_min IS NULL OR (
+            value_min <> 'Infinity'::float8
+            AND value_min <> '-Infinity'::float8
+            AND value_min <> 'NaN'::float8
         ))
-        AND (threshold_high IS NULL OR (
-            threshold_high <> 'Infinity'::float8
-            AND threshold_high <> '-Infinity'::float8
-            AND threshold_high <> 'NaN'::float8
+        AND (value_max IS NULL OR (
+            value_max <> 'Infinity'::float8
+            AND value_max <> '-Infinity'::float8
+            AND value_max <> 'NaN'::float8
         ))
+    ),
+    CONSTRAINT chk_collector_channel_value_range CHECK (
+        value_min IS NULL OR value_max IS NULL OR value_min <= value_max
+    ),
+    CONSTRAINT chk_collector_channel_thresholds_finite CHECK (
+        (threshold_low_error IS NULL OR (
+            threshold_low_error <> 'Infinity'::float8
+            AND threshold_low_error <> '-Infinity'::float8
+            AND threshold_low_error <> 'NaN'::float8
+        ))
+        AND (threshold_low_warning IS NULL OR (
+            threshold_low_warning <> 'Infinity'::float8
+            AND threshold_low_warning <> '-Infinity'::float8
+            AND threshold_low_warning <> 'NaN'::float8
+        ))
+        AND (threshold_high_warning IS NULL OR (
+            threshold_high_warning <> 'Infinity'::float8
+            AND threshold_high_warning <> '-Infinity'::float8
+            AND threshold_high_warning <> 'NaN'::float8
+        ))
+        AND (threshold_high_error IS NULL OR (
+            threshold_high_error <> 'Infinity'::float8
+            AND threshold_high_error <> '-Infinity'::float8
+            AND threshold_high_error <> 'NaN'::float8
+        ))
+    ),
+    CONSTRAINT chk_collector_channel_thresholds_order CHECK (
+        (threshold_low_error IS NULL OR threshold_low_warning IS NULL OR threshold_low_error <= threshold_low_warning)
+        AND (threshold_low_warning IS NULL OR threshold_high_warning IS NULL OR threshold_low_warning <= threshold_high_warning)
+        AND (threshold_high_warning IS NULL OR threshold_high_error IS NULL OR threshold_high_warning <= threshold_high_error)
     ),
     CONSTRAINT chk_collector_channel_alarm_deadband CHECK (
         alarm_deadband <> 'Infinity'::float8
@@ -360,8 +614,11 @@ CREATE TABLE public.collector_channel (
         AND alarm_deadband >= 0
     ),
     CONSTRAINT chk_collector_channel_decimal CHECK (decimal_places BETWEEN 0 AND 6),
-    CONSTRAINT chk_collector_channel_threshold CHECK (
-        threshold_low IS NULL OR threshold_high IS NULL OR threshold_low <= threshold_high
+    CONSTRAINT chk_collector_channel_threshold_switches CHECK (
+        threshold_low_error_enabled IN (0, 1)
+        AND threshold_low_warning_enabled IN (0, 1)
+        AND threshold_high_warning_enabled IN (0, 1)
+        AND threshold_high_error_enabled IN (0, 1)
     ),
     CONSTRAINT chk_collector_channel_alarm_enabled CHECK (alarm_enabled IN (0, 1)),
     CONSTRAINT chk_collector_channel_poll CHECK (poll_interval_ms IS NULL OR poll_interval_ms >= 100),
@@ -380,14 +637,20 @@ CREATE INDEX idx_collector_channel_device
     ON public.collector_channel USING btree (device_id)
     WHERE (deleted = 0);
 
-COMMENT ON TABLE public.collector_channel IS '采集通道通用配置表（协议无关，含 UI 渲染字段）';
+CREATE INDEX idx_collector_channel_template
+    ON public.collector_channel USING btree (sensor_template_id)
+    WHERE (sensor_template_id IS NOT NULL AND deleted = 0);
+
+COMMENT ON TABLE public.collector_channel IS '采集通道通用配置表（协议无关，含 UI 渲染字段与四档阈值）';
 COMMENT ON COLUMN public.collector_channel.id IS '主键编号';
 COMMENT ON COLUMN public.collector_channel.device_id IS '所属设备编号（冗余，Service 保证与传感器所属设备一致）';
 COMMENT ON COLUMN public.collector_channel.sensor_id IS '所属传感器编号（逻辑关联 collector_sensor.id）';
+COMMENT ON COLUMN public.collector_channel.sensor_template_id IS '生成该通道的模板编号（逻辑关联 collector_sensor_template.id，可空）';
 COMMENT ON COLUMN public.collector_channel.channel_code IS '通道编码（传感器内唯一）';
 COMMENT ON COLUMN public.collector_channel.channel_name IS '通道名称（列表/卡片展示）';
 COMMENT ON COLUMN public.collector_channel.enabled IS '是否启用：0 否、1 是';
 COMMENT ON COLUMN public.collector_channel.value_type IS '通用值类型：首期仅 number；bit 等协议值由驱动转换为数值 0/1';
+COMMENT ON COLUMN public.collector_channel.value_kind IS '值类别：number 数值、enum 枚举；枚举不产生阈值报警';
 COMMENT ON COLUMN public.collector_channel.channel_config IS '协议专用寻址/解析参数 JSON，由所属传感器的 protocol.channel_schema 校验';
 COMMENT ON COLUMN public.collector_channel.scale IS '数值缩放系数（仅 value_type=number）';
 COMMENT ON COLUMN public.collector_channel.value_offset IS '工程值偏移量（仅 value_type=number）';
@@ -395,8 +658,16 @@ COMMENT ON COLUMN public.collector_channel.unit IS '工程单位（可空；空�
 COMMENT ON COLUMN public.collector_channel.icon IS '图标标识（如 i-ep:thermometer；空则按 value_type 取默认图标）';
 COMMENT ON COLUMN public.collector_channel.decimal_places IS '展示小数位';
 COMMENT ON COLUMN public.collector_channel.deadband IS '变化死区（0 表示不抑制）';
-COMMENT ON COLUMN public.collector_channel.threshold_low IS '报警下限';
-COMMENT ON COLUMN public.collector_channel.threshold_high IS '报警上限';
+COMMENT ON COLUMN public.collector_channel.value_min IS '量程下限（可空；模板生成时写入，用户可覆盖）';
+COMMENT ON COLUMN public.collector_channel.value_max IS '量程上限（可空；模板生成时写入，用户可覆盖）';
+COMMENT ON COLUMN public.collector_channel.threshold_low_error IS '下严重阈值（可空；低于该值产生 level=3 报警）';
+COMMENT ON COLUMN public.collector_channel.threshold_low_warning IS '下警告阈值（可空；低于该值产生 level=2 报警）';
+COMMENT ON COLUMN public.collector_channel.threshold_high_warning IS '上警告阈值（可空；高于该值产生 level=2 报警）';
+COMMENT ON COLUMN public.collector_channel.threshold_high_error IS '上严重阈值（可空；高于该值产生 level=3 报警）';
+COMMENT ON COLUMN public.collector_channel.threshold_low_error_enabled IS '下严重阈值开关：0 否、1 是';
+COMMENT ON COLUMN public.collector_channel.threshold_low_warning_enabled IS '下警告阈值开关：0 否、1 是';
+COMMENT ON COLUMN public.collector_channel.threshold_high_warning_enabled IS '上警告阈值开关：0 否、1 是';
+COMMENT ON COLUMN public.collector_channel.threshold_high_error_enabled IS '上严重阈值开关：0 否、1 是';
 COMMENT ON COLUMN public.collector_channel.alarm_deadband IS '报警恢复死区';
 COMMENT ON COLUMN public.collector_channel.alarm_enabled IS '是否启用阈值报警：0 否、1 是';
 COMMENT ON COLUMN public.collector_channel.poll_interval_ms IS '独立轮询周期（NULL 继承设备）';
@@ -410,7 +681,7 @@ COMMENT ON COLUMN public.collector_channel.deleted IS '是否删除：0 否、1 
 
 
 -- =============================================================================
--- 6. 分时段轮询策略
+-- 8. 分时段轮询策略
 -- =============================================================================
 
 CREATE TABLE public.collector_poll_schedule (
@@ -480,7 +751,7 @@ COMMENT ON COLUMN public.collector_poll_schedule.deleted IS '是否删除：0 �
 
 
 -- =============================================================================
--- 7. 配置版本快照
+-- 9. 配置版本快照
 -- =============================================================================
 
 CREATE TABLE public.collector_config_version (
@@ -524,7 +795,7 @@ COMMENT ON TABLE public.collector_config_version IS '采集配置版本快照表
 COMMENT ON COLUMN public.collector_config_version.id IS '主键编号';
 COMMENT ON COLUMN public.collector_config_version.version_no IS '业务版本号（单调递增）';
 COMMENT ON COLUMN public.collector_config_version.status IS '状态：0 草稿、1 已发布、2 已被取代';
-COMMENT ON COLUMN public.collector_config_version.snapshot IS '全量配置快照（protocols/devices/sensors/channels/schedules），checksum 覆盖传感器及协议配置';
+COMMENT ON COLUMN public.collector_config_version.snapshot IS '全量配置快照（protocols/devices/sensors/channels/schedules），channels 含 valueKind/量程/四档阈值与开关；checksum 覆盖传感器及协议配置';
 COMMENT ON COLUMN public.collector_config_version.checksum IS '快照规范化 JSON 的 SHA-256 小写十六进制值（64 位）';
 COMMENT ON COLUMN public.collector_config_version.change_note IS '变更说明';
 COMMENT ON COLUMN public.collector_config_version.source IS '来源：manual/import/rollback';
@@ -539,7 +810,7 @@ COMMENT ON COLUMN public.collector_config_version.deleted IS '是否删除：0 �
 
 
 -- =============================================================================
--- 8. 原始采样（按天 RANGE 分区）
+-- 10. 原始采样（按天 RANGE 分区）
 -- =============================================================================
 
 CREATE TABLE public.collector_sample_raw (
@@ -587,7 +858,7 @@ COMMENT ON COLUMN public.collector_sample_raw.quality IS '质量码：0 good、1
 
 
 -- =============================================================================
--- 9. 小时聚合
+-- 11. 小时聚合
 -- =============================================================================
 
 CREATE TABLE public.collector_aggregate_hour (
@@ -665,7 +936,7 @@ COMMENT ON COLUMN public.collector_aggregate_hour.update_time IS '最后重算�
 
 
 -- =============================================================================
--- 10. 天聚合
+-- 12. 天聚合
 -- =============================================================================
 
 CREATE TABLE public.collector_aggregate_day (
@@ -743,7 +1014,7 @@ COMMENT ON COLUMN public.collector_aggregate_day.update_time IS '最后重算时
 
 
 -- =============================================================================
--- 11. 聚合水位与补跑状态
+-- 13. 聚合水位与补跑状态
 -- =============================================================================
 
 CREATE TABLE public.collector_aggregate_watermark (
@@ -787,7 +1058,7 @@ COMMENT ON COLUMN public.collector_aggregate_watermark.update_time IS '更新时
 
 
 -- =============================================================================
--- 12. 报警事件
+-- 14. 报警事件
 -- =============================================================================
 
 CREATE TABLE public.collector_alarm (
@@ -852,7 +1123,7 @@ COMMENT ON COLUMN public.collector_alarm.id IS '主键编号';
 COMMENT ON COLUMN public.collector_alarm.device_id IS '设备编号（所有级别必填）';
 COMMENT ON COLUMN public.collector_alarm.sensor_id IS '传感器编号；channel_id=0 时大于 0 表示传感器级，0 表示设备级';
 COMMENT ON COLUMN public.collector_alarm.channel_id IS '通道编号；大于 0 表示通道级，且 sensor_id 必须指向其所属传感器';
-COMMENT ON COLUMN public.collector_alarm.alarm_type IS '报警类型，如 threshold_high/threshold_low/comm_timeout/device_offline/quality_bad';
+COMMENT ON COLUMN public.collector_alarm.alarm_type IS '报警类型，如 threshold_low_error/threshold_low_warning/threshold_high_warning/threshold_high_error/comm_timeout/device_offline/quality_bad';
 COMMENT ON COLUMN public.collector_alarm.level IS '级别：1 提示、2 警告、3 严重';
 COMMENT ON COLUMN public.collector_alarm.dedupe_key IS '活动报警去重键（dev:{deviceId}:sensor:{sensorId}:ch:{channelId}:type:{alarmType}，包含 sensor 维度）';
 COMMENT ON COLUMN public.collector_alarm.status IS '状态：0 活动、1 已确认、2 已清除';
@@ -869,7 +1140,7 @@ COMMENT ON COLUMN public.collector_alarm.clear_reason IS '清除原因';
 
 
 -- =============================================================================
--- 13. 设备当前状态
+-- 15. 设备当前状态
 -- =============================================================================
 
 CREATE TABLE public.collector_device_status (
@@ -902,7 +1173,7 @@ COMMENT ON COLUMN public.collector_device_status.update_time IS '更新时间';
 
 
 -- =============================================================================
--- 14. 采集器心跳
+-- 16. 采集器心跳
 -- =============================================================================
 
 CREATE TABLE public.collector_heartbeat (
@@ -975,7 +1246,7 @@ COMMENT ON COLUMN public.collector_heartbeat.message IS '附加状态信息';
 
 
 -- =============================================================================
--- 15. 命令下发与结果
+-- 17. 命令下发与结果
 -- =============================================================================
 
 CREATE TABLE public.collector_command (
@@ -1032,7 +1303,7 @@ COMMENT ON COLUMN public.collector_command.error_message IS '失败原因';
 
 
 -- =============================================================================
--- 16. 保留策略
+-- 18. 保留策略
 -- =============================================================================
 
 CREATE TABLE public.collector_retention_policy (
@@ -1085,10 +1356,10 @@ COMMENT ON COLUMN public.collector_retention_policy.deleted IS '是否删除：0
 
 
 -- =============================================================================
--- 17. 首期种子数据
+-- 19. 首期种子数据
 -- =============================================================================
 
--- 17.1 协议注册表：仅首期支持的 Modbus RTU / Modbus TCP。
+-- 19.1 协议注册表：仅首期支持的 Modbus RTU / Modbus TCP。
 -- id 使用序列生成，保证后续通过序列新增协议时编号不冲突。
 -- connection_schema / channel_schema 为合法 JSON Schema（Draft 2020-12），
 -- 包含必填字段、枚举、默认值与示例；Service 保存与发布配置时按此校验。
@@ -1379,7 +1650,7 @@ $json$::jsonb,
     'TCP Modbus TCP 从站；连接参数含主机、端口、从站地址与块读取优化参数'
 );
 
--- 17.2 保留策略初始建议（对应设计稿容量结论）：
+-- 19.2 保留策略初始建议（对应设计稿容量结论）：
 --   sample_raw     30 天，按天分区，过期分区整体 DROP；
 --   aggregate_hour 365 天，按 bucket_time 分批 DELETE；
 --   aggregate_day  0 表示永久保留，不做清理；
@@ -1438,6 +1709,6 @@ INSERT INTO public.collector_retention_policy (
     '命令：保留 30 天'
 );
 
--- 17.3 聚合水位：主键为 (agg_type, channel_id)，按通道分别记录。
+-- 19.3 聚合水位：主键为 (agg_type, channel_id)，按通道分别记录。
 -- 空库尚无设备/通道，故不预置 hour/day 行；通道创建或首个配置版本发布后，
 -- 由聚合任务为每个 number 通道初始化 (hour, channel_id) 与 (day, channel_id) 水位，watermark_time 均为 NULL。
