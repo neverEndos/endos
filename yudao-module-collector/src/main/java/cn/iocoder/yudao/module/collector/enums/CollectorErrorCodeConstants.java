@@ -24,6 +24,7 @@ public interface CollectorErrorCodeConstants {
     ErrorCode SENSOR_TYPE_NOT_ENABLED = new ErrorCode(1_023_002_001, "传感器类型({})已停用，不允许新增传感器");
     ErrorCode SENSOR_TYPE_CODE_DUPLICATE = new ErrorCode(1_023_002_002, "传感器类型编码({})已存在");
     ErrorCode SENSOR_TYPE_HAS_CHILDREN = new ErrorCode(1_023_002_003, "传感器类型下存在参数模板或传感器，无法删除");
+    ErrorCode SENSOR_TYPE_PROTOCOL_CHANGE_FORBIDDEN = new ErrorCode(1_023_002_004, "传感器类型下存在参数模板或传感器，不允许修改协议");
 
     // ========== 传感器参数模板 1-023-003-000 ==========
     ErrorCode SENSOR_TEMPLATE_NOT_EXISTS = new ErrorCode(1_023_003_000, "传感器参数模板不存在");

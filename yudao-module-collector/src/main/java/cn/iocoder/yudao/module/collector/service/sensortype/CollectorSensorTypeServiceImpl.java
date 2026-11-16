@@ -17,6 +17,7 @@ import org.springframework.stereotype.Service;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
@@ -24,6 +25,7 @@ import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstant
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.SENSOR_TYPE_HAS_CHILDREN;
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.SENSOR_TYPE_NOT_ENABLED;
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.SENSOR_TYPE_NOT_EXISTS;
+import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.SENSOR_TYPE_PROTOCOL_CHANGE_FORBIDDEN;
 
 @Service
 public class CollectorSensorTypeServiceImpl implements CollectorSensorTypeService {
@@ -84,9 +86,14 @@ public class CollectorSensorTypeServiceImpl implements CollectorSensorTypeServic
 
     @Override
     public void updateSensorType(CollectorSensorTypeSaveReqVO updateReqVO) {
-        validateSensorTypeExists(updateReqVO.getId());
+        CollectorSensorTypeDO sensorType = validateSensorTypeExists(updateReqVO.getId());
         protocolService.validateProtocolExists(updateReqVO.getProtocolCode());
         validateTypeCodeUnique(updateReqVO.getId(), updateReqVO.getTypeCode());
+        if (!Objects.equals(sensorType.getProtocolCode(), updateReqVO.getProtocolCode())
+                && (sensorTemplateMapper.selectCountBySensorTypeId(updateReqVO.getId()) > 0
+                || sensorMapper.selectCountBySensorTypeId(updateReqVO.getId()) > 0)) {
+            throw exception(SENSOR_TYPE_PROTOCOL_CHANGE_FORBIDDEN);
+        }
         CollectorSensorTypeDO updateObj = BeanUtils.toBean(updateReqVO, CollectorSensorTypeDO.class);
         sensorTypeMapper.updateById(updateObj);
     }
