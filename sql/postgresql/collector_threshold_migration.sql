@@ -16,18 +16,23 @@
    1. 本脚本幂等，可重复执行；新表/序列/列/索引使用 IF NOT EXISTS，
       约束使用 DROP IF EXISTS + ADD 的方式重建。
    2. 仅回填演示数据 CS1000/HLB1400：创建或复用类型与模板，关联两个传感器，
-      并为已有通道补充量程、四档阈值与开关；已有用户覆盖值不会被覆盖
-      （已关联模板的通道不再更新）。
+      并为已有通道补充量程、四档阈值与开关；已关联模板的通道不再更新。
+      首次升级时，旧 threshold_low/threshold_high 分别保留为下/上 warning；
+      对应旧值存在时，该侧新增 error 档保持 NULL，旧值缺失的档才按模板比例补全。
    3. 四档阈值按 value_min + 比例 × (value_max - value_min) 计算，
-      比例默认 0.10 / 0.30 / 0.70 / 0.90；enum 通道 alarm_enabled=0、
-      四个阈值开关均为 0，但阈值本身仍按量程计算，便于 UI 展示。
-   4. 删除旧列前先删除依赖它们的 CHECK 约束；本脚本不 CASCADE，
-      若库中存在视图等未知依赖会报错并停止，需人工确认。
-   5. 本脚本不修改 collector_sample_raw / 聚合 / 报警等历史数据，
+      比例默认 0.10 / 0.30 / 0.70 / 0.90；enum 通道四档阈值均为 NULL，
+      alarm_enabled=0、四个阈值开关均为 0。
+   4. 脚本通过 psql 的 ON_ERROR_STOP 失败即停，所有 DDL/DML 在一个事务内执行；
+      任一步失败都会整体回滚。重复执行时旧列已删除，不会再次套用旧阈值。
+   5. 删除旧列前先删除依赖它们的 CHECK 约束；本脚本不 CASCADE，
+      若库中存在视图等未知依赖会报错并回滚，需人工确认。
+   6. 本脚本不修改 collector_sample_raw / 聚合 / 报警等历史数据，
       也不触碰 system_* / infra_* 表。
 */
 
+\set ON_ERROR_STOP on
 SET client_encoding = 'UTF8';
+BEGIN;
 
 
 -- =============================================================================
@@ -352,13 +357,13 @@ SELECT
     v.sort, 1, 'migration', 'migration'
 FROM (VALUES
     -- CS1000（地址 0x61 = 97）
-    ('cs1000', 'iso_4', 'ISO 4μm 清洁度', 'number', 'µm', 'i-ep:filter', 0::float8, 100::float8, 0.1::float8, 1, 1, 1, 1, 1, 1, 97, 1, 1),
-    ('cs1000', 'iso_6', 'ISO 6μm 清洁度', 'number', 'µm', 'i-ep:filter', 0::float8, 100::float8, 0.1::float8, 1, 1, 1, 1, 1, 1, 97, 2, 2),
-    ('cs1000', 'iso_14', 'ISO 14μm 清洁度', 'number', 'µm', 'i-ep:filter', 0::float8, 100::float8, 0.1::float8, 1, 1, 1, 1, 1, 1, 97, 3, 3),
-    ('cs1000', 'sae_a', 'SAE A 等级', 'number', NULL, 'i-ep:medal', 0::float8, 20::float8, 0.1::float8, 1, 1, 1, 1, 1, 1, 97, 4, 4),
-    ('cs1000', 'sae_b', 'SAE B 等级', 'number', NULL, 'i-ep:medal', 0::float8, 20::float8, 0.1::float8, 1, 1, 1, 1, 1, 1, 97, 5, 5),
-    ('cs1000', 'sae_c', 'SAE C 等级', 'number', NULL, 'i-ep:medal', 0::float8, 20::float8, 0.1::float8, 1, 1, 1, 1, 1, 1, 97, 6, 6),
-    ('cs1000', 'sae_d', 'SAE D 等级', 'number', NULL, 'i-ep:medal', 0::float8, 20::float8, 0.1::float8, 1, 1, 1, 1, 1, 1, 97, 7, 7),
+    ('cs1000', 'iso_4', 'ISO 4μm 清洁度', 'number', 'µm', 'i-ep:filter', 8::float8, 25::float8, 0.1::float8, 1, 1, 1, 1, 1, 1, 97, 1, 1),
+    ('cs1000', 'iso_6', 'ISO 6μm 清洁度', 'number', 'µm', 'i-ep:filter', 7::float8, 24::float8, 0.1::float8, 1, 1, 1, 1, 1, 1, 97, 2, 2),
+    ('cs1000', 'iso_14', 'ISO 14μm 清洁度', 'number', 'µm', 'i-ep:filter', 6::float8, 23::float8, 0.1::float8, 1, 1, 1, 1, 1, 1, 97, 3, 3),
+    ('cs1000', 'sae_a', 'SAE A 等级', 'number', NULL, 'i-ep:medal', 0::float8, 14::float8, 0.1::float8, 1, 1, 1, 1, 1, 1, 97, 4, 4),
+    ('cs1000', 'sae_b', 'SAE B 等级', 'number', NULL, 'i-ep:medal', 0::float8, 14::float8, 0.1::float8, 1, 1, 1, 1, 1, 1, 97, 5, 5),
+    ('cs1000', 'sae_c', 'SAE C 等级', 'number', NULL, 'i-ep:medal', 0::float8, 14::float8, 0.1::float8, 1, 1, 1, 1, 1, 1, 97, 6, 6),
+    ('cs1000', 'sae_d', 'SAE D 等级', 'number', NULL, 'i-ep:medal', 0::float8, 14::float8, 0.1::float8, 1, 1, 1, 1, 1, 1, 97, 7, 7),
     ('cs1000', 'temperature_c', '油液温度', 'number', '℃', 'i-ep:thermometer', -60::float8, 150::float8, 0.1::float8, 1, 1, 1, 1, 1, 1, 97, 8, 8),
     ('cs1000', 'flow_state', '流动状态', 'enum', NULL, 'i-ep:switch', 11::float8, 55::float8, 1::float8, 0, 0, 0, 0, 0, 0, 97, 9, 9),
     ('cs1000', 'drive_pct', '驱动百分比', 'number', '%', 'i-ep:odometer', 0::float8, 100::float8, 1::float8, 0, 1, 1, 1, 1, 1, 97, 10, 10),
@@ -404,9 +409,43 @@ WHERE t.deleted = 0
 
 -- =============================================================================
 -- 9. 回填已有通道的量程、四档阈值与开关
---    仅回填尚未关联模板（sensor_template_id IS NULL）的通道；
---    已用户覆盖的通道在重复执行时保持原值。
+--    仅回填尚未关联模板（sensor_template_id IS NULL）的通道。
+--    首次执行先把旧两档值保存到临时表；重复执行时旧列已不存在，临时表为空。
 -- =============================================================================
+
+DO $$
+DECLARE
+    has_legacy_low boolean;
+    has_legacy_high boolean;
+BEGIN
+    SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'collector_channel'
+          AND column_name = 'threshold_low'
+    ), EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'collector_channel'
+          AND column_name = 'threshold_high'
+    ) INTO has_legacy_low, has_legacy_high;
+
+    IF has_legacy_low OR has_legacy_high THEN
+        EXECUTE 'CREATE TEMP TABLE collector_legacy_threshold ON COMMIT DROP AS '
+            || 'SELECT id AS channel_id, '
+            || CASE WHEN has_legacy_low
+                    THEN 'threshold_low AS legacy_low'
+                    ELSE 'NULL::double precision AS legacy_low' END || ', '
+            || CASE WHEN has_legacy_high
+                    THEN 'threshold_high AS legacy_high'
+                    ELSE 'NULL::double precision AS legacy_high' END
+            || ' FROM public.collector_channel';
+    ELSE
+        CREATE TEMP TABLE collector_legacy_threshold (
+            channel_id bigint PRIMARY KEY,
+            legacy_low double precision,
+            legacy_high double precision
+        ) ON COMMIT DROP;
+    END IF;
+END $$;
 
 UPDATE public.collector_channel c
 SET sensor_template_id = st.id,
@@ -414,20 +453,30 @@ SET sensor_template_id = st.id,
     value_min = st.value_min,
     value_max = st.value_max,
     threshold_low_error = CASE
-        WHEN st.value_min IS NULL OR st.value_max IS NULL THEN NULL
-        ELSE round((st.value_min + st.threshold_low_error_ratio * (st.value_max - st.value_min))::numeric, 4)::double precision
+        WHEN st.value_kind = 'enum' OR st.value_min IS NULL OR st.value_max IS NULL THEN NULL
+        WHEN legacy.legacy_low IS NULL THEN round((st.value_min + st.threshold_low_error_ratio
+            * (st.value_max - st.value_min))::numeric, 4)::double precision
+        ELSE NULL
     END,
     threshold_low_warning = CASE
+        WHEN st.value_kind = 'enum' THEN NULL
+        WHEN legacy.legacy_low IS NOT NULL THEN legacy.legacy_low
         WHEN st.value_min IS NULL OR st.value_max IS NULL THEN NULL
-        ELSE round((st.value_min + st.threshold_low_warning_ratio * (st.value_max - st.value_min))::numeric, 4)::double precision
+        ELSE round((st.value_min + st.threshold_low_warning_ratio
+            * (st.value_max - st.value_min))::numeric, 4)::double precision
     END,
     threshold_high_warning = CASE
+        WHEN st.value_kind = 'enum' THEN NULL
+        WHEN legacy.legacy_high IS NOT NULL THEN legacy.legacy_high
         WHEN st.value_min IS NULL OR st.value_max IS NULL THEN NULL
-        ELSE round((st.value_min + st.threshold_high_warning_ratio * (st.value_max - st.value_min))::numeric, 4)::double precision
+        ELSE round((st.value_min + st.threshold_high_warning_ratio
+            * (st.value_max - st.value_min))::numeric, 4)::double precision
     END,
     threshold_high_error = CASE
-        WHEN st.value_min IS NULL OR st.value_max IS NULL THEN NULL
-        ELSE round((st.value_min + st.threshold_high_error_ratio * (st.value_max - st.value_min))::numeric, 4)::double precision
+        WHEN st.value_kind = 'enum' OR st.value_min IS NULL OR st.value_max IS NULL THEN NULL
+        WHEN legacy.legacy_high IS NULL THEN round((st.value_min + st.threshold_high_error_ratio
+            * (st.value_max - st.value_min))::numeric, 4)::double precision
+        ELSE NULL
     END,
     threshold_low_error_enabled = CASE
         WHEN st.value_kind = 'enum' THEN 0 ELSE st.threshold_low_error_enabled
@@ -444,13 +493,15 @@ SET sensor_template_id = st.id,
     alarm_enabled = CASE WHEN st.value_kind = 'enum' THEN 0 ELSE st.alarm_enabled END
 FROM public.collector_sensor s,
      public.collector_sensor_type t,
-     public.collector_sensor_template st
+     public.collector_sensor_template st,
+     pg_temp.collector_legacy_threshold legacy
 WHERE c.sensor_id = s.id
   AND s.sensor_type_id = t.id
   AND t.deleted = 0
   AND st.sensor_type_id = t.id
   AND st.channel_code = c.channel_code
   AND st.deleted = 0
+  AND legacy.channel_id = c.id
   AND c.deleted = 0
   AND s.deleted = 0
   AND c.sensor_template_id IS NULL;
@@ -575,3 +626,5 @@ COMMENT ON TABLE public.collector_sensor IS '采集传感器表（设备下级�
 COMMENT ON TABLE public.collector_channel IS '采集通道通用配置表（协议无关，含 UI 渲染字段与四档阈值）';
 COMMENT ON TABLE public.collector_config_version IS '采集配置版本快照表';
 COMMENT ON COLUMN public.collector_config_version.snapshot IS '全量配置快照（protocols/devices/sensors/channels/schedules），channels 含 valueKind/量程/四档阈值与开关；checksum 覆盖传感器及协议配置';
+
+COMMIT;
