@@ -98,6 +98,7 @@ const [Drawer, drawerApi] = useVbenDrawer({
         values.thresholdHighErrorEnabled,
       ),
       alarmEnabled: toIntegerSwitch(values.alarmEnabled),
+      deadband: values.deadband ?? 0,
       alarmDeadband: values.alarmDeadband ?? 0,
     };
     drawerApi.lock();
@@ -140,6 +141,7 @@ const [Drawer, drawerApi] = useVbenDrawer({
           channel.value.thresholdHighErrorEnabled,
         ),
         alarmEnabled: toSwitchValue(channel.value.alarmEnabled),
+        deadband: channel.value.deadband ?? 0,
         alarmDeadband: channel.value.alarmDeadband ?? 0,
       });
     } finally {

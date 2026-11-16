@@ -1,10 +1,8 @@
 import type { VbenFormSchema } from '#/adapter/form';
 import type { VxeTableGridOptions } from '#/adapter/vxe-table';
 
-import {
-  getDeviceSimpleList,
-  getSensorSimpleList,
-} from '#/api/collector';
+import { z } from '#/adapter/form';
+import { getDeviceSimpleList, getSensorSimpleList } from '#/api/collector';
 
 import { ENABLED_OPTIONS, VALUE_KIND_OPTIONS } from '../shared';
 
@@ -16,6 +14,160 @@ function getEnabledDeviceList() {
 /** 查询启用的传感器精简列表 */
 function getEnabledSensorList() {
   return getSensorSimpleList({ enabled: 1 });
+}
+
+/** 可清空的数值字段 */
+function nullableNumberRule() {
+  return z.number().nullish();
+}
+
+const THRESHOLD_FIELDS = [
+  'thresholdLowError',
+  'thresholdLowWarning',
+  'thresholdHighWarning',
+  'thresholdHighError',
+] as const;
+
+/** 四档阈值允许空档，但所有非空值必须保持先后顺序 */
+function thresholdOrderRule(
+  values: Record<string, any>,
+  currentField: (typeof THRESHOLD_FIELDS)[number],
+) {
+  return nullableNumberRule().refine((value) => {
+    let previous: null | number | undefined;
+    for (const field of THRESHOLD_FIELDS) {
+      const current = field === currentField ? value : values[field];
+      if (current === null || current === undefined) {
+        continue;
+      }
+      if (previous !== null && previous !== undefined && current < previous) {
+        return false;
+      }
+      previous = current;
+    }
+    return true;
+  }, '四档阈值必须按低低限 ≤ 低限 ≤ 高限 ≤ 高高限排列（允许空档）');
+}
+
+/** 通道通用编辑表单；值类别、编码与归属均不允许修改 */
+export function useChannelFormSchema(): VbenFormSchema[] {
+  return [
+    {
+      fieldName: 'channelCode',
+      label: '通道编码',
+      component: 'Input',
+      componentProps: { disabled: true },
+      help: '通道编码与所属设备、传感器不可修改',
+    },
+    {
+      fieldName: 'channelName',
+      label: '通道名称',
+      component: 'Input',
+      componentProps: { placeholder: '请输入通道名称', maxlength: 100 },
+      rules: z
+        .string()
+        .trim()
+        .min(1, '通道名称不能为空')
+        .max(100, '通道名称长度不能超过 100 个字符'),
+    },
+    {
+      fieldName: 'valueKind',
+      label: '值类别',
+      component: 'RadioGroup',
+      componentProps: {
+        options: VALUE_KIND_OPTIONS,
+        buttonStyle: 'solid',
+        optionType: 'button',
+        disabled: true,
+      },
+      help: '值类别由参数模板决定，不能在通道编辑中修改',
+    },
+    {
+      fieldName: 'enabled',
+      label: '是否启用',
+      component: 'RadioGroup',
+      componentProps: {
+        options: ENABLED_OPTIONS,
+        buttonStyle: 'solid',
+        optionType: 'button',
+      },
+      rules: z
+        .number()
+        .min(0, '启用开关只能是 0 或 1')
+        .max(1, '启用开关只能是 0 或 1')
+        .default(1),
+    },
+    {
+      fieldName: 'unit',
+      label: '单位',
+      component: 'Input',
+      componentProps: { placeholder: '例如 µm、nS/m', maxlength: 32 },
+      rules: z.string().max(32, '单位长度不能超过 32 个字符').nullish(),
+    },
+    {
+      fieldName: 'icon',
+      label: '图标',
+      component: 'Input',
+      componentProps: { placeholder: '例如 i-ep:filter', maxlength: 64 },
+      rules: z.string().max(64, '图标长度不能超过 64 个字符').nullish(),
+    },
+    {
+      fieldName: 'decimalPlaces',
+      label: '小数位',
+      component: 'InputNumber',
+      componentProps: { class: '!w-full', min: 0, max: 6 },
+      rules: z
+        .number()
+        .int('小数位必须为整数')
+        .min(0, '小数位不能小于 0')
+        .max(6, '小数位不能大于 6')
+        .default(0),
+    },
+    {
+      fieldName: 'pollIntervalMs',
+      label: '轮询间隔(ms)',
+      component: 'InputNumber',
+      componentProps: {
+        class: '!w-full',
+        min: 100,
+        max: 86_400_000,
+        placeholder: '留空继承设备，范围 100~86400000',
+      },
+      rules: z
+        .number()
+        .min(100, '轮询间隔不能小于 100 毫秒')
+        .max(86_400_000, '轮询间隔不能超过 86400000 毫秒')
+        .nullish(),
+    },
+    {
+      fieldName: 'channelConfig',
+      label: '通道参数(JSON)',
+      component: 'TextArea',
+      componentProps: {
+        rows: 8,
+        placeholder: '请输入符合当前协议 Schema 的 JSON 对象',
+      },
+      rules: z.string().default('{}'),
+    },
+    {
+      fieldName: 'description',
+      label: '描述',
+      component: 'TextArea',
+      componentProps: { placeholder: '请输入描述', maxlength: 255 },
+      rules: z.string().max(255, '描述长度不能超过 255 个字符').nullish(),
+    },
+    {
+      fieldName: 'sort',
+      label: '排序',
+      component: 'InputNumber',
+      componentProps: { class: '!w-full', min: 0 },
+      rules: z
+        .number()
+        .int('排序必须为整数')
+        .min(0, '排序不能小于 0')
+        .default(0),
+    },
+  ];
 }
 
 /** 阈值与报警配置表单 */
@@ -43,7 +195,21 @@ export function useThresholdFormSchema(): VbenFormSchema[] {
       component: 'InputNumber',
       componentProps: {
         class: '!w-full',
-        placeholder: '请输入量程下限',
+        placeholder: '可清空，表示未配置',
+      },
+      rules: nullableNumberRule(),
+      dependencies: {
+        triggerFields: ['valueMax'],
+        rules: (values) =>
+          nullableNumberRule().refine(
+            (value) =>
+              value === null ||
+              value === undefined ||
+              values.valueMax === null ||
+              values.valueMax === undefined ||
+              value <= values.valueMax,
+            '量程下限不能大于量程上限',
+          ),
       },
     },
     {
@@ -52,7 +218,21 @@ export function useThresholdFormSchema(): VbenFormSchema[] {
       component: 'InputNumber',
       componentProps: {
         class: '!w-full',
-        placeholder: '请输入量程上限',
+        placeholder: '可清空，表示未配置',
+      },
+      rules: nullableNumberRule(),
+      dependencies: {
+        triggerFields: ['valueMin'],
+        rules: (values) =>
+          nullableNumberRule().refine(
+            (value) =>
+              value === null ||
+              value === undefined ||
+              values.valueMin === null ||
+              values.valueMin === undefined ||
+              values.valueMin <= value,
+            '量程上限不能小于量程下限',
+          ),
       },
     },
     {
@@ -63,9 +243,11 @@ export function useThresholdFormSchema(): VbenFormSchema[] {
         class: '!w-full',
         placeholder: '请输入低低限阈值',
       },
+      rules: nullableNumberRule(),
       dependencies: {
-        triggerFields: ['valueKind'],
+        triggerFields: ['valueKind', ...THRESHOLD_FIELDS],
         disabled: (values) => values.valueKind === 'enum',
+        rules: (values) => thresholdOrderRule(values, 'thresholdLowError'),
       },
     },
     {
@@ -76,9 +258,11 @@ export function useThresholdFormSchema(): VbenFormSchema[] {
         class: '!w-full',
         placeholder: '请输入低限阈值',
       },
+      rules: nullableNumberRule(),
       dependencies: {
-        triggerFields: ['valueKind'],
+        triggerFields: ['valueKind', ...THRESHOLD_FIELDS],
         disabled: (values) => values.valueKind === 'enum',
+        rules: (values) => thresholdOrderRule(values, 'thresholdLowWarning'),
       },
     },
     {
@@ -89,9 +273,11 @@ export function useThresholdFormSchema(): VbenFormSchema[] {
         class: '!w-full',
         placeholder: '请输入高限阈值',
       },
+      rules: nullableNumberRule(),
       dependencies: {
-        triggerFields: ['valueKind'],
+        triggerFields: ['valueKind', ...THRESHOLD_FIELDS],
         disabled: (values) => values.valueKind === 'enum',
+        rules: (values) => thresholdOrderRule(values, 'thresholdHighWarning'),
       },
     },
     {
@@ -102,9 +288,11 @@ export function useThresholdFormSchema(): VbenFormSchema[] {
         class: '!w-full',
         placeholder: '请输入高高限阈值',
       },
+      rules: nullableNumberRule(),
       dependencies: {
-        triggerFields: ['valueKind'],
+        triggerFields: ['valueKind', ...THRESHOLD_FIELDS],
         disabled: (values) => values.valueKind === 'enum',
+        rules: (values) => thresholdOrderRule(values, 'thresholdHighError'),
       },
     },
     {
@@ -153,14 +341,30 @@ export function useThresholdFormSchema(): VbenFormSchema[] {
       },
     },
     {
+      fieldName: 'deadband',
+      label: '变化死区',
+      component: 'InputNumber',
+      componentProps: {
+        class: '!w-full',
+        min: 0,
+        placeholder: '请输入变化死区（非负数）',
+      },
+      rules: z.number().min(0, '变化死区不能小于 0').default(0),
+      dependencies: {
+        triggerFields: ['valueKind'],
+        disabled: (values) => values.valueKind === 'enum',
+      },
+    },
+    {
       fieldName: 'alarmDeadband',
       label: '报警死区',
       component: 'InputNumber',
       componentProps: {
         class: '!w-full',
         min: 0,
-        placeholder: '请输入报警死区',
+        placeholder: '请输入报警死区（非负数）',
       },
+      rules: z.number().min(0, '报警死区不能小于 0').default(0),
       dependencies: {
         triggerFields: ['valueKind'],
         disabled: (values) => values.valueKind === 'enum',
@@ -285,8 +489,7 @@ export function useGridColumns(
       field: 'valueMin',
       title: '量程',
       minWidth: 130,
-      formatter: ({ row }) =>
-        `${row.valueMin ?? '-'} ~ ${row.valueMax ?? '-'}`,
+      formatter: ({ row }) => `${row.valueMin ?? '-'} ~ ${row.valueMax ?? '-'}`,
     },
     {
       field: 'enabled',

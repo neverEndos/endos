@@ -3,7 +3,7 @@ import type { CollectorApi } from '#/api/collector';
 
 import { computed, ref } from 'vue';
 
-import { useVbenModal } from '@vben/common-ui';
+import { confirm, useVbenModal } from '@vben/common-ui';
 
 import { Button, Table, Tag, message } from 'antdv-next';
 
@@ -12,6 +12,7 @@ import {
   createSensor,
   generateChannelPreview,
   getSensor,
+  getSensorTypeSimpleList,
   updateSensor,
 } from '#/api/collector';
 
@@ -21,12 +22,14 @@ import {
   parseJsonObject,
   resolveGenerateStatus,
 } from '../../shared';
-import { useFormSchema } from '../data';
+import { getDefaultConnectionConfig, useFormSchema } from '../data';
 
 const emit = defineEmits(['success']);
 const formData = ref<CollectorApi.Sensor>();
 const previewRows = ref<CollectorApi.GenerateChannelPreview[]>([]);
 const previewLoading = ref(false);
+let currentSensorTypeId: number | undefined;
+let sensorTypeProtocolMap: Record<number, string> = {};
 const getTitle = computed(() => {
   return formData.value?.id ? '编辑采集传感器' : '新增采集传感器';
 });
@@ -40,12 +43,46 @@ const previewSummary = computed(() => {
 });
 
 const previewColumns = [
-  { dataIndex: 'channelCode', key: 'channelCode', title: '通道编码', width: 150 },
+  {
+    dataIndex: 'channelCode',
+    key: 'channelCode',
+    title: '通道编码',
+    width: 150,
+  },
   { dataIndex: 'channelName', key: 'channelName', title: '通道名称' },
   { dataIndex: 'valueKind', key: 'valueKind', title: '值类别', width: 90 },
   { dataIndex: 'unit', key: 'unit', title: '单位', width: 80 },
   { key: 'status', title: '状态', width: 90 },
 ];
+
+/** 类型变化时提供协议默认参数；已有自定义内容必须由用户确认后才能重置 */
+async function handleSensorTypeChange(sensorTypeId?: number) {
+  const previousSensorTypeId = currentSensorTypeId;
+  currentSensorTypeId = sensorTypeId;
+  if (!sensorTypeId) {
+    return;
+  }
+  const protocolCode = sensorTypeProtocolMap[sensorTypeId];
+  const defaultConfig = getDefaultConnectionConfig(protocolCode);
+  const values = await formApi.getValues();
+  const currentText = String(values.connectionConfig ?? '').trim();
+  const isPristine = !currentText || currentText === '{}';
+  if (previousSensorTypeId === undefined && isPristine) {
+    await formApi.setFieldValue('connectionConfig', defaultConfig);
+    return;
+  }
+  try {
+    await confirm({
+      title: '重置连接参数？',
+      content: `传感器类型已切换为 ${protocolCode || '未知协议'}。重置会替换当前连接参数；选择“保留当前参数”则不做修改。`,
+      confirmText: '重置连接参数',
+      cancelText: '保留当前参数',
+    });
+    await formApi.setFieldValue('connectionConfig', defaultConfig);
+  } catch {
+    // 用户选择保留当前参数，不覆盖已填写内容。
+  }
+}
 
 const [Form, formApi] = useVbenForm({
   commonConfig: {
@@ -58,6 +95,14 @@ const [Form, formApi] = useVbenForm({
   layout: 'horizontal',
   schema: useFormSchema(),
   showDefaultActions: false,
+  handleValuesChange: (values, fieldsChanged) => {
+    if (
+      fieldsChanged.includes('sensorTypeId') &&
+      values.sensorTypeId !== currentSensorTypeId
+    ) {
+      void handleSensorTypeChange(values.sensorTypeId);
+    }
+  },
 });
 
 /** 预览按传感器类型模板生成的通道 */
@@ -112,20 +157,29 @@ const [Modal, modalApi] = useVbenModal({
     if (!isOpen) {
       formData.value = undefined;
       previewRows.value = [];
+      currentSensorTypeId = undefined;
       return;
     }
     previewRows.value = [];
     const data = modalApi.getData() as CollectorApi.Sensor;
-    if (!data?.id) {
-      return;
-    }
+    currentSensorTypeId = data?.id ? data.sensorTypeId : undefined;
     modalApi.lock();
     try {
-      formData.value = await getSensor(data.id);
-      await formApi.setValues({
-        ...formData.value,
-        connectionConfig: formatJson(formData.value.connectionConfig),
-      });
+      const [types, sensor] = await Promise.all([
+        getSensorTypeSimpleList({ enabled: 1 }),
+        data?.id ? getSensor(data.id) : Promise.resolve(undefined),
+      ]);
+      sensorTypeProtocolMap = Object.fromEntries(
+        types.map((item) => [item.id, item.protocolCode]),
+      );
+      if (sensor) {
+        formData.value = sensor;
+        currentSensorTypeId = sensor.sensorTypeId;
+        await formApi.setValues({
+          ...sensor,
+          connectionConfig: formatJson(sensor.connectionConfig),
+        });
+      }
     } finally {
       modalApi.unlock();
     }

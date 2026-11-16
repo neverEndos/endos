@@ -6,6 +6,20 @@ import { getSensorTypeSimpleList } from '#/api/collector';
 
 import { ENABLED_OPTIONS, VALUE_KIND_OPTIONS } from '../shared';
 
+/** 阈值比例只能在 0~1 之间 */
+function ratioRule(defaultValue: number) {
+  return z
+    .number()
+    .min(0, '阈值比例不能小于 0')
+    .max(1, '阈值比例不能大于 1')
+    .default(defaultValue);
+}
+
+/** 可清空的数值字段 */
+function nullableNumberRule() {
+  return z.number().nullish();
+}
+
 /** 查询启用的传感器类型精简列表 */
 function getEnabledSensorTypeList() {
   return getSensorTypeSimpleList({ enabled: 1 });
@@ -85,7 +99,21 @@ export function useFormSchema(): VbenFormSchema[] {
       component: 'InputNumber',
       componentProps: {
         class: '!w-full',
-        placeholder: '请输入量程下限',
+        placeholder: '可清空，表示未配置',
+      },
+      rules: nullableNumberRule(),
+      dependencies: {
+        triggerFields: ['valueMax'],
+        rules: (values) =>
+          nullableNumberRule().refine(
+            (value) =>
+              value === null ||
+              value === undefined ||
+              values.valueMax === null ||
+              values.valueMax === undefined ||
+              value <= values.valueMax,
+            '量程下限不能大于量程上限',
+          ),
       },
     },
     {
@@ -94,7 +122,21 @@ export function useFormSchema(): VbenFormSchema[] {
       component: 'InputNumber',
       componentProps: {
         class: '!w-full',
-        placeholder: '请输入量程上限',
+        placeholder: '可清空，表示未配置',
+      },
+      rules: nullableNumberRule(),
+      dependencies: {
+        triggerFields: ['valueMin'],
+        rules: (values) =>
+          nullableNumberRule().refine(
+            (value) =>
+              value === null ||
+              value === undefined ||
+              values.valueMin === null ||
+              values.valueMin === undefined ||
+              values.valueMin <= value,
+            '量程上限不能小于量程下限',
+          ),
       },
     },
     {
@@ -127,7 +169,12 @@ export function useFormSchema(): VbenFormSchema[] {
         min: 0,
         max: 6,
       },
-      rules: z.number().default(0),
+      rules: z
+        .number()
+        .int('小数位必须为整数')
+        .min(0, '小数位不能小于 0')
+        .max(6, '小数位不能大于 6')
+        .default(0),
     },
     {
       fieldName: 'thresholdLowErrorRatio',
@@ -139,7 +186,7 @@ export function useFormSchema(): VbenFormSchema[] {
         max: 1,
         step: 0.01,
       },
-      rules: z.number().default(0.1),
+      rules: ratioRule(0.1),
       dependencies: {
         triggerFields: ['valueKind'],
         disabled: (values) => values.valueKind === 'enum',
@@ -155,10 +202,18 @@ export function useFormSchema(): VbenFormSchema[] {
         max: 1,
         step: 0.01,
       },
-      rules: z.number().default(0.3),
+      rules: ratioRule(0.3),
       dependencies: {
-        triggerFields: ['valueKind'],
+        triggerFields: ['valueKind', 'thresholdLowErrorRatio'],
         disabled: (values) => values.valueKind === 'enum',
+        rules: (values) =>
+          ratioRule(0.3).refine(
+            (value) =>
+              values.thresholdLowErrorRatio === null ||
+              values.thresholdLowErrorRatio === undefined ||
+              value >= values.thresholdLowErrorRatio,
+            '低限比例不能小于低低限比例',
+          ),
       },
     },
     {
@@ -171,10 +226,18 @@ export function useFormSchema(): VbenFormSchema[] {
         max: 1,
         step: 0.01,
       },
-      rules: z.number().default(0.7),
+      rules: ratioRule(0.7),
       dependencies: {
-        triggerFields: ['valueKind'],
+        triggerFields: ['valueKind', 'thresholdLowWarningRatio'],
         disabled: (values) => values.valueKind === 'enum',
+        rules: (values) =>
+          ratioRule(0.7).refine(
+            (value) =>
+              values.thresholdLowWarningRatio === null ||
+              values.thresholdLowWarningRatio === undefined ||
+              value >= values.thresholdLowWarningRatio,
+            '高限比例不能小于低限比例',
+          ),
       },
     },
     {
@@ -187,10 +250,18 @@ export function useFormSchema(): VbenFormSchema[] {
         max: 1,
         step: 0.01,
       },
-      rules: z.number().default(0.9),
+      rules: ratioRule(0.9),
       dependencies: {
-        triggerFields: ['valueKind'],
+        triggerFields: ['valueKind', 'thresholdHighWarningRatio'],
         disabled: (values) => values.valueKind === 'enum',
+        rules: (values) =>
+          ratioRule(0.9).refine(
+            (value) =>
+              values.thresholdHighWarningRatio === null ||
+              values.thresholdHighWarningRatio === undefined ||
+              value >= values.thresholdHighWarningRatio,
+            '高高限比例不能小于高限比例',
+          ),
       },
     },
     {
@@ -272,7 +343,11 @@ export function useFormSchema(): VbenFormSchema[] {
         buttonStyle: 'solid',
         optionType: 'button',
       },
-      rules: z.number().default(1),
+      rules: z
+        .number()
+        .min(0, '启用开关只能是 0 或 1')
+        .max(1, '启用开关只能是 0 或 1')
+        .default(1),
     },
   ];
 }
@@ -373,12 +448,14 @@ export function useGridColumns(
     {
       field: 'valueMin',
       title: '量程下限',
-      width: 100,
+      width: 110,
+      formatter: ({ cellValue }) => cellValue ?? '未配置',
     },
     {
       field: 'valueMax',
       title: '量程上限',
-      width: 100,
+      width: 110,
+      formatter: ({ cellValue }) => cellValue ?? '未配置',
     },
     {
       field: 'scale',

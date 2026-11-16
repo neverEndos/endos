@@ -14,7 +14,12 @@ import {
   updateSensorTemplate,
 } from '#/api/collector';
 
-import { formatJson, parseJsonObject, toIntegerSwitch, toSwitchValue } from '../../shared';
+import {
+  formatJson,
+  parseJsonObject,
+  toIntegerSwitch,
+  toSwitchValue,
+} from '../../shared';
 import { useFormSchema } from '../data';
 
 const emit = defineEmits(['success']);
@@ -45,7 +50,9 @@ function toFormValues(template: CollectorApi.SensorTemplate) {
     thresholdHighWarningEnabled: toSwitchValue(
       template.thresholdHighWarningEnabled,
     ),
-    thresholdHighErrorEnabled: toSwitchValue(template.thresholdHighErrorEnabled),
+    thresholdHighErrorEnabled: toSwitchValue(
+      template.thresholdHighErrorEnabled,
+    ),
     channelConfig: formatJson(template.channelConfig),
   };
 }
@@ -71,6 +78,9 @@ const [Drawer, drawerApi] = useVbenDrawer({
     const values = await formApi.getValues();
     const payload = {
       ...values,
+      // 量程使用全量更新语义：清空后必须显式提交 null，不能沿用旧值。
+      valueMin: values.valueMin ?? null,
+      valueMax: values.valueMax ?? null,
       channelConfig,
       alarmEnabled: toIntegerSwitch(values.alarmEnabled),
       thresholdLowErrorEnabled: toIntegerSwitch(

@@ -33,7 +33,8 @@ const [Modal, modalApi] = useVbenModal({
     template.value = modalApi.getData() as CollectorApi.SensorTemplate;
     ratios.value = {
       lowError:
-        template.value.thresholdLowErrorRatio ?? DEFAULT_THRESHOLD_RATIOS.lowError,
+        template.value.thresholdLowErrorRatio ??
+        DEFAULT_THRESHOLD_RATIOS.lowError,
       lowWarning:
         template.value.thresholdLowWarningRatio ??
         DEFAULT_THRESHOLD_RATIOS.lowWarning,
@@ -67,8 +68,8 @@ const [Modal, modalApi] = useVbenModal({
   <Modal class="w-[560px]">
     <div v-if="template" class="flex flex-col gap-3 px-4 pb-2">
       <div class="text-sm text-gray-500">
-        {{ template.channelName }}（量程 {{ template.valueMin ?? '-' }} ~
-        {{ template.valueMax ?? '-' }} {{ template.unit || '' }}）
+        {{ template.channelName }}（量程 {{ template.valueMin ?? '未配置' }} ~
+        {{ template.valueMax ?? '未配置' }} {{ template.unit || '' }}）
       </div>
       <div class="text-sm text-gray-500">
         比例：

@@ -12,7 +12,6 @@ import { ACTION_ICON, TableAction, useVbenVxeGrid } from '#/adapter/vxe-table';
 import {
   deleteSensor,
   generateChannels,
-  getChannelPage,
   getDeviceSimpleList,
   getSensorPage,
   getSensorTypeSimpleList,
@@ -79,23 +78,6 @@ async function handleDelete(row: CollectorApi.Sensor) {
   }
 }
 
-/** 为传感器补充通道数（后端分页接口不返回统计） */
-async function fillChannelCounts(list: CollectorApi.Sensor[]) {
-  return await Promise.all(
-    list.map(async (item) => {
-      const channelPage = await getChannelPage({
-        pageNo: 1,
-        pageSize: 1,
-        sensorId: item.id,
-      });
-      return {
-        ...item,
-        channelCount: channelPage.total,
-      };
-    }),
-  );
-}
-
 const [Grid, gridApi] = useVbenVxeGrid({
   formOptions: {
     schema: useGridFormSchema(),
@@ -110,15 +92,11 @@ const [Grid, gridApi] = useVbenVxeGrid({
     proxyConfig: {
       ajax: {
         query: async ({ page }, formValues) => {
-          const pageResult = await getSensorPage({
+          return await getSensorPage({
             pageNo: page.currentPage,
             pageSize: page.pageSize,
             ...formValues,
           });
-          return {
-            list: await fillChannelCounts(pageResult.list),
-            total: pageResult.total,
-          };
         },
       },
     },

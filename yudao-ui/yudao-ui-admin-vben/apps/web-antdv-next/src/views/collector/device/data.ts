@@ -43,7 +43,11 @@ export function useFormSchema(): VbenFormSchema[] {
         buttonStyle: 'solid',
         optionType: 'button',
       },
-      rules: z.number().default(1),
+      rules: z
+        .number()
+        .min(0, '启用开关只能是 0 或 1')
+        .max(1, '启用开关只能是 0 或 1')
+        .default(1),
     },
     {
       fieldName: 'pollIntervalMs',
@@ -51,10 +55,13 @@ export function useFormSchema(): VbenFormSchema[] {
       component: 'InputNumber',
       componentProps: {
         class: '!w-full',
-        min: 0,
-        placeholder: '请输入轮询间隔',
+        placeholder: '请输入轮询间隔（100~86400000）',
       },
-      rules: z.number().default(5000),
+      rules: z
+        .number()
+        .min(100, '轮询间隔不能小于 100 毫秒')
+        .max(86_400_000, '轮询间隔不能超过 86400000 毫秒')
+        .default(5000),
     },
     {
       fieldName: 'timeoutMs',
@@ -62,10 +69,13 @@ export function useFormSchema(): VbenFormSchema[] {
       component: 'InputNumber',
       componentProps: {
         class: '!w-full',
-        min: 0,
-        placeholder: '请输入超时时间',
+        placeholder: '请输入超时时间（10~60000）',
       },
-      rules: z.number().default(1000),
+      rules: z
+        .number()
+        .min(10, '超时时间不能小于 10 毫秒')
+        .max(60_000, '超时时间不能超过 60000 毫秒')
+        .default(1000),
     },
     {
       fieldName: 'retries',
@@ -73,10 +83,14 @@ export function useFormSchema(): VbenFormSchema[] {
       component: 'InputNumber',
       componentProps: {
         class: '!w-full',
-        min: 0,
-        placeholder: '请输入重试次数',
+        placeholder: '请输入重试次数（0~10）',
       },
-      rules: z.number().default(2),
+      rules: z
+        .number()
+        .int('重试次数必须为整数')
+        .min(0, '重试次数不能小于 0')
+        .max(10, '重试次数不能大于 10')
+        .default(2),
     },
     {
       fieldName: 'reconnectIntervalMs',
@@ -84,10 +98,13 @@ export function useFormSchema(): VbenFormSchema[] {
       component: 'InputNumber',
       componentProps: {
         class: '!w-full',
-        min: 0,
-        placeholder: '请输入重连间隔',
+        placeholder: '请输入重连间隔（100~86400000）',
       },
-      rules: z.number().default(5000),
+      rules: z
+        .number()
+        .min(100, '重连间隔不能小于 100 毫秒')
+        .max(86_400_000, '重连间隔不能超过 86400000 毫秒')
+        .default(5000),
     },
     {
       fieldName: 'description',

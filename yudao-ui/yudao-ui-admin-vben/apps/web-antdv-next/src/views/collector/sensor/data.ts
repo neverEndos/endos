@@ -2,16 +2,48 @@ import type { VbenFormSchema } from '#/adapter/form';
 import type { VxeTableGridOptions } from '#/adapter/vxe-table';
 
 import { z } from '#/adapter/form';
-import {
-  getDeviceSimpleList,
-  getSensorTypeSimpleList,
-} from '#/api/collector';
+import { getDeviceSimpleList, getSensorTypeSimpleList } from '#/api/collector';
 
 import { ENABLED_OPTIONS } from '../shared';
 
-/** 默认连接参数，演示环境为 RS485 HSI 传感器 */
-export const DEFAULT_CONNECTION_CONFIG =
-  '{"port":"/dev/ttyS4","baud":9600,"rs485":true}';
+/** 按协议生成默认连接参数，避免把 HSI 串口字段套用到其他协议 */
+export function getDefaultConnectionConfig(protocolCode?: string): string {
+  switch (protocolCode?.toLowerCase()) {
+    case 'hsi_rs485': {
+      return JSON.stringify(
+        {
+          port: '/dev/ttyS4',
+          baud: 9600,
+          bytesize: 8,
+          parity: 'none',
+          stopbits: 1,
+          rs485: true,
+          rs485Flags: 0,
+        },
+        null,
+        2,
+      );
+    }
+    case 'modbus_rtu': {
+      return JSON.stringify(
+        {
+          serialPort: '/dev/ttyS1',
+          baudRate: 9600,
+          dataBits: 8,
+          stopBits: 1,
+          parity: 'none',
+          unitId: 1,
+          interFrameDelayMs: 0,
+        },
+        null,
+        2,
+      );
+    }
+    default: {
+      return '{}';
+    }
+  }
+}
 
 /** 查询启用的设备精简列表 */
 function getEnabledDeviceList() {
@@ -84,7 +116,7 @@ export function useFormSchema(): VbenFormSchema[] {
         rows: 6,
         placeholder: '请输入 JSON 对象',
       },
-      rules: z.string().default(DEFAULT_CONNECTION_CONFIG),
+      rules: z.string().default('{}'),
     },
     {
       fieldName: 'autoGenerateChannels',

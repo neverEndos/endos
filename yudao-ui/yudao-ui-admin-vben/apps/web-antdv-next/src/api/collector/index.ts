@@ -64,9 +64,9 @@ export namespace CollectorApi {
     enabled?: number;
     sort?: number;
     createTime?: Date;
-    /** 前端附加：该类型下的模板数量 */
+    /** 该类型下的模板数量（后端分页批量统计） */
     templateCount?: number;
-    /** 前端附加：该类型下的传感器数量 */
+    /** 该类型下的传感器数量（后端分页批量统计） */
     sensorCount?: number;
   }
 
@@ -88,8 +88,8 @@ export namespace CollectorApi {
     valueKind: string;
     unit?: string;
     icon?: string;
-    valueMin?: number;
-    valueMax?: number;
+    valueMin?: null | number;
+    valueMax?: null | number;
     scale?: number;
     valueOffset?: number;
     decimalPlaces?: number;
@@ -121,7 +121,7 @@ export namespace CollectorApi {
     description?: string;
     sort?: number;
     createTime?: Date;
-    /** 前端附加：该传感器下的通道数量 */
+    /** 该传感器下的通道数量（后端分页批量统计） */
     channelCount?: number;
   }
 
@@ -171,15 +171,29 @@ export namespace CollectorApi {
     createTime?: Date;
   }
 
+  /** 通道通用信息更新参数；不包含归属、值类别和阈值字段 */
+  export interface ChannelUpdate {
+    id: number;
+    channelName?: string;
+    enabled?: number;
+    channelConfig?: Record<string, any>;
+    unit?: string;
+    icon?: string;
+    decimalPlaces?: number;
+    pollIntervalMs?: number;
+    description?: string;
+    sort?: number;
+  }
+
   /** 通道阈值更新参数 */
   export interface ChannelThresholdUpdate {
     id: number;
-    valueMin?: number;
-    valueMax?: number;
-    thresholdLowError?: number;
-    thresholdLowWarning?: number;
-    thresholdHighWarning?: number;
-    thresholdHighError?: number;
+    valueMin?: null | number;
+    valueMax?: null | number;
+    thresholdLowError?: null | number;
+    thresholdLowWarning?: null | number;
+    thresholdHighWarning?: null | number;
+    thresholdHighError?: null | number;
     thresholdLowErrorEnabled?: number;
     thresholdLowWarningEnabled?: number;
     thresholdHighWarningEnabled?: number;
@@ -191,8 +205,8 @@ export namespace CollectorApi {
 
   /** 阈值比例预览参数 */
   export interface ThresholdPreviewParams {
-    valueMin?: number;
-    valueMax?: number;
+    valueMin?: null | number;
+    valueMax?: null | number;
     thresholdLowErrorRatio?: number;
     thresholdLowWarningRatio?: number;
     thresholdHighWarningRatio?: number;
@@ -217,8 +231,8 @@ export namespace CollectorApi {
     valueKind: string;
     unit?: string;
     icon?: string;
-    valueMin?: number;
-    valueMax?: number;
+    valueMin?: null | number;
+    valueMax?: null | number;
     scale?: number;
     valueOffset?: number;
     decimalPlaces?: number;
@@ -480,12 +494,14 @@ export function getChannel(id: number) {
 }
 
 /** 修改通道通用信息 */
-export function updateChannel(data: CollectorApi.Channel) {
+export function updateChannel(data: CollectorApi.ChannelUpdate) {
   return requestClient.put('/collector/channel/update', data);
 }
 
 /** 修改通道阈值与报警配置 */
-export function updateChannelThreshold(data: CollectorApi.ChannelThresholdUpdate) {
+export function updateChannelThreshold(
+  data: CollectorApi.ChannelThresholdUpdate,
+) {
   return requestClient.put('/collector/channel/update-threshold', data);
 }
 

@@ -7,12 +7,7 @@ import { Page, useVbenModal } from '@vben/common-ui';
 import { message } from 'antdv-next';
 
 import { ACTION_ICON, TableAction, useVbenVxeGrid } from '#/adapter/vxe-table';
-import {
-  deleteSensorType,
-  getSensorPage,
-  getSensorTemplatePage,
-  getSensorTypePage,
-} from '#/api/collector';
+import { deleteSensorType, getSensorTypePage } from '#/api/collector';
 
 import { useGridColumns, useGridFormSchema } from './data';
 import Form from './modules/form.vue';
@@ -52,31 +47,6 @@ async function handleDelete(row: CollectorApi.SensorType) {
   }
 }
 
-/** 为类型补充模板数、传感器数（后端分页接口不返回统计） */
-async function fillTypeCounts(list: CollectorApi.SensorType[]) {
-  return await Promise.all(
-    list.map(async (item) => {
-      const [templatePage, sensorPage] = await Promise.all([
-        getSensorTemplatePage({
-          pageNo: 1,
-          pageSize: 1,
-          sensorTypeId: item.id,
-        }),
-        getSensorPage({
-          pageNo: 1,
-          pageSize: 1,
-          sensorTypeId: item.id,
-        }),
-      ]);
-      return {
-        ...item,
-        templateCount: templatePage.total,
-        sensorCount: sensorPage.total,
-      };
-    }),
-  );
-}
-
 const [Grid, gridApi] = useVbenVxeGrid({
   formOptions: {
     schema: useGridFormSchema(),
@@ -88,15 +58,11 @@ const [Grid, gridApi] = useVbenVxeGrid({
     proxyConfig: {
       ajax: {
         query: async ({ page }, formValues) => {
-          const pageResult = await getSensorTypePage({
+          return await getSensorTypePage({
             pageNo: page.currentPage,
             pageSize: page.pageSize,
             ...formValues,
           });
-          return {
-            list: await fillTypeCounts(pageResult.list),
-            total: pageResult.total,
-          };
         },
       },
     },

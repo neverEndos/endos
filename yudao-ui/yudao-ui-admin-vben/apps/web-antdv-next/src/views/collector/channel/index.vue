@@ -17,7 +17,13 @@ import {
 } from '#/api/collector';
 
 import { useGridColumns, useGridFormSchema } from './data';
+import Form from './modules/form.vue';
 import ThresholdForm from './modules/threshold-form.vue';
+
+const [FormDrawer, formDrawerApi] = useVbenDrawer({
+  connectedComponent: Form,
+  destroyOnClose: true,
+});
 
 const [ThresholdDrawer, thresholdDrawerApi] = useVbenDrawer({
   connectedComponent: ThresholdForm,
@@ -30,6 +36,11 @@ const sensorNameMap = ref<Record<number, string>>({});
 /** 刷新表格 */
 function handleRefresh() {
   gridApi.query();
+}
+
+/** 打开通道通用编辑抽屉 */
+function handleEdit(row: CollectorApi.Channel) {
+  formDrawerApi.setData(row).open();
 }
 
 /** 打开阈值配置抽屉 */
@@ -109,6 +120,7 @@ initNameMaps();
 
 <template>
   <Page auto-content-height>
+    <FormDrawer @success="handleRefresh" />
     <ThresholdDrawer @success="handleRefresh" />
     <Grid table-title="采集通道列表">
       <template #valueKind="{ row }">
@@ -119,6 +131,13 @@ initNameMaps();
       <template #actions="{ row }">
         <TableAction
           :actions="[
+            {
+              label: '编辑',
+              type: 'link',
+              icon: ACTION_ICON.EDIT,
+              auth: ['collector:channel:update'],
+              onClick: handleEdit.bind(null, row),
+            },
             {
               label: '阈值配置',
               type: 'link',
