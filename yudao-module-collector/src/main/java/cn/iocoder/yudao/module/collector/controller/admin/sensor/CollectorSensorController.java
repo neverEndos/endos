@@ -27,6 +27,9 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 
@@ -43,7 +46,13 @@ public class CollectorSensorController {
     @PreAuthorize("@ss.hasPermission('collector:sensor:query')")
     public CommonResult<PageResult<CollectorSensorRespVO>> getSensorPage(@Valid CollectorSensorPageReqVO pageReqVO) {
         PageResult<CollectorSensorDO> pageResult = sensorService.getSensorPage(pageReqVO);
-        return success(BeanUtils.toBean(pageResult, CollectorSensorRespVO.class));
+        PageResult<CollectorSensorRespVO> respResult = BeanUtils.toBean(pageResult, CollectorSensorRespVO.class);
+        Set<Long> sensorIds = respResult.getList().stream()
+                .map(CollectorSensorRespVO::getId).collect(Collectors.toSet());
+        Map<Long, Long> channelCounts = sensorService.getChannelCountMapBySensorIds(sensorIds);
+        respResult.getList().forEach(item ->
+                item.setChannelCount(channelCounts.getOrDefault(item.getId(), 0L)));
+        return success(respResult);
     }
 
     @GetMapping("/get")

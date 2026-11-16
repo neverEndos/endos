@@ -4,6 +4,8 @@ import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.framework.common.util.object.BeanUtils;
 import cn.iocoder.yudao.module.collector.controller.admin.sensortype.vo.CollectorSensorTypePageReqVO;
 import cn.iocoder.yudao.module.collector.controller.admin.sensortype.vo.CollectorSensorTypeSaveReqVO;
+import cn.iocoder.yudao.module.collector.dal.dataobject.sensor.CollectorSensorDO;
+import cn.iocoder.yudao.module.collector.dal.dataobject.sensortemplate.CollectorSensorTemplateDO;
 import cn.iocoder.yudao.module.collector.dal.dataobject.sensortype.CollectorSensorTypeDO;
 import cn.iocoder.yudao.module.collector.dal.mysql.sensor.CollectorSensorMapper;
 import cn.iocoder.yudao.module.collector.dal.mysql.sensortemplate.CollectorSensorTemplateMapper;
@@ -12,7 +14,10 @@ import cn.iocoder.yudao.module.collector.service.protocol.CollectorProtocolServi
 import jakarta.annotation.Resource;
 import org.springframework.stereotype.Service;
 
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.SENSOR_TYPE_CODE_DUPLICATE;
@@ -38,6 +43,18 @@ public class CollectorSensorTypeServiceImpl implements CollectorSensorTypeServic
     @Override
     public PageResult<CollectorSensorTypeDO> getSensorTypePage(CollectorSensorTypePageReqVO pageReqVO) {
         return sensorTypeMapper.selectPage(pageReqVO);
+    }
+
+    @Override
+    public Map<Long, Long> getTemplateCountMapByTypeIds(Collection<Long> sensorTypeIds) {
+        return sensorTemplateMapper.selectListBySensorTypeIds(sensorTypeIds).stream()
+                .collect(Collectors.groupingBy(CollectorSensorTemplateDO::getSensorTypeId, Collectors.counting()));
+    }
+
+    @Override
+    public Map<Long, Long> getSensorCountMapByTypeIds(Collection<Long> sensorTypeIds) {
+        return sensorMapper.selectListBySensorTypeIds(sensorTypeIds).stream()
+                .collect(Collectors.groupingBy(CollectorSensorDO::getSensorTypeId, Collectors.counting()));
     }
 
     @Override

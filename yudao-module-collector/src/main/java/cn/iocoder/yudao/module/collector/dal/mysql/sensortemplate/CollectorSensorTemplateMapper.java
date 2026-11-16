@@ -7,6 +7,7 @@ import cn.iocoder.yudao.module.collector.controller.admin.sensortemplate.vo.Coll
 import cn.iocoder.yudao.module.collector.dal.dataobject.sensortemplate.CollectorSensorTemplateDO;
 import org.apache.ibatis.annotations.Mapper;
 
+import java.util.Collection;
 import java.util.List;
 
 @Mapper
@@ -36,6 +37,14 @@ public interface CollectorSensorTemplateMapper extends BaseMapperX<CollectorSens
                 .eqIfPresent(CollectorSensorTemplateDO::getEnabled, enabled)
                 .orderByAsc(CollectorSensorTemplateDO::getSort)
                 .orderByAsc(CollectorSensorTemplateDO::getId));
+    }
+
+    default List<CollectorSensorTemplateDO> selectListBySensorTypeIds(Collection<Long> sensorTypeIds) {
+        if (sensorTypeIds == null || sensorTypeIds.isEmpty()) {
+            return List.of();
+        }
+        return selectList(new LambdaQueryWrapperX<CollectorSensorTemplateDO>()
+                .in(CollectorSensorTemplateDO::getSensorTypeId, sensorTypeIds));
     }
 
     default Long selectCountBySensorTypeId(Long sensorTypeId) {

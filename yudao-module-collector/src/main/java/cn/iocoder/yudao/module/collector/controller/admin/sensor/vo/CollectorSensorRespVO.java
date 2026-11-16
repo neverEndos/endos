@@ -40,6 +40,9 @@ public class CollectorSensorRespVO {
     @Schema(description = "排序值", example = "1")
     private Integer sort;
 
+    @Schema(description = "通道数量", example = "10")
+    private Long channelCount;
+
     @Schema(description = "创建时间")
     private LocalDateTime createTime;
 

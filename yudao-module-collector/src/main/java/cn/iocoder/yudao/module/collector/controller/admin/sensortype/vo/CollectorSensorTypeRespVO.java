@@ -33,6 +33,12 @@ public class CollectorSensorTypeRespVO {
     @Schema(description = "排序值", example = "1")
     private Integer sort;
 
+    @Schema(description = "参数模板数量", example = "10")
+    private Long templateCount;
+
+    @Schema(description = "传感器数量", example = "2")
+    private Long sensorCount;
+
     @Schema(description = "创建时间")
     private LocalDateTime createTime;
 

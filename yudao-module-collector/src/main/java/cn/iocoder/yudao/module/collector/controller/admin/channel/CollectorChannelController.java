@@ -70,8 +70,8 @@ public class CollectorChannelController {
     }
 
     @GetMapping("/preview-threshold")
-    @Operation(summary = "按量程与比例预览四档阈值")
-    @PreAuthorize("@ss.hasPermission('collector:channel:query')")
+    @Operation(summary = "按量程与比例预览四档阈值；通道查询或参数模板查询权限均可调用")
+    @PreAuthorize("@ss.hasPermission('collector:channel:query') or @ss.hasPermission('collector:sensor-template:query')")
     public CommonResult<CollectorChannelThresholdPreviewRespVO> previewThreshold(
             CollectorChannelThresholdPreviewReqVO previewReqVO) {
         return success(channelService.previewThreshold(previewReqVO));
