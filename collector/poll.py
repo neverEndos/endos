@@ -513,6 +513,7 @@ def run_loop(
     should_stop: Callable[[], bool] | None = None,
     storage: Any | None = None,
     channel_context: Any | None = None,
+    config_reloader: Any | None = None,
     heartbeat_every: int = 5,
     db_manager: Any | None = None,
     partition_every: int = 60,
@@ -522,7 +523,9 @@ def run_loop(
     传入 ``db_manager`` 时，每轮先按重连节奏确保 DB 可用并使用其最新的通道映射
     （DB 恢复后 JSONL 里的 ``channel_id`` 会自动补齐），再把 raw 行、设备状态与
     心跳交给它写入；DB 不可用只记录日志并继续轮询（首期接受丢数据，不做本地
-    spool）。``heartbeat_every`` 表示每多少轮写一次心跳，首轮总是写。
+    spool）。传入 ``config_reloader`` 时还会按检查间隔应用运行参数/结构变化，
+    并在 DB 读取失败时保留上一次有效配置。``heartbeat_every`` 表示每多少轮写一次
+    心跳，首轮总是写。
 
     传入 ``storage`` 时不维护连接状态，写入异常由本函数记录后继续下一轮；新代码
     应优先使用 ``db_manager``。
@@ -551,8 +554,23 @@ def run_loop(
         cycle += 1
         log.info("========== 轮询 cycle=%d 开始 ==========", cycle)
         context = channel_context
-        if db_manager is not None:
-            # 先按重连节奏尝试恢复 DB，再用最新映射输出 JSONL。
+        if config_reloader is not None:
+            change_kind = config_reloader.before_cycle()
+            drivers = config_reloader.drivers
+            context = config_reloader.context
+            interval_s = config_reloader.settings.interval_s
+            timeout = config_reloader.settings.timeout_s
+            retries = config_reloader.settings.retries
+            for driver in drivers:
+                stats.setdefault(
+                    driver.name, SensorStats(driver.name, driver.field_count)
+                )
+            if change_kind == "structure":
+                # 新映射的缺失/字段集合可能不同，允许按新配置重新告警一次。
+                warned_missing.clear()
+                warned_fields.clear()
+        elif db_manager is not None:
+            # 兼容未启用热加载的参考调用：先恢复 DB，再用最新映射输出 JSONL。
             db_manager.ensure_ready()
             context = db_manager.context
         records = poll_cycle(
