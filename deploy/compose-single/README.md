@@ -234,7 +234,8 @@ collector 发布都会幂等执行 `systemctl enable collector`，但不会用 e
 unit 不写死轮询间隔、超时和重试次数；它们分别读取 `collector_device` 的
 `poll_interval_ms`、`timeout_ms`、`retries`，传感器与通道配置也会按指纹定期热加载。
 后台修改这些配置后无需重启 collector，显式 CLI 覆盖项仍优先。结构配置只有在原串口
-成功应用后才提交新指纹；flags ioctl 等应用失败会保留旧配置并在下一轮自动重试。
+成功应用后才提交新指纹；flags ioctl 等应用失败会保留旧配置，首次在下一轮立即重试，
+连续失败进入 2 秒起步、60 秒封顶的指数退避，DB 重连仍由 `--db-retry-interval` 独立节流。
 启动时无应答的传感器不会被无关结构变化重新加入，仅新增、禁用后重新启用或进程重启时
 再次探测。部署脚本保留按实际 `SERVICE_USER` / `SERVICE_GROUP` 渲染 unit 的
 `User` / `Group` 机制。
