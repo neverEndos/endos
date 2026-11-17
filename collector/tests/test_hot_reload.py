@@ -272,6 +272,101 @@ class ConfigReloaderTest(unittest.TestCase):
         self.assertEqual(reloader.settings.timeout_s, 2.5)
         self.assertEqual([driver.name for driver in reloader.drivers], ["CS1000", "HLB1400"])
 
+    def test_persistent_flags_failure_has_bounded_attempts_within_60_seconds(self):
+        manager = FakeDbManager()
+        clock = FakeClock()
+        attempts = []
+
+        def always_fail(old, new, candidates):
+            attempts.append(clock.now)
+            raise RuntimeError("持续 ioctl 失败")
+
+        manager.context = replace(
+            manager.context, poll_interval_ms=100, rs485_flags=3
+        )
+        reloader = self.make_reloader(
+            manager, clock=clock, on_structure_change=always_fail
+        )
+        manager.reload_result = "structure"
+
+        with self.assertLogs(LOGGER, level="ERROR"):
+            self.assertEqual(reloader.before_cycle(force=True), "error")
+            for tenth_second in range(1, 601):
+                clock.now = tenth_second / 10.0
+                reloader.before_cycle()
+
+        # t=0 首次、下一轮 t=0.1 立即重试，之后约在 2.1/6.1/14.1/30.1 秒；
+        # 下一次需再等 32 秒，落在 62.1 秒，因此 60 秒内总共最多 6 次。
+        self.assertEqual(len(attempts), 6)
+        self.assertEqual(manager.reload_calls, 6)
+        self.assertLessEqual(attempts[-1], 31.0)
+
+    def test_same_hardware_error_logs_only_when_backoff_level_changes(self):
+        manager = FakeDbManager()
+        clock = FakeClock()
+        attempts = []
+
+        def always_fail(old, new, candidates):
+            attempts.append(clock.now)
+            raise RuntimeError("同一个 ioctl 错误")
+
+        manager.context = replace(
+            manager.context, poll_interval_ms=100, rs485_flags=3
+        )
+        reloader = self.make_reloader(
+            manager, clock=clock, on_structure_change=always_fail
+        )
+        manager.reload_result = "structure"
+        with self.assertLogs(LOGGER, level="ERROR") as captured:
+            reloader.before_cycle(force=True)
+            for tenth_second in range(1, 2001):
+                clock.now = tenth_second / 10.0
+                reloader.before_cycle()
+
+        # 首次 + 立即重试后的 2/4/8/16/32/60 秒升级，共 7 条；60 秒封顶后
+        # 相同错误继续失败不再重复写 ERROR。200 秒内硬件尝试共 9 次。
+        self.assertEqual(len(attempts), 9)
+        self.assertEqual(len(captured.output), 7)
+        self.assertIn("60.0 秒后重试", captured.output[-1])
+
+    def test_success_resets_backoff_and_restores_normal_check_interval(self):
+        manager = FakeDbManager()
+        clock = FakeClock()
+        attempts = []
+        should_fail = {"value": True}
+
+        def apply(old, new, candidates):
+            attempts.append(clock.now)
+            if should_fail["value"]:
+                raise RuntimeError("临时 ioctl 失败")
+            return candidates
+
+        manager.context = replace(
+            manager.context, poll_interval_ms=100, rs485_flags=3
+        )
+        reloader = self.make_reloader(manager, clock=clock, on_structure_change=apply)
+        manager.reload_result = "structure"
+        with self.assertLogs(LOGGER, level="ERROR"):
+            reloader.before_cycle(force=True)  # t=0，首次失败
+            clock.now = 0.1
+            reloader.before_cycle()  # 立即重试仍失败，进入 2 秒退避
+        clock.now = 1.0
+        self.assertEqual(reloader.before_cycle(), "cooldown")
+        should_fail["value"] = False
+        clock.now = 2.1
+        self.assertEqual(reloader.before_cycle(), "structure")
+        self.assertEqual(len(attempts), 3)
+        self.assertEqual(reloader._hardware_retry_failures, 0)
+        self.assertIsNone(reloader._hardware_retry_at)
+
+        manager.reload_result = "none"
+        clock.now = 2.19
+        reloader.before_cycle()
+        self.assertEqual(manager.reload_calls, 3)
+        clock.now = 2.21
+        reloader.before_cycle()
+        self.assertEqual(manager.reload_calls, 4)
+
     def test_all_sensors_disabled_keeps_loop_with_empty_driver_list(self):
         manager = FakeDbManager()
         reloader = self.make_reloader(manager)
@@ -360,9 +455,12 @@ class ReloadStorage:
         self.fingerprint_error = None
         self.load_context_calls = 0
         self.fingerprint_calls = 0
+        self.connect_calls = 0
         self.closed = False
 
     def connect(self):
+        self.connect_calls += 1
+        self.closed = False
         return None
 
     def load_config_fingerprint(self):
@@ -410,11 +508,13 @@ class DatabaseManagerFingerprintTest(unittest.TestCase):
         self.assertIs(storage.context, old_context)
         self.assertIn("保留上一次有效配置", captured.output[0])
 
-        # DB 恢复后无需重启，下一次指纹检查即可加载新参数。
+        # DB 读取失败已进入常规重连状态；恢复由 ensure_ready 统一完成。
+        self.assertFalse(manager.ready)
+        manager.retry_interval_s = 0.0
         storage.fingerprint_error = None
         storage.database_context = replace(old_context, timeout_ms=3000)
         storage.fingerprint = fingerprint("t2")
-        self.assertEqual(manager.reload_if_changed(), "parameters")
+        self.assertTrue(manager.ensure_ready())
         self.assertEqual(manager.context.timeout_ms, 3000)
 
     def test_flags_failure_preserves_old_fingerprint_then_retry_commits(self):
@@ -464,6 +564,61 @@ class DatabaseManagerFingerprintTest(unittest.TestCase):
         load_calls = storage.load_context_calls
         self.assertEqual(reloader.before_cycle(force=True), "none")
         self.assertEqual(storage.load_context_calls, load_calls)
+
+    def test_db_disconnect_during_hardware_backoff_uses_db_retry_interval(self):
+        storage = ReloadStorage()
+        clock = FakeClock()
+        manager = DatabaseManager(
+            seed_enabled=False,
+            storage_factory=lambda: storage,
+            retry_interval_s=30.0,
+            logger=LOGGER,
+            clock=clock,
+        )
+        storage.database_context = replace(storage.context, poll_interval_ms=100)
+        self.assertTrue(manager.ensure_ready())
+        old_context = manager.context
+        reloader = ConfigReloader(
+            db_manager=manager,
+            context=old_context,
+            drivers=enabled_drivers(old_context),
+            driver_factory=enabled_drivers,
+            logger=LOGGER,
+            clock=clock,
+        )
+        storage.database_context = replace(old_context, rs485_flags=5)
+        storage.fingerprint = fingerprint("t2", sensor_version="t2")
+        attempts = []
+        should_fail = {"value": True}
+
+        def apply(old, new, candidates):
+            attempts.append(clock.now)
+            if should_fail["value"]:
+                raise RuntimeError("持续 flags 失败")
+            return candidates
+
+        reloader._on_structure_change = apply
+        with self.assertLogs(LOGGER, level="ERROR"):
+            reloader.before_cycle(force=True)  # t=0
+            clock.now = 0.1
+            reloader.before_cycle()  # 下一轮立即重试，随后进入 2 秒退避
+        self.assertEqual(len(attempts), 2)
+
+        # 模拟退避期间写库断连。硬件重试时间即使已过，也不能提前重连 DB。
+        clock.now = 1.0
+        manager._mark_unavailable(ConnectionError("DB 断开"))
+        for now in (2.1, 10.0, 30.9):
+            clock.now = now
+            self.assertEqual(reloader.before_cycle(), "unavailable")
+            self.assertEqual(storage.connect_calls, 1)
+            self.assertEqual(len(attempts), 2)
+
+        should_fail["value"] = False
+        clock.now = 31.0
+        self.assertEqual(reloader.before_cycle(), "structure")
+        self.assertEqual(storage.connect_calls, 2)
+        self.assertEqual(len(attempts), 3)
+        self.assertEqual(reloader._hardware_retry_failures, 0)
 
     def test_recovery_apply_failure_restores_pre_recovery_snapshot_and_retries(self):
         storage = ReloadStorage()
