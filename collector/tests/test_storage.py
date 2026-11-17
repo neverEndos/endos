@@ -16,10 +16,12 @@ from hsi.frame import RESPONSE_ADDRESS, build_frame, parse_frame  # noqa: E402
 from poll import run_loop  # noqa: E402
 from storage import (  # noqa: E402
     ChannelBinding,
+    ConfigFingerprint,
     DeviceContext,
     build_heartbeat_row,
     build_sample_rows,
     context_from_rows,
+    config_change_kind,
     cycle_outcome,
     next_device_state,
     seed_bindings,
@@ -314,10 +316,14 @@ class BuildSampleRowsTest(unittest.TestCase):
             DEVICE_ID,
             [("cs1000-01", "iso_4", 11, 101, DEVICE_ID, {"fieldIndex": 1})],
             poll_interval_ms=60000,
+            timeout_ms=2500,
+            retries=3,
             rs485_flags=0,
             active_sensor_codes=("cs1000-01",),
         )
         self.assertEqual(context.poll_interval_ms, 60000)
+        self.assertEqual(context.timeout_ms, 2500)
+        self.assertEqual(context.retries, 3)
         self.assertEqual(context.rs485_flags, 0)
         self.assertTrue(context.sensor_enabled("cs1000-01"))
         self.assertFalse(context.sensor_enabled("hlb1400-01"))
@@ -329,6 +335,26 @@ class BuildSampleRowsTest(unittest.TestCase):
         )
         self.assertIsNone(storage._rs485_flags_from_config({"rs485Flags": "bad"}))
         self.assertIsNone(storage._rs485_flags_from_config("not-json"))
+
+
+class ConfigFingerprintTest(unittest.TestCase):
+    def setUp(self):
+        self.initial = ConfigFingerprint("t1", 1, "t1", 2, "t1", 16)
+
+    def test_same_fingerprint_means_no_reload(self):
+        self.assertEqual(config_change_kind(self.initial, self.initial), "none")
+
+    def test_device_only_change_is_runtime_parameters(self):
+        changed = ConfigFingerprint("t2", 1, "t1", 2, "t1", 16)
+        self.assertEqual(config_change_kind(self.initial, changed), "parameters")
+
+    def test_sensor_or_channel_change_is_structure(self):
+        sensor_changed = ConfigFingerprint("t1", 1, "t2", 2, "t1", 16)
+        channel_count_changed = ConfigFingerprint("t1", 1, "t1", 2, "t1", 15)
+        self.assertEqual(config_change_kind(self.initial, sensor_changed), "structure")
+        self.assertEqual(
+            config_change_kind(self.initial, channel_count_changed), "structure"
+        )
 
 
 class DeviceStateTest(unittest.TestCase):

@@ -27,6 +27,49 @@ class ResolveIntervalTest(unittest.TestCase):
         self.assertIn("默认", source)
 
 
+class ResolveTimeoutTest(unittest.TestCase):
+    def test_cli_timeout_wins(self):
+        timeout, source = main.resolve_timeout_s(2.5, 8000)
+        self.assertEqual(timeout, 2.5)
+        self.assertIn("--timeout", source)
+
+    def test_inherits_device_timeout_ms(self):
+        timeout, source = main.resolve_timeout_s(None, 2500)
+        self.assertEqual(timeout, 2.5)
+        self.assertIn("timeout_ms", source)
+
+    def test_timeout_falls_back_to_default(self):
+        timeout, source = main.resolve_timeout_s(None, None)
+        self.assertEqual(timeout, 1.0)
+        self.assertIn("默认", source)
+
+
+class ResolveRetriesTest(unittest.TestCase):
+    def test_cli_zero_is_an_explicit_override(self):
+        retries, source = main.resolve_retries(0, 3)
+        self.assertEqual(retries, 0)
+        self.assertIn("--retries", source)
+
+    def test_inherits_device_retries(self):
+        retries, source = main.resolve_retries(None, 4)
+        self.assertEqual(retries, 4)
+        self.assertIn("collector_device.retries", source)
+
+    def test_retries_falls_back_to_default(self):
+        retries, source = main.resolve_retries(None, None)
+        self.assertEqual(retries, 1)
+        self.assertIn("默认", source)
+
+
+class CliDefaultsTest(unittest.TestCase):
+    def test_db_backed_options_are_not_fixed_by_cli_defaults(self):
+        args = main.build_parser().parse_args([])
+        self.assertIsNone(args.interval)
+        self.assertIsNone(args.timeout)
+        self.assertIsNone(args.retries)
+        self.assertIsNone(args.config_check_interval)
+
+
 class EngineeringValueTest(unittest.TestCase):
     def test_scale_and_offset(self):
         binding = ChannelBinding(
