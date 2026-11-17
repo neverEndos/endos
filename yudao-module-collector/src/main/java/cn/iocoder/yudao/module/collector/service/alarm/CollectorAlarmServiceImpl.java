@@ -1,21 +1,31 @@
 package cn.iocoder.yudao.module.collector.service.alarm;
 
+import cn.iocoder.yudao.framework.common.pojo.PageResult;
+import cn.iocoder.yudao.module.collector.controller.admin.alarm.vo.CollectorAlarmPageReqVO;
+import cn.iocoder.yudao.module.collector.controller.admin.alarm.vo.CollectorAlarmRespVO;
+import cn.iocoder.yudao.module.collector.controller.admin.alarm.vo.CollectorAlarmStateRespVO;
+import cn.iocoder.yudao.module.collector.convert.alarm.CollectorAlarmConvert;
 import cn.iocoder.yudao.module.collector.dal.dataobject.alarm.CollectorAlarmCursorDO;
 import cn.iocoder.yudao.module.collector.dal.dataobject.alarm.CollectorAlarmDO;
 import cn.iocoder.yudao.module.collector.dal.dataobject.alarm.CollectorAlarmStateDO;
 import cn.iocoder.yudao.module.collector.dal.dataobject.channel.CollectorChannelDO;
+import cn.iocoder.yudao.module.collector.dal.dataobject.device.CollectorDeviceDO;
 import cn.iocoder.yudao.module.collector.dal.dataobject.sample.CollectorSampleRawDO;
+import cn.iocoder.yudao.module.collector.dal.dataobject.sensor.CollectorSensorDO;
 import cn.iocoder.yudao.module.collector.dal.mysql.alarm.CollectorAlarmCursorMapper;
 import cn.iocoder.yudao.module.collector.dal.mysql.alarm.CollectorAlarmMapper;
 import cn.iocoder.yudao.module.collector.dal.mysql.alarm.CollectorAlarmStateMapper;
 import cn.iocoder.yudao.module.collector.dal.mysql.channel.CollectorChannelMapper;
+import cn.iocoder.yudao.module.collector.dal.mysql.device.CollectorDeviceMapper;
 import cn.iocoder.yudao.module.collector.dal.mysql.sample.CollectorSampleRawMapper;
+import cn.iocoder.yudao.module.collector.dal.mysql.sensor.CollectorSensorMapper;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -39,6 +49,10 @@ public class CollectorAlarmServiceImpl implements CollectorAlarmService {
     @Resource
     private CollectorChannelMapper channelMapper;
     @Resource
+    private CollectorDeviceMapper deviceMapper;
+    @Resource
+    private CollectorSensorMapper sensorMapper;
+    @Resource
     private CollectorAlarmCursorMapper cursorMapper;
     @Resource
     private CollectorAlarmStateMapper stateMapper;
@@ -48,6 +62,51 @@ public class CollectorAlarmServiceImpl implements CollectorAlarmService {
     private TransactionTemplate transactionTemplate;
 
     private final CollectorAlarmEvaluator evaluator = new CollectorAlarmEvaluator();
+
+    @Override
+    public PageResult<CollectorAlarmRespVO> getAlarmPage(CollectorAlarmPageReqVO reqVO) {
+        PageResult<CollectorAlarmDO> page = alarmMapper.selectPage(reqVO);
+        PageResult<CollectorAlarmRespVO> result = CollectorAlarmConvert.INSTANCE.convertPage(page);
+        Set<Long> deviceIds = result.getList().stream().map(CollectorAlarmRespVO::getDeviceId).collect(Collectors.toSet());
+        Set<Long> sensorIds = result.getList().stream().map(CollectorAlarmRespVO::getSensorId).collect(Collectors.toSet());
+        Set<Long> channelIds = result.getList().stream().map(CollectorAlarmRespVO::getChannelId).collect(Collectors.toSet());
+        NameMaps names = loadNames(deviceIds, sensorIds, channelIds);
+        result.getList().forEach(alarm -> {
+            alarm.setDeviceName(names.deviceName(alarm.getDeviceId()));
+            alarm.setSensorName(names.sensorName(alarm.getSensorId()));
+            alarm.setChannelName(names.channelName(alarm.getChannelId()));
+        });
+        return result;
+    }
+
+    @Override
+    public List<CollectorAlarmStateRespVO> getAlarmStateList(Long deviceId) {
+        List<CollectorAlarmStateRespVO> result = CollectorAlarmConvert.INSTANCE.convertStateList(
+                stateMapper.selectListByDeviceId(deviceId));
+        Set<Long> deviceIds = result.stream().map(CollectorAlarmStateRespVO::getDeviceId).collect(Collectors.toSet());
+        Set<Long> sensorIds = result.stream().map(CollectorAlarmStateRespVO::getSensorId).collect(Collectors.toSet());
+        Set<Long> channelIds = result.stream().map(CollectorAlarmStateRespVO::getChannelId).collect(Collectors.toSet());
+        NameMaps names = loadNames(deviceIds, sensorIds, channelIds);
+        result.forEach(state -> {
+            state.setDeviceName(names.deviceName(state.getDeviceId()));
+            state.setSensorName(names.sensorName(state.getSensorId()));
+            state.setChannelName(names.channelName(state.getChannelId()));
+        });
+        return result;
+    }
+
+    /**
+     * 设备、传感器、通道各批量查询一次，避免分页名称装配的 N+1 查询。
+     */
+    private NameMaps loadNames(Collection<Long> deviceIds, Collection<Long> sensorIds, Collection<Long> channelIds) {
+        Map<Long, String> deviceNames = deviceIds.isEmpty() ? Map.of() : deviceMapper.selectBatchIds(deviceIds).stream()
+                .collect(Collectors.toMap(CollectorDeviceDO::getId, CollectorDeviceDO::getDeviceName));
+        Map<Long, String> sensorNames = sensorIds.isEmpty() ? Map.of() : sensorMapper.selectBatchIds(sensorIds).stream()
+                .collect(Collectors.toMap(CollectorSensorDO::getId, CollectorSensorDO::getSensorName));
+        Map<Long, String> channelNames = channelIds.isEmpty() ? Map.of() : channelMapper.selectBatchIds(channelIds).stream()
+                .collect(Collectors.toMap(CollectorChannelDO::getId, CollectorChannelDO::getChannelName));
+        return new NameMaps(deviceNames, sensorNames, channelNames);
+    }
 
     @Override
     public EvaluationResult evaluatePendingSamples() {
@@ -226,6 +285,23 @@ public class CollectorAlarmServiceImpl implements CollectorAlarmService {
             case CollectorAlarmEvaluator.THRESHOLD_HIGH_ERROR -> "异常上限";
             default -> "阈值";
         };
+    }
+
+    private record NameMaps(Map<Long, String> deviceNames, Map<Long, String> sensorNames,
+                            Map<Long, String> channelNames) {
+
+        String deviceName(Long id) {
+            return deviceNames.get(id);
+        }
+
+        String sensorName(Long id) {
+            return sensorNames.get(id);
+        }
+
+        String channelName(Long id) {
+            return channelNames.get(id);
+        }
+
     }
 
     private record BatchResult(int processedCount, int transitionCount, boolean initialized) {
