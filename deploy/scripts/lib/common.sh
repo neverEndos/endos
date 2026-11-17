@@ -30,7 +30,7 @@ run() {
 }
 
 # ---------- sudo ----------
-# 服务运行用户；release.sh 以 root 执行板端脚本时用于修正产物属主
+# 服务运行用户；compose-single/scripts/release-collector.sh 以 root 执行板端脚本时用于修正产物属主
 SERVICE_USER="${SERVICE_USER:-alientek}"
 SERVICE_GROUP="${SERVICE_GROUP:-$SERVICE_USER}"
 

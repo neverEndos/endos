@@ -45,6 +45,11 @@ collector（宿主机 systemd）── /dev/ttyS4
 `CHANGE_ME`、数据库/Redis/MinIO 密码和 `MINIO_PUBLIC_DOMAIN`，文件权限设为 0600。
 `.env` 与开发机 `deploy.env` 均已 gitignore，禁止提交真实凭据。
 
+**已知风险：** Redis 密码会展开到 `docker-compose.yml` 的 `--requirepass` 启动参数，主机上的
+Docker 管理员可通过 `docker inspect` 读取。本方案以 root、Docker 组与 0600 的 `.env`
+属于同一受信任管理域为前提；必须限制 sudo/Docker 组成员，不要把 inspect 输出交给不受信任方。
+Redis 不向宿主机发布端口，这不能替代上述主机权限控制。
+
 ## 3. 构建产物
 
 在源代码仓库根目录（或功能 worktree 根目录）执行：
@@ -72,19 +77,23 @@ pnpm build:antdv-next
 `deploy/compose-single/.env` 是已填好但未提交的本地文件：
 
 ```bash
-tar -czf - deploy sql/postgresql | ssh cat@192.168.0.101 \
+tar --exclude='*.env' --exclude='*.env.local' -czf - deploy sql/postgresql | \
+  ssh cat@192.168.0.101 \
   'rm -rf /tmp/yudao-src && mkdir -p /tmp/yudao-src && tar -xzf - -C /tmp/yudao-src'
 ssh cat@192.168.0.101 'umask 077; cat > /tmp/yudao-compose.env' \
   < deploy/compose-single/.env
 ssh -t cat@192.168.0.101 \
   'sudo bash /tmp/yudao-src/deploy/compose-single/scripts/bootstrap-board.sh \
    --run --with-collector --service-user cat --env-file /tmp/yudao-compose.env'
-ssh cat@192.168.0.101 'rm -f /tmp/yudao-compose.env'
+ssh cat@192.168.0.101 'rm -rf /tmp/yudao-src /tmp/yudao-compose.env'
 ```
 
-初始化会安装 Compose 文件到 `/opt/yudao/compose-single`，把四份 SQL 安装到
-`/opt/yudao/sql/postgresql`，创建数据/发布/日志/备份目录。已有 `.env` 不会被覆盖。
-`--with-collector` 只安装单元和 `/etc/yudao/env.remote`，不会启动 collector。
+上传归档明确排除 `.env`、`deploy.env` 和 `*.env.local`，但保留 `*.env.example`；
+初始化结束后删除整个暂存目录，避免私有环境文件残留。初始化会安装 Compose 文件到
+`/opt/yudao/compose-single`，把四份 SQL 安装到 `/opt/yudao/sql/postgresql`，创建
+数据/发布/日志/备份目录。复制 Compose 文件本身不覆盖已有 `.env`；显式传 `--env-file`
+则会用指定文件替换它（0600）。`--with-collector` 安装单元和 `/etc/yudao/env.remote`，
+执行 `systemctl enable collector`（不加 `--now`），不会启动 collector。
 `--run` 本身也不启动应用；只有同时指定 `--start` 才执行 `compose up -d`。
 
 ### 4.2 安装首个后端与前端版本
@@ -167,7 +176,10 @@ sudo bash /opt/yudao/compose-single/scripts/apply-web.sh --dist /tmp/yudao-web-V
 
 - 后端允许同版本替换；健康检查失败会恢复更新前 jar/软链接并重启。
 - 前端当前版本不允许同版本覆盖；HTTP 检查失败恢复更新前软链接。
-- 后端健康检查从 web 容器请求 48080 的验证码接口，同时覆盖容器网络、后端和 Redis。
+- 后端健康检查从 web 容器请求 48080 的验证码接口，同时覆盖容器网络、后端和 Redis；
+  wget 确认 HTTP 成功后，还会解析响应体根节点，要求验证码 `ResponseModel.repCode="0000"`
+  （同时兼容 `CommonResult.code=0`）。因此 HTTP 200 但业务失败也会触发回滚，超时时输出
+  最后一次响应片段便于排查。
 - 默认各保留最近 3 个版本，至少保留当前版本；用 `--keep` 调整。
 - 所有脚本无参数或 `-h/--help` 都显示帮助并退出 0；执行发布需显式 `--run`
   （apply 脚本使用各自必需参数）。
@@ -208,6 +220,7 @@ MinIO 对象数据不在数据库 dump 内，需另行备份 `/opt/yudao/data/mi
 - domain：`MINIO_PUBLIC_DOMAIN`，例如 `http://192.168.0.101/minio/yudao`。
 
 私有 bucket 的预签名 URL 经 Nginx `/minio/` 转发，MinIO API/Console 不需要暴露到局域网。
+Nginx 对 MinIO 使用变量 `proxy_pass` 和 Docker resolver 动态解析，重建 MinIO 后无需重建 web。
 修改板端地址、Web 端口或 bucket 时，必须同步修改 domain；非 80 端口要显式带端口。
 已有数据库不会因修改 `.env` 自动更新 `infra_file_config`，需在后台文件配置中同步修改。
 MinIO 初始化 SQL 只在空库首次执行；其 shell 通过 `psql` 变量构造 JSON，凭据不写入仓库。
@@ -216,10 +229,13 @@ MinIO 初始化 SQL 只在空库首次执行；其 shell 通过 `psql` 变量构
 
 collector 不进容器，继续复用 `deploy/scripts/deploy-collector.sh` 与
 `deploy/systemd/collector.service`。bootstrap 会把单元中的 User/Group 渲染为指定用户，
-并生成 `/etc/yudao/env.remote`，让 collector 连接 `127.0.0.1:5432`。
+并生成 `/etc/yudao/env.remote`，让 collector 连接 `127.0.0.1:5432`。bootstrap 和每次
+collector 发布都会幂等执行 `systemctl enable collector`，但不会用 enable 隐式启动进程。
 
 ```bash
 bash deploy/compose-single/scripts/release-collector.sh --run
+systemctl is-enabled collector  # 期望 enabled
+systemctl is-active collector   # 启动长期采集后期望 active
 systemctl status collector
 journalctl -u collector -n 100 --no-pager
 tail -n 30 /opt/yudao/logs/collector.log
