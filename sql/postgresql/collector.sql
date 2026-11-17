@@ -1,9 +1,9 @@
 /*
  采集器采集数据表初始化脚本（PostgreSQL 17）
 
- 适用范围：collector 首期 17 张表（协议注册表、设备、传感器类型、参数模板、传感器、
- 通道、分时段轮询、配置版本、原始采样、小时/天聚合、聚合水位、报警、设备状态、心跳、
- 命令、保留策略）。
+ 适用范围：collector 19 张表（协议注册表、设备、传感器类型、参数模板、传感器、
+ 通道、分时段轮询、配置版本、原始采样、小时/天聚合、聚合水位、报警、报警状态、
+ 报警游标、设备状态、心跳、命令、保留策略）。
 
  说明：
  1. 所有表位于 public schema；不建外键，表之间只做逻辑关联，引用完整性由 Service 校验。
@@ -12,7 +12,7 @@
  3. collector_sample_raw 按天 RANGE 分区，本脚本创建示例日分区与 DEFAULT 分区；
     后续分区由维护任务按 collector_retention_policy.partition_lead_days 提前创建。
  4. 业务时间统一使用 timestamp(3) without time zone，语义为 Asia/Shanghai 本地墙钟时间。
- 5. 本脚本支持重复执行：开头会删除并重建下述 17 张 collector 表与 12 个序列，
+ 5. 本脚本支持重复执行：开头会删除并重建下述 19 张 collector 表与 13 个序列，
     执行将清空采集器已有数据，请在确认后执行。已有库的阈值结构升级请使用
     collector_threshold_migration.sql，不要直接重跑本脚本。
  6. 数值有限性约束显式排除 NaN 与正负 Infinity（数值类型没有可用的内置有限性判断
@@ -41,6 +41,8 @@ DROP TABLE IF EXISTS public.collector_sample_raw;
 DROP TABLE IF EXISTS public.collector_aggregate_hour;
 DROP TABLE IF EXISTS public.collector_aggregate_day;
 DROP TABLE IF EXISTS public.collector_aggregate_watermark;
+DROP TABLE IF EXISTS public.collector_alarm_state;
+DROP TABLE IF EXISTS public.collector_alarm_cursor;
 DROP TABLE IF EXISTS public.collector_alarm;
 DROP TABLE IF EXISTS public.collector_device_status;
 DROP TABLE IF EXISTS public.collector_heartbeat;
@@ -56,6 +58,7 @@ DROP SEQUENCE IF EXISTS public.collector_channel_seq;
 DROP SEQUENCE IF EXISTS public.collector_poll_schedule_seq;
 DROP SEQUENCE IF EXISTS public.collector_config_version_seq;
 DROP SEQUENCE IF EXISTS public.collector_alarm_seq;
+DROP SEQUENCE IF EXISTS public.collector_sample_raw_seq;
 DROP SEQUENCE IF EXISTS public.collector_heartbeat_seq;
 DROP SEQUENCE IF EXISTS public.collector_command_seq;
 DROP SEQUENCE IF EXISTS public.collector_retention_policy_seq;
@@ -122,6 +125,13 @@ CREATE SEQUENCE public.collector_config_version_seq
     CACHE 1;
 
 CREATE SEQUENCE public.collector_alarm_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+CREATE SEQUENCE public.collector_sample_raw_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -814,6 +824,7 @@ COMMENT ON COLUMN public.collector_config_version.deleted IS '是否删除：0 �
 -- =============================================================================
 
 CREATE TABLE public.collector_sample_raw (
+    sample_id bigint DEFAULT nextval('public.collector_sample_raw_seq') NOT NULL,
     channel_id bigint NOT NULL,
     device_id bigint NOT NULL,
     collect_time timestamp(3) without time zone NOT NULL,
@@ -848,7 +859,11 @@ CREATE TABLE public.collector_sample_raw_default
 CREATE INDEX idx_collector_sample_raw_device_time
     ON public.collector_sample_raw USING btree (device_id, collect_time);
 
+CREATE INDEX idx_collector_sample_raw_cursor
+    ON public.collector_sample_raw USING btree (collect_time, sample_id);
+
 COMMENT ON TABLE public.collector_sample_raw IS '原始采样数据表（按天 RANGE 分区）';
+COMMENT ON COLUMN public.collector_sample_raw.sample_id IS '全局递增采样编号；与 collect_time 组成报警引擎游标';
 COMMENT ON COLUMN public.collector_sample_raw.channel_id IS '通道编号（逻辑关联 collector_channel.id）';
 COMMENT ON COLUMN public.collector_sample_raw.device_id IS '设备编号（冗余，用于设备级查询）';
 COMMENT ON COLUMN public.collector_sample_raw.collect_time IS '采样时间（Asia/Shanghai 本地时间，毫秒）';
@@ -1067,6 +1082,7 @@ CREATE TABLE public.collector_alarm (
     sensor_id bigint DEFAULT 0 NOT NULL,
     channel_id bigint DEFAULT 0 NOT NULL,
     alarm_type character varying(32) NOT NULL,
+    event_type character varying(16) DEFAULT 'raised'::character varying NOT NULL,
     level smallint DEFAULT 2 NOT NULL,
     dedupe_key character varying(128) NOT NULL,
     status smallint DEFAULT 0 NOT NULL,
@@ -1096,6 +1112,7 @@ CREATE TABLE public.collector_alarm (
         ))
     ),
     CONSTRAINT chk_collector_alarm_level CHECK (level IN (1, 2, 3)),
+    CONSTRAINT chk_collector_alarm_event_type CHECK (event_type IN ('raised', 'upgraded', 'downgraded', 'cleared')),
     CONSTRAINT chk_collector_alarm_status CHECK (status IN (0, 1, 2)),
     CONSTRAINT chk_collector_alarm_cleared CHECK ((status = 2) = (cleared_at IS NOT NULL)),
     CONSTRAINT chk_collector_alarm_count CHECK (occurrence_count >= 1)
@@ -1124,6 +1141,7 @@ COMMENT ON COLUMN public.collector_alarm.device_id IS '设备编号（所有级�
 COMMENT ON COLUMN public.collector_alarm.sensor_id IS '传感器编号；channel_id=0 时大于 0 表示传感器级，0 表示设备级';
 COMMENT ON COLUMN public.collector_alarm.channel_id IS '通道编号；大于 0 表示通道级，且 sensor_id 必须指向其所属传感器';
 COMMENT ON COLUMN public.collector_alarm.alarm_type IS '报警类型，如 threshold_low_error/threshold_low_warning/threshold_high_warning/threshold_high_error/comm_timeout/device_offline/quality_bad';
+COMMENT ON COLUMN public.collector_alarm.event_type IS '事件类型：raised 触发、upgraded 升级、downgraded 降级、cleared 恢复';
 COMMENT ON COLUMN public.collector_alarm.level IS '级别：1 提示、2 警告、3 严重';
 COMMENT ON COLUMN public.collector_alarm.dedupe_key IS '活动报警去重键（dev:{deviceId}:sensor:{sensorId}:ch:{channelId}:type:{alarmType}，包含 sensor 维度）';
 COMMENT ON COLUMN public.collector_alarm.status IS '状态：0 活动、1 已确认、2 已清除';
@@ -1712,3 +1730,78 @@ INSERT INTO public.collector_retention_policy (
 -- 19.3 聚合水位：主键为 (agg_type, channel_id)，按通道分别记录。
 -- 空库尚无设备/通道，故不预置 hour/day 行；通道创建或首个配置版本发布后，
 -- 由聚合任务为每个 number 通道初始化 (hour, channel_id) 与 (day, channel_id) 水位，watermark_time 均为 NULL。
+
+
+-- =============================================================================
+-- 20. 报警引擎状态与游标
+-- =============================================================================
+
+CREATE TABLE public.collector_alarm_state (
+    channel_id bigint NOT NULL,
+    device_id bigint NOT NULL,
+    sensor_id bigint NOT NULL,
+    level smallint DEFAULT 0 NOT NULL,
+    threshold_type character varying(32),
+    since timestamp(3) without time zone,
+    last_value double precision,
+    last_threshold double precision,
+    last_sample_time timestamp(3) without time zone,
+    last_sample_id bigint,
+    updated_time timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT pk_collector_alarm_state PRIMARY KEY (channel_id),
+    CONSTRAINT chk_collector_alarm_state_level CHECK (level IN (0, 2, 3)),
+    CONSTRAINT chk_collector_alarm_state_threshold_type CHECK (
+        threshold_type IS NULL OR threshold_type IN (
+            'threshold_low_error', 'threshold_low_warning',
+            'threshold_high_warning', 'threshold_high_error'
+        )
+    ),
+    CONSTRAINT chk_collector_alarm_state_active CHECK (
+        (level = 0 AND threshold_type IS NULL AND since IS NULL)
+        OR (level > 0 AND threshold_type IS NOT NULL AND since IS NOT NULL)
+    ),
+    CONSTRAINT chk_collector_alarm_state_value_finite CHECK (
+        (last_value IS NULL OR (
+            last_value <> 'Infinity'::float8
+            AND last_value <> '-Infinity'::float8
+            AND last_value <> 'NaN'::float8
+        ))
+        AND (last_threshold IS NULL OR (
+            last_threshold <> 'Infinity'::float8
+            AND last_threshold <> '-Infinity'::float8
+            AND last_threshold <> 'NaN'::float8
+        ))
+    )
+);
+
+CREATE INDEX idx_collector_alarm_state_device_level
+    ON public.collector_alarm_state USING btree (device_id, level);
+
+COMMENT ON TABLE public.collector_alarm_state IS '通道当前报警状态表（报警引擎重启恢复、滞回与跃迁去重依据）';
+COMMENT ON COLUMN public.collector_alarm_state.channel_id IS '通道编号（主键，逻辑关联 collector_channel.id）';
+COMMENT ON COLUMN public.collector_alarm_state.device_id IS '设备编号（冗余，用于设备过滤）';
+COMMENT ON COLUMN public.collector_alarm_state.sensor_id IS '传感器编号';
+COMMENT ON COLUMN public.collector_alarm_state.level IS '当前级别：0 正常、2 预警、3 异常';
+COMMENT ON COLUMN public.collector_alarm_state.threshold_type IS '当前命中的四档阈值类型；正常时为空';
+COMMENT ON COLUMN public.collector_alarm_state.since IS '当前级别开始时间；正常时为空';
+COMMENT ON COLUMN public.collector_alarm_state.last_value IS '最近参与判定的工程值';
+COMMENT ON COLUMN public.collector_alarm_state.last_threshold IS '最近判定使用的阈值';
+COMMENT ON COLUMN public.collector_alarm_state.last_sample_time IS '最近参与判定的采样时间';
+COMMENT ON COLUMN public.collector_alarm_state.last_sample_id IS '最近参与判定的采样编号';
+COMMENT ON COLUMN public.collector_alarm_state.updated_time IS '状态更新时间';
+
+CREATE TABLE public.collector_alarm_cursor (
+    id smallint DEFAULT 1 NOT NULL,
+    last_sample_time timestamp(3) without time zone DEFAULT '1970-01-01 00:00:00'::timestamp NOT NULL,
+    last_sample_id bigint DEFAULT 0 NOT NULL,
+    updated_time timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT pk_collector_alarm_cursor PRIMARY KEY (id),
+    CONSTRAINT chk_collector_alarm_cursor_singleton CHECK (id = 1),
+    CONSTRAINT chk_collector_alarm_cursor_sample CHECK (last_sample_id >= 0)
+);
+
+COMMENT ON TABLE public.collector_alarm_cursor IS '报警扫描单行游标；首次执行定位最新采样，批次提交成功后推进';
+COMMENT ON COLUMN public.collector_alarm_cursor.id IS '固定为 1，限制单实例单行';
+COMMENT ON COLUMN public.collector_alarm_cursor.last_sample_time IS '已处理采样的 collect_time（含）';
+COMMENT ON COLUMN public.collector_alarm_cursor.last_sample_id IS '同一 collect_time 下已处理的最大 sample_id（含）';
+COMMENT ON COLUMN public.collector_alarm_cursor.updated_time IS '游标更新时间';
