@@ -68,7 +68,7 @@ wait_backend() {
   fi
   deadline=$((SECONDS + timeout))
   while [ "$SECONDS" -lt "$deadline" ]; do
-    if compose exec -T web wget -q -O /dev/null \
+    if compose exec -T web wget -T 5 -q -O /dev/null \
       --header='Content-Type: application/json' --post-data='{}' \
       http://yudao-server:48080/admin-api/system/captcha/get >/dev/null 2>&1; then
       info "后端 48080 健康检查通过"

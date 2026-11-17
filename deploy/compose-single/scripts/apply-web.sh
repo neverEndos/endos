@@ -31,7 +31,7 @@ EOF
 [ "$#" -gt 0 ] || { usage; exit 0; }
 case "${1:-}" in -h|--help) usage; exit 0 ;; esac
 
-DIST="" VERSION="" KEEP=3 TIMEOUT=30 STAGE_ONLY=0 NO_HEALTH=0
+DIST="" VERSION="" KEEP=3 TIMEOUT=30 STAGE_ONLY=0 NO_HEALTHCHECK=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --dist) [ "$#" -ge 2 ] || die "--dist 缺少参数"; DIST="$2"; shift 2 ;;
@@ -39,7 +39,7 @@ while [ "$#" -gt 0 ]; do
     --keep) [ "$#" -ge 2 ] || die "--keep 缺少参数"; KEEP="$2"; shift 2 ;;
     --timeout) [ "$#" -ge 2 ] || die "--timeout 缺少参数"; TIMEOUT="$2"; shift 2 ;;
     --stage-only) STAGE_ONLY=1; shift ;;
-    --no-healthcheck) NO_HEALTH=1; shift ;;
+    --no-healthcheck) NO_HEALTHCHECK=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; die "未知参数：$1" ;;
