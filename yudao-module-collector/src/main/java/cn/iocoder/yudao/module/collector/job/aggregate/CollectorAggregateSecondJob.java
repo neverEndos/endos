@@ -8,7 +8,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
 
-/** 每 5 秒聚合 fast 通道最近 60 秒的已闭合秒桶。 */
+/** 每 5 秒聚合 fast 通道最近 30 秒的已闭合秒桶；缩短重算窗口以降低 upsert 写放大。 */
 @DisallowConcurrentExecution
 @Component("collectorAggregateSecondJob")
 public class CollectorAggregateSecondJob extends AbstractCollectorAggregateJob {
@@ -19,7 +19,7 @@ public class CollectorAggregateSecondJob extends AbstractCollectorAggregateJob {
     @Override
     public String execute(String param) {
         LocalDateTime to = LocalDateTime.now(CollectorAggregateServiceImpl.SHANGHAI_ZONE);
-        return logResult(aggregateService.aggregateSecond(to.minusSeconds(60), to, null));
+        return logResult(aggregateService.aggregateSecond(to.minusSeconds(30), to, null));
     }
 
 }

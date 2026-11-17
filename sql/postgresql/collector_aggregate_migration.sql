@@ -1,7 +1,8 @@
 -- 采集数据多级聚合迁移（PostgreSQL）
 --
--- 1. 为通道增加 normal/fast 数据画像，新增秒、分钟聚合表，扩展聚合水位类型。
--- 2. 幂等、单事务；只增列、增表、增索引和必要约束，不删除或清理任何数据。
+-- 1. 为通道增加 normal/fast 数据画像，新增秒、分钟聚合表，四张聚合表增加 valid_count，
+--    扩展聚合水位类型与保留策略数据类。
+-- 2. 幂等、单事务；只增列、增表、增索引和必要约束，不删除或清理业务数据。
 -- 3. 执行方式（密码从环境变量读取，不要写入仓库）：
 --    PGPASSWORD=... psql -h <host> -U <user> -d <database> -f sql/postgresql/collector_aggregate_migration.sql
 
@@ -32,6 +33,7 @@ CREATE TABLE IF NOT EXISTS public.collector_aggregate_second (
     bucket_time timestamp(3) without time zone NOT NULL,
     sample_count integer DEFAULT 0 NOT NULL,
     good_count integer DEFAULT 0 NOT NULL,
+    valid_count integer DEFAULT 0 NOT NULL,
     bad_count integer DEFAULT 0 NOT NULL,
     value_avg double precision,
     value_min double precision,
@@ -42,7 +44,8 @@ CREATE TABLE IF NOT EXISTS public.collector_aggregate_second (
     update_time timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT pk_collector_aggregate_second PRIMARY KEY (channel_id, bucket_time),
     CONSTRAINT chk_collector_aggregate_second_count CHECK (
-        sample_count >= 0 AND good_count >= 0 AND bad_count >= 0
+        sample_count >= 0 AND good_count >= 0 AND valid_count >= 0
+        AND valid_count <= good_count AND bad_count >= 0
     ),
     CONSTRAINT chk_collector_aggregate_second_finite CHECK (
         (value_avg IS NULL OR (value_avg <> 'Infinity'::float8 AND value_avg <> '-Infinity'::float8 AND value_avg <> 'NaN'::float8))
@@ -66,7 +69,7 @@ COMMENT ON COLUMN public.collector_aggregate_second.bucket_time IS '秒桶起始
 COMMENT ON COLUMN public.collector_aggregate_second.sample_count IS '该桶全部 raw 行数（含 good/uncertain/bad）';
 COMMENT ON COLUMN public.collector_aggregate_second.good_count IS 'quality=0 的 raw 行数（含 value 为 NULL 的行）';
 COMMENT ON COLUMN public.collector_aggregate_second.bad_count IS 'quality=2 的 raw 行数';
-COMMENT ON COLUMN public.collector_aggregate_second.value_avg IS 'value_sum / good_count；无有效统计值时为 NULL';
+COMMENT ON COLUMN public.collector_aggregate_second.value_avg IS 'value_sum / valid_count；无有效统计值时为 NULL';
 COMMENT ON COLUMN public.collector_aggregate_second.value_min IS '有效统计值最小值';
 COMMENT ON COLUMN public.collector_aggregate_second.value_max IS '有效统计值最大值';
 COMMENT ON COLUMN public.collector_aggregate_second.value_sum IS '有效统计值求和';
@@ -80,6 +83,7 @@ CREATE TABLE IF NOT EXISTS public.collector_aggregate_minute (
     bucket_time timestamp(3) without time zone NOT NULL,
     sample_count integer DEFAULT 0 NOT NULL,
     good_count integer DEFAULT 0 NOT NULL,
+    valid_count integer DEFAULT 0 NOT NULL,
     bad_count integer DEFAULT 0 NOT NULL,
     value_avg double precision,
     value_min double precision,
@@ -90,7 +94,8 @@ CREATE TABLE IF NOT EXISTS public.collector_aggregate_minute (
     update_time timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT pk_collector_aggregate_minute PRIMARY KEY (channel_id, bucket_time),
     CONSTRAINT chk_collector_aggregate_minute_count CHECK (
-        sample_count >= 0 AND good_count >= 0 AND bad_count >= 0
+        sample_count >= 0 AND good_count >= 0 AND valid_count >= 0
+        AND valid_count <= good_count AND bad_count >= 0
     ),
     CONSTRAINT chk_collector_aggregate_minute_finite CHECK (
         (value_avg IS NULL OR (value_avg <> 'Infinity'::float8 AND value_avg <> '-Infinity'::float8 AND value_avg <> 'NaN'::float8))
@@ -114,13 +119,63 @@ COMMENT ON COLUMN public.collector_aggregate_minute.bucket_time IS '分钟桶起
 COMMENT ON COLUMN public.collector_aggregate_minute.sample_count IS '该桶全部 raw 行数（含 good/uncertain/bad）';
 COMMENT ON COLUMN public.collector_aggregate_minute.good_count IS 'quality=0 的 raw 行数（含 value 为 NULL 的行）';
 COMMENT ON COLUMN public.collector_aggregate_minute.bad_count IS 'quality=2 的 raw 行数';
-COMMENT ON COLUMN public.collector_aggregate_minute.value_avg IS 'value_sum / good_count；无有效统计值时为 NULL';
+COMMENT ON COLUMN public.collector_aggregate_minute.value_avg IS 'value_sum / valid_count；无有效统计值时为 NULL';
 COMMENT ON COLUMN public.collector_aggregate_minute.value_min IS '有效统计值最小值';
 COMMENT ON COLUMN public.collector_aggregate_minute.value_max IS '有效统计值最大值';
 COMMENT ON COLUMN public.collector_aggregate_minute.value_sum IS '有效统计值求和';
 COMMENT ON COLUMN public.collector_aggregate_minute.value_first IS '桶内首个有效统计值';
 COMMENT ON COLUMN public.collector_aggregate_minute.value_last IS '桶内最后有效统计值';
 COMMENT ON COLUMN public.collector_aggregate_minute.update_time IS '最后重算时间';
+
+-- 旧库四张聚合表补 valid_count；新库已有则跳过。
+ALTER TABLE public.collector_aggregate_second
+    ADD COLUMN IF NOT EXISTS valid_count integer DEFAULT 0 NOT NULL;
+ALTER TABLE public.collector_aggregate_minute
+    ADD COLUMN IF NOT EXISTS valid_count integer DEFAULT 0 NOT NULL;
+ALTER TABLE public.collector_aggregate_hour
+    ADD COLUMN IF NOT EXISTS valid_count integer DEFAULT 0 NOT NULL;
+ALTER TABLE public.collector_aggregate_day
+    ADD COLUMN IF NOT EXISTS valid_count integer DEFAULT 0 NOT NULL;
+
+DO $$
+DECLARE
+    table_name text;
+    constraint_name text;
+    constraint_definition text;
+BEGIN
+    FOREACH table_name IN ARRAY ARRAY[
+        'collector_aggregate_second', 'collector_aggregate_minute',
+        'collector_aggregate_hour', 'collector_aggregate_day'
+    ] LOOP
+        constraint_name := 'chk_' || table_name || '_count';
+        SELECT pg_get_constraintdef(c.oid) INTO constraint_definition
+        FROM pg_constraint c
+        WHERE c.conrelid = to_regclass('public.' || table_name) AND c.conname = constraint_name;
+
+        IF constraint_definition IS NOT NULL AND constraint_definition NOT LIKE '%valid_count%' THEN
+            EXECUTE format('ALTER TABLE public.%I DROP CONSTRAINT %I', table_name, constraint_name);
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint c
+            WHERE c.conrelid = to_regclass('public.' || table_name) AND c.conname = constraint_name
+        ) THEN
+            EXECUTE format(
+                'ALTER TABLE public.%I ADD CONSTRAINT %I CHECK '
+                '(sample_count >= 0 AND good_count >= 0 AND valid_count >= 0 '
+                'AND valid_count <= good_count AND bad_count >= 0)',
+                table_name, constraint_name);
+        END IF;
+    END LOOP;
+END $$;
+
+COMMENT ON COLUMN public.collector_aggregate_second.valid_count
+    IS 'quality=0 且 value 非 NULL 的 raw 行数；value_avg 的有效分母';
+COMMENT ON COLUMN public.collector_aggregate_minute.valid_count
+    IS 'quality=0 且 value 非 NULL 的 raw 行数；value_avg 的有效分母';
+COMMENT ON COLUMN public.collector_aggregate_hour.valid_count
+    IS 'quality=0 且 value 非 NULL 的 raw 行数；上卷时为下层 valid_count 之和';
+COMMENT ON COLUMN public.collector_aggregate_day.valid_count
+    IS 'quality=0 且 value 非 NULL 的 raw 行数；上卷时为下层 valid_count 之和';
 
 DO $$
 DECLARE
@@ -148,5 +203,39 @@ BEGIN
 END $$;
 
 COMMENT ON COLUMN public.collector_aggregate_watermark.agg_type IS '聚合类型：second / minute / hour / day';
+COMMENT ON COLUMN public.collector_aggregate_watermark.backfill_from IS '最近一次执行区间起始时间（审计，含）；不表示待补跑范围';
+COMMENT ON COLUMN public.collector_aggregate_watermark.backfill_to IS '最近一次执行区间结束时间（审计，不含）；不表示待补跑范围';
+
+DO $$
+DECLARE
+    constraint_definition text;
+BEGIN
+    SELECT pg_get_constraintdef(c.oid) INTO constraint_definition
+    FROM pg_constraint c
+    WHERE c.conrelid = 'public.collector_retention_policy'::regclass
+      AND c.conname = 'chk_collector_retention_policy_class';
+
+    IF constraint_definition IS NOT NULL
+            AND (constraint_definition NOT LIKE '%aggregate_second%'
+                 OR constraint_definition NOT LIKE '%aggregate_minute%') THEN
+        ALTER TABLE public.collector_retention_policy
+            DROP CONSTRAINT chk_collector_retention_policy_class;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'public.collector_retention_policy'::regclass
+          AND conname = 'chk_collector_retention_policy_class'
+    ) THEN
+        ALTER TABLE public.collector_retention_policy
+            ADD CONSTRAINT chk_collector_retention_policy_class CHECK (
+                data_class IN ('sample_raw', 'aggregate_second', 'aggregate_minute',
+                    'aggregate_hour', 'aggregate_day', 'alarm', 'heartbeat', 'command')
+            );
+    END IF;
+END $$;
+
+COMMENT ON COLUMN public.collector_retention_policy.data_class
+    IS '数据类：sample_raw/aggregate_second/aggregate_minute/aggregate_hour/aggregate_day/alarm/heartbeat/command';
+
 
 COMMIT;

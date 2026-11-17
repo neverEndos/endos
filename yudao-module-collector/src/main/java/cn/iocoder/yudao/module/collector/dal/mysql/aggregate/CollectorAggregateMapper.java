@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.collector.dal.mysql.aggregate;
 
 import cn.iocoder.yudao.module.collector.dal.dataobject.aggregate.CollectorAggregateBucketDO;
+import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -23,9 +24,10 @@ public interface CollectorAggregateMapper {
                 <when test="fromRaw">
                     COUNT(*)::integer AS sample_count,
                     COUNT(*) FILTER (WHERE quality = 0)::integer AS good_count,
+                    COUNT(*) FILTER (WHERE quality = 0 AND value IS NOT NULL)::integer AS valid_count,
                     COUNT(*) FILTER (WHERE quality = 2)::integer AS bad_count,
                     SUM(value) FILTER (WHERE quality = 0 AND value IS NOT NULL)
-                        / NULLIF(COUNT(*) FILTER (WHERE quality = 0), 0) AS value_avg,
+                        / NULLIF(COUNT(*) FILTER (WHERE quality = 0 AND value IS NOT NULL), 0) AS value_avg,
                     MIN(value) FILTER (WHERE quality = 0 AND value IS NOT NULL) AS value_min,
                     MAX(value) FILTER (WHERE quality = 0 AND value IS NOT NULL) AS value_max,
                     SUM(value) FILTER (WHERE quality = 0 AND value IS NOT NULL) AS value_sum,
@@ -37,8 +39,10 @@ public interface CollectorAggregateMapper {
                 <otherwise>
                     SUM(sample_count)::integer AS sample_count,
                     SUM(good_count)::integer AS good_count,
+                    SUM(valid_count)::integer AS valid_count,
                     SUM(bad_count)::integer AS bad_count,
-                    SUM(value_sum) / NULLIF(SUM(good_count), 0) AS value_avg,
+                    COUNT(*)::integer AS source_bucket_count,
+                    SUM(value_sum) / NULLIF(SUM(valid_count), 0) AS value_avg,
                     MIN(value_min) AS value_min,
                     MAX(value_max) AS value_max,
                     SUM(value_sum) AS value_sum,
@@ -70,19 +74,21 @@ public interface CollectorAggregateMapper {
             INSERT INTO ${targetTable} (
                 channel_id, device_id,
                 <choose><when test="day">bucket_date</when><otherwise>bucket_time</otherwise></choose>,
-                sample_count, good_count, bad_count, value_avg, value_min, value_max,
+                sample_count, good_count, valid_count, bad_count, value_avg, value_min, value_max,
                 value_sum, value_first, value_last, update_time
             ) VALUES
             <foreach collection="buckets" item="item" separator=",">
                 (#{item.channelId}, #{item.deviceId}, #{item.bucketTime}, #{item.sampleCount},
-                 #{item.goodCount}, #{item.badCount}, #{item.valueAvg}, #{item.valueMin}, #{item.valueMax},
-                 #{item.valueSum}, #{item.valueFirst}, #{item.valueLast}, CURRENT_TIMESTAMP)
+                 #{item.goodCount}, #{item.validCount}, #{item.badCount}, #{item.valueAvg},
+                 #{item.valueMin}, #{item.valueMax}, #{item.valueSum}, #{item.valueFirst},
+                 #{item.valueLast}, CURRENT_TIMESTAMP)
             </foreach>
             ON CONFLICT (channel_id,
                 <choose><when test="day">bucket_date</when><otherwise>bucket_time</otherwise></choose>) DO UPDATE SET
                 device_id = EXCLUDED.device_id,
                 sample_count = EXCLUDED.sample_count,
                 good_count = EXCLUDED.good_count,
+                valid_count = EXCLUDED.valid_count,
                 bad_count = EXCLUDED.bad_count,
                 value_avg = EXCLUDED.value_avg,
                 value_min = EXCLUDED.value_min,
@@ -95,6 +101,21 @@ public interface CollectorAggregateMapper {
             """)
     int upsertBuckets(@Param("targetTable") String targetTable, @Param("day") boolean day,
                       @Param("buckets") List<CollectorAggregateBucketDO> buckets);
+
+    /** 显式回填前清空目标区间；定时任务不调用，避免删除仍保留的历史聚合。 */
+    @Delete("""
+            <script>
+            DELETE FROM ${targetTable}
+            WHERE channel_id = #{channelId}
+              AND <choose><when test="day">bucket_date</when><otherwise>bucket_time</otherwise></choose>
+                  &gt;= <choose><when test="day">CAST(#{from} AS date)</when><otherwise>#{from}</otherwise></choose>
+              AND <choose><when test="day">bucket_date</when><otherwise>bucket_time</otherwise></choose>
+                  &lt; <choose><when test="day">CAST(#{to} AS date)</when><otherwise>#{to}</otherwise></choose>
+            </script>
+            """)
+    int deleteBuckets(@Param("targetTable") String targetTable, @Param("day") boolean day,
+                      @Param("channelId") Long channelId,
+                      @Param("from") LocalDateTime from, @Param("to") LocalDateTime to);
 
     @Insert("""
             INSERT INTO collector_aggregate_watermark (

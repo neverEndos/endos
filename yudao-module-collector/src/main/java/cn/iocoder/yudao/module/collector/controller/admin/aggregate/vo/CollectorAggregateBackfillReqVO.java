@@ -36,4 +36,7 @@ public class CollectorAggregateBackfillReqVO {
     @Schema(description = "是否绕过下层聚合直接从 raw 重算，默认 false", example = "false")
     private Boolean fromRaw = false;
 
+    @Schema(description = "是否按 second→minute→hour→day 级联重建上层，默认 false", example = "false")
+    private Boolean cascade = false;
+
 }

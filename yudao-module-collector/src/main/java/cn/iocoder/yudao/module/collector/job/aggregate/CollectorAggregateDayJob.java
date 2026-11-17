@@ -8,7 +8,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
 
-/** 每 30 分钟从小时表上卷今天与昨天；服务层会排除尚未闭合的今天桶。 */
+/** 每 30 分钟请求昨天至今天范围；今天桶尚未闭合，实际只聚合昨天。 */
 @DisallowConcurrentExecution
 @Component("collectorAggregateDayJob")
 public class CollectorAggregateDayJob extends AbstractCollectorAggregateJob {

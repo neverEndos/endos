@@ -45,7 +45,8 @@ WHERE NOT EXISTS (
     SELECT 1 FROM public.collector_protocol WHERE protocol_code = 'hsi_rs485' AND deleted = 0
 );
 
--- ========== 本次菜单种子（目录 + 8 个页面 + 15 个按钮；聚合回填仅按钮权限，不新增页面） ==========
+-- ========== 本次菜单种子（目录 + 8 个页面 + 15 个按钮） ==========
+-- 803 聚合数据回填仅为 API 权限点，无页面入口；请通过 POST /admin-api/collector/aggregate/backfill 使用。
 CREATE TEMP TABLE collector_menu_seed (
     id bigint PRIMARY KEY,
     parent_id bigint NOT NULL,

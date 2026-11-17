@@ -16,7 +16,9 @@
  5. 本脚本支持重复执行：开头会删除并重建下述 22 张 collector 表与 13 个序列，
     执行将清空采集器已有数据，请在确认后执行。已有库的结构升级请按需使用
     collector_threshold_migration.sql（阈值模型）、collector_alarm_migration.sql
-    （报警引擎）与 collector_latest_migration.sql（最新值看板），不要直接重跑本脚本。
+    （报警引擎）、collector_latest_migration.sql（最新值看板）与
+    collector_aggregate_migration.sql（多级聚合），并按需执行
+    collector_aggregate_seed.sql（聚合定时任务），不要直接重跑本脚本。
  6. 数值有限性约束显式排除 NaN 与正负 Infinity（数值类型没有可用的内置有限性判断
     函数）；配置版本 snapshot 必须为 JSON 对象，checksum 必须为 64 位小写十六进制字符串。
 */
@@ -891,6 +893,7 @@ CREATE TABLE public.collector_aggregate_second (
     bucket_time timestamp(3) without time zone NOT NULL,
     sample_count integer DEFAULT 0 NOT NULL,
     good_count integer DEFAULT 0 NOT NULL,
+    valid_count integer DEFAULT 0 NOT NULL,
     bad_count integer DEFAULT 0 NOT NULL,
     value_avg double precision,
     value_min double precision,
@@ -901,7 +904,8 @@ CREATE TABLE public.collector_aggregate_second (
     update_time timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT pk_collector_aggregate_second PRIMARY KEY (channel_id, bucket_time),
     CONSTRAINT chk_collector_aggregate_second_count CHECK (
-        sample_count >= 0 AND good_count >= 0 AND bad_count >= 0
+        sample_count >= 0 AND good_count >= 0 AND valid_count >= 0
+        AND valid_count <= good_count AND bad_count >= 0
     ),
     CONSTRAINT chk_collector_aggregate_second_finite CHECK (
         (value_avg IS NULL OR (value_avg <> 'Infinity'::float8 AND value_avg <> '-Infinity'::float8 AND value_avg <> 'NaN'::float8))
@@ -924,8 +928,9 @@ COMMENT ON COLUMN public.collector_aggregate_second.device_id IS '设备编号�
 COMMENT ON COLUMN public.collector_aggregate_second.bucket_time IS '秒桶起始时间';
 COMMENT ON COLUMN public.collector_aggregate_second.sample_count IS '该桶全部 raw 行数（含 good/uncertain/bad）';
 COMMENT ON COLUMN public.collector_aggregate_second.good_count IS 'quality=0 的 raw 行数（含 value 为 NULL 的行）';
+COMMENT ON COLUMN public.collector_aggregate_second.valid_count IS 'quality=0 且 value 非 NULL 的 raw 行数；value_avg 的有效分母';
 COMMENT ON COLUMN public.collector_aggregate_second.bad_count IS 'quality=2 的 raw 行数';
-COMMENT ON COLUMN public.collector_aggregate_second.value_avg IS 'value_sum / good_count；无有效统计值时为 NULL';
+COMMENT ON COLUMN public.collector_aggregate_second.value_avg IS 'value_sum / valid_count；无有效统计值时为 NULL';
 COMMENT ON COLUMN public.collector_aggregate_second.value_min IS '有效统计值最小值';
 COMMENT ON COLUMN public.collector_aggregate_second.value_max IS '有效统计值最大值';
 COMMENT ON COLUMN public.collector_aggregate_second.value_sum IS '有效统计值求和';
@@ -944,6 +949,7 @@ CREATE TABLE public.collector_aggregate_minute (
     bucket_time timestamp(3) without time zone NOT NULL,
     sample_count integer DEFAULT 0 NOT NULL,
     good_count integer DEFAULT 0 NOT NULL,
+    valid_count integer DEFAULT 0 NOT NULL,
     bad_count integer DEFAULT 0 NOT NULL,
     value_avg double precision,
     value_min double precision,
@@ -954,7 +960,8 @@ CREATE TABLE public.collector_aggregate_minute (
     update_time timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT pk_collector_aggregate_minute PRIMARY KEY (channel_id, bucket_time),
     CONSTRAINT chk_collector_aggregate_minute_count CHECK (
-        sample_count >= 0 AND good_count >= 0 AND bad_count >= 0
+        sample_count >= 0 AND good_count >= 0 AND valid_count >= 0
+        AND valid_count <= good_count AND bad_count >= 0
     ),
     CONSTRAINT chk_collector_aggregate_minute_finite CHECK (
         (value_avg IS NULL OR (value_avg <> 'Infinity'::float8 AND value_avg <> '-Infinity'::float8 AND value_avg <> 'NaN'::float8))
@@ -977,8 +984,9 @@ COMMENT ON COLUMN public.collector_aggregate_minute.device_id IS '设备编号�
 COMMENT ON COLUMN public.collector_aggregate_minute.bucket_time IS '分钟桶起始时间';
 COMMENT ON COLUMN public.collector_aggregate_minute.sample_count IS '该桶全部 raw 行数（含 good/uncertain/bad）';
 COMMENT ON COLUMN public.collector_aggregate_minute.good_count IS 'quality=0 的 raw 行数（含 value 为 NULL 的行）';
+COMMENT ON COLUMN public.collector_aggregate_minute.valid_count IS 'quality=0 且 value 非 NULL 的 raw 行数；value_avg 的有效分母';
 COMMENT ON COLUMN public.collector_aggregate_minute.bad_count IS 'quality=2 的 raw 行数';
-COMMENT ON COLUMN public.collector_aggregate_minute.value_avg IS 'value_sum / good_count；无有效统计值时为 NULL';
+COMMENT ON COLUMN public.collector_aggregate_minute.value_avg IS 'value_sum / valid_count；无有效统计值时为 NULL';
 COMMENT ON COLUMN public.collector_aggregate_minute.value_min IS '有效统计值最小值';
 COMMENT ON COLUMN public.collector_aggregate_minute.value_max IS '有效统计值最大值';
 COMMENT ON COLUMN public.collector_aggregate_minute.value_sum IS '有效统计值求和';
@@ -997,6 +1005,7 @@ CREATE TABLE public.collector_aggregate_hour (
     bucket_time timestamp(3) without time zone NOT NULL,
     sample_count integer DEFAULT 0 NOT NULL,
     good_count integer DEFAULT 0 NOT NULL,
+    valid_count integer DEFAULT 0 NOT NULL,
     bad_count integer DEFAULT 0 NOT NULL,
     value_avg double precision,
     value_min double precision,
@@ -1007,7 +1016,8 @@ CREATE TABLE public.collector_aggregate_hour (
     update_time timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT pk_collector_aggregate_hour PRIMARY KEY (channel_id, bucket_time),
     CONSTRAINT chk_collector_aggregate_hour_count CHECK (
-        sample_count >= 0 AND good_count >= 0 AND bad_count >= 0
+        sample_count >= 0 AND good_count >= 0 AND valid_count >= 0
+        AND valid_count <= good_count AND bad_count >= 0
     ),
     CONSTRAINT chk_collector_aggregate_hour_finite CHECK (
         (value_avg IS NULL OR (
@@ -1055,8 +1065,9 @@ COMMENT ON COLUMN public.collector_aggregate_hour.device_id IS '设备编号（�
 COMMENT ON COLUMN public.collector_aggregate_hour.bucket_time IS '小时桶起始时间';
 COMMENT ON COLUMN public.collector_aggregate_hour.sample_count IS '该桶全部 raw 行数（含 good/uncertain/bad）';
 COMMENT ON COLUMN public.collector_aggregate_hour.good_count IS 'quality=0 的 raw 行数';
+COMMENT ON COLUMN public.collector_aggregate_hour.valid_count IS 'quality=0 且 value 非 NULL 的 raw 行数；value_avg 的有效分母';
 COMMENT ON COLUMN public.collector_aggregate_hour.bad_count IS 'quality=2 的 raw 行数；uncertain 数由 sample-good-bad 推导';
-COMMENT ON COLUMN public.collector_aggregate_hour.value_avg IS '平均值';
+COMMENT ON COLUMN public.collector_aggregate_hour.value_avg IS '加权平均值：SUM(value_sum) / SUM(valid_count)；无有效统计值时为 NULL';
 COMMENT ON COLUMN public.collector_aggregate_hour.value_min IS '最小值';
 COMMENT ON COLUMN public.collector_aggregate_hour.value_max IS '最大值';
 COMMENT ON COLUMN public.collector_aggregate_hour.value_sum IS '求和（用于天聚合与能耗类指标）';
@@ -1075,6 +1086,7 @@ CREATE TABLE public.collector_aggregate_day (
     bucket_date date NOT NULL,
     sample_count integer DEFAULT 0 NOT NULL,
     good_count integer DEFAULT 0 NOT NULL,
+    valid_count integer DEFAULT 0 NOT NULL,
     bad_count integer DEFAULT 0 NOT NULL,
     value_avg double precision,
     value_min double precision,
@@ -1085,7 +1097,8 @@ CREATE TABLE public.collector_aggregate_day (
     update_time timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT pk_collector_aggregate_day PRIMARY KEY (channel_id, bucket_date),
     CONSTRAINT chk_collector_aggregate_day_count CHECK (
-        sample_count >= 0 AND good_count >= 0 AND bad_count >= 0
+        sample_count >= 0 AND good_count >= 0 AND valid_count >= 0
+        AND valid_count <= good_count AND bad_count >= 0
     ),
     CONSTRAINT chk_collector_aggregate_day_finite CHECK (
         (value_avg IS NULL OR (
@@ -1133,8 +1146,9 @@ COMMENT ON COLUMN public.collector_aggregate_day.device_id IS '设备编号（�
 COMMENT ON COLUMN public.collector_aggregate_day.bucket_date IS '天桶日期';
 COMMENT ON COLUMN public.collector_aggregate_day.sample_count IS '该桶全部 raw 行数（含 good/uncertain/bad）';
 COMMENT ON COLUMN public.collector_aggregate_day.good_count IS 'quality=0 的 raw 行数';
+COMMENT ON COLUMN public.collector_aggregate_day.valid_count IS 'quality=0 且 value 非 NULL 的 raw 行数；value_avg 的有效分母';
 COMMENT ON COLUMN public.collector_aggregate_day.bad_count IS 'quality=2 的 raw 行数；uncertain 数由 sample-good-bad 推导';
-COMMENT ON COLUMN public.collector_aggregate_day.value_avg IS '加权平均值';
+COMMENT ON COLUMN public.collector_aggregate_day.value_avg IS '加权平均值：SUM(value_sum) / SUM(valid_count)；无有效统计值时为 NULL';
 COMMENT ON COLUMN public.collector_aggregate_day.value_min IS '最小值';
 COMMENT ON COLUMN public.collector_aggregate_day.value_max IS '最大值';
 COMMENT ON COLUMN public.collector_aggregate_day.value_sum IS '求和';
@@ -1177,8 +1191,8 @@ COMMENT ON COLUMN public.collector_aggregate_watermark.agg_type IS '聚合类型
 COMMENT ON COLUMN public.collector_aggregate_watermark.channel_id IS '通道编号';
 COMMENT ON COLUMN public.collector_aggregate_watermark.device_id IS '设备编号（冗余）';
 COMMENT ON COLUMN public.collector_aggregate_watermark.watermark_time IS '最新已成功提交桶的结束时间（exclusive）；NULL 表示从未成功';
-COMMENT ON COLUMN public.collector_aggregate_watermark.backfill_from IS '手工补跑起始时间（可空，含）';
-COMMENT ON COLUMN public.collector_aggregate_watermark.backfill_to IS '手工补跑结束时间（可空，不含）';
+COMMENT ON COLUMN public.collector_aggregate_watermark.backfill_from IS '最近一次执行区间起始时间（审计，含）；不表示待补跑范围';
+COMMENT ON COLUMN public.collector_aggregate_watermark.backfill_to IS '最近一次执行区间结束时间（审计，不含）；不表示待补跑范围';
 COMMENT ON COLUMN public.collector_aggregate_watermark.status IS '状态：0 空闲、1 运行中、2 失败';
 COMMENT ON COLUMN public.collector_aggregate_watermark.retry_count IS '连续失败次数';
 COMMENT ON COLUMN public.collector_aggregate_watermark.last_error IS '最近一次错误信息';
@@ -1457,7 +1471,7 @@ CREATE TABLE public.collector_retention_policy (
     deleted smallint DEFAULT 0 NOT NULL,
     CONSTRAINT pk_collector_retention_policy PRIMARY KEY (id),
     CONSTRAINT chk_collector_retention_policy_class CHECK (
-        data_class IN ('sample_raw', 'aggregate_hour', 'aggregate_day', 'alarm', 'heartbeat', 'command')
+        data_class IN ('sample_raw', 'aggregate_second', 'aggregate_minute', 'aggregate_hour', 'aggregate_day', 'alarm', 'heartbeat', 'command')
     ),
     CONSTRAINT chk_collector_retention_policy_days CHECK (retention_days >= 0),
     CONSTRAINT chk_collector_retention_policy_lead CHECK (partition_lead_days BETWEEN 0 AND 30),
@@ -1474,7 +1488,7 @@ CREATE UNIQUE INDEX uk_collector_retention_policy_class
 
 COMMENT ON TABLE public.collector_retention_policy IS '采集数据保留策略表';
 COMMENT ON COLUMN public.collector_retention_policy.id IS '主键编号';
-COMMENT ON COLUMN public.collector_retention_policy.data_class IS '数据类：sample_raw/aggregate_hour/aggregate_day/alarm/heartbeat/command';
+COMMENT ON COLUMN public.collector_retention_policy.data_class IS '数据类：sample_raw/aggregate_second/aggregate_minute/aggregate_hour/aggregate_day/alarm/heartbeat/command';
 COMMENT ON COLUMN public.collector_retention_policy.retention_days IS '保留天数；0 表示永久保留';
 COMMENT ON COLUMN public.collector_retention_policy.partition_lead_days IS '未来分区提前创建天数；由独立分区预建调度使用，不受 enabled 影响';
 COMMENT ON COLUMN public.collector_retention_policy.action IS '清理动作：sample_raw 只能 drop_partition，其他 data_class 只能 delete_rows';
@@ -1785,8 +1799,10 @@ $json$::jsonb,
 );
 
 -- 19.2 保留策略初始建议（对应设计稿容量结论）：
---   sample_raw     30 天，按天分区，过期分区整体 DROP；
---   aggregate_hour 365 天，按 bucket_time 分批 DELETE；
+--   sample_raw        30 天，按天分区，过期分区整体 DROP；
+--   aggregate_second   7 天，按 bucket_time 分批 DELETE；
+--   aggregate_minute  90 天，按 bucket_time 分批 DELETE；
+--   aggregate_hour   365 天，按 bucket_time 分批 DELETE；
 --   aggregate_day  0 表示永久保留，不做清理；
 --   alarm          仅清理已清除且超过 180 天的记录；
 --   heartbeat      7 天；command 30 天。
@@ -1801,6 +1817,22 @@ INSERT INTO public.collector_retention_policy (
     'drop_partition',
     1,
     '原始采样：按天分区，保留 30 天，过期分区整体 DROP'
+), (
+    nextval('public.collector_retention_policy_seq'),
+    'aggregate_second',
+    7,
+    3,
+    'delete_rows',
+    1,
+    '秒聚合：保留 7 天，按 bucket_time 分批删除'
+), (
+    nextval('public.collector_retention_policy_seq'),
+    'aggregate_minute',
+    90,
+    3,
+    'delete_rows',
+    1,
+    '分钟聚合：保留 90 天，按 bucket_time 分批删除'
 ), (
     nextval('public.collector_retention_policy_seq'),
     'aggregate_hour',

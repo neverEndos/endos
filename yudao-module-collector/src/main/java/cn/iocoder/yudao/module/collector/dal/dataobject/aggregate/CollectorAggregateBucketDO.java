@@ -15,7 +15,11 @@ public class CollectorAggregateBucketDO {
     private LocalDateTime bucketTime;
     private Integer sampleCount;
     private Integer goodCount;
+    /** quality=0 且 value 非 NULL 的行数；上卷时为下层 valid_count 之和。 */
+    private Integer validCount;
     private Integer badCount;
+    /** 上卷检测用：本目标桶实际参与的上层子桶行数；raw 聚合时为 NULL。 */
+    private Integer sourceBucketCount;
     private Double valueAvg;
     private Double valueMin;
     private Double valueMax;

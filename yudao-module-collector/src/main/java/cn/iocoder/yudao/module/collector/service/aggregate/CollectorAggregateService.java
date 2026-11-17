@@ -37,8 +37,23 @@ public interface CollectorAggregateService {
 
     AggregateResult aggregateDay(LocalDateTime from, LocalDateTime to, Collection<Long> channelIds, boolean fromRaw);
 
-    /** 手工回填：单次最多 7 天、50 个通道，同步执行。 */
+    /**
+     * 手工回填，同步执行；先清空目标区间再重建，源数据删除或修正后不会残留旧桶。
+     *
+     * <p>单次上限：second 1 天/10 通道，minute 7 天/50 通道，hour、day 90 天/50 通道。
+     * 大范围回填应优先使用 fromRaw=false 分层调用或分批，避免同步请求超时。</p>
+     *
+     * <p>可信顺序为 second → minute → hour → day；未重建下层时，上层会按覆盖度检测回退 raw，
+     * 但显式级联仍建议从 second 或 minute 起调用。</p>
+     */
     AggregateResult backfill(CollectorAggregateType aggType, LocalDateTime from, LocalDateTime to,
                              Collection<Long> channelIds, boolean fromRaw);
+
+    /**
+     * 手工回填并可选级联重建上层（second→minute→hour→day、minute→hour→day、hour→day）。
+     * 级联层同样先清桶再重建，上层默认从已重建的下层上卷，并继续执行覆盖度回退。
+     */
+    AggregateResult backfill(CollectorAggregateType aggType, LocalDateTime from, LocalDateTime to,
+                             Collection<Long> channelIds, boolean fromRaw, boolean cascade);
 
 }
