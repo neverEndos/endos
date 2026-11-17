@@ -6,6 +6,7 @@ import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 import java.util.List;
@@ -20,6 +21,7 @@ public class CollectorChannelThresholdBatchUpdateReqVO {
 
     @Schema(description = "待修改的数值通道", requiredMode = Schema.RequiredMode.REQUIRED)
     @NotEmpty(message = "待修改通道不能为空")
+    @Size(max = 500, message = "单次最多修改 500 个通道")
     private List<@Valid Channel> channels;
 
     @Schema(description = "管理后台 - 通道阈值批量修改项")

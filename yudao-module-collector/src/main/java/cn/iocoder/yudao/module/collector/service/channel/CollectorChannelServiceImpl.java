@@ -128,6 +128,12 @@ public class CollectorChannelServiceImpl implements CollectorChannelService {
     @Override
     public void updateChannelThreshold(CollectorChannelThresholdUpdateReqVO updateReqVO) {
         CollectorChannelDO channel = validateChannelExists(updateReqVO.getId());
+        validateAndUpdateThreshold(channel, updateReqVO);
+    }
+
+    /** 单通道与批量入口共用校验和写入逻辑；批量复用已加载通道，避免逐条重查。 */
+    private void validateAndUpdateThreshold(CollectorChannelDO channel,
+                                            CollectorChannelThresholdUpdateReqVO updateReqVO) {
         boolean enumChannel = VALUE_KIND_ENUM.equals(channel.getValueKind());
 
         validateFiniteRange(updateReqVO.getValueMin(), updateReqVO.getValueMax());
@@ -196,14 +202,14 @@ public class CollectorChannelServiceImpl implements CollectorChannelService {
                 throw exception(CHANNEL_ENUM_THRESHOLD_FORBIDDEN, item.getChannelId());
             }
 
-            // 复用单通道更新的阈值、开关与死区校验；量程和报警死区不在矩阵中修改，保持原值。
+            // 批量复用已加载通道，避免逐条重查；量程和报警死区不在矩阵中修改，保持原值。
             CollectorChannelThresholdUpdateReqVO updateReqVO = BeanUtils.toBean(item,
                     CollectorChannelThresholdUpdateReqVO.class);
             updateReqVO.setId(item.getChannelId());
             updateReqVO.setValueMin(channel.getValueMin());
             updateReqVO.setValueMax(channel.getValueMax());
             updateReqVO.setAlarmDeadband(channel.getAlarmDeadband());
-            updateChannelThreshold(updateReqVO);
+            validateAndUpdateThreshold(channel, updateReqVO);
         }
         return batchReqVO.getChannels().size();
     }
