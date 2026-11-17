@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 LOGGER_NAME = "hsi"
+HARDWARE_RETRY_INITIAL_S = 2.0
+HARDWARE_RETRY_MAX_S = 60.0
 
 
 def resolve_interval_s(
@@ -130,7 +132,11 @@ class ConfigReloader:
         self.logger = logger or logging.getLogger(LOGGER_NAME)
         self._clock = clock
         self._last_check = clock()
-        self._retry_pending = False
+        # 硬件重试与 DB 重连是两套独立节流：这里只调度 flags/driver 应用失败。
+        self._hardware_retry_failures = 0
+        self._hardware_retry_at: float | None = None
+        self._structure_error: str | None = None
+        self._last_hardware_log_signature: tuple[str, float] | None = None
 
     def _effective_check_interval_s(self) -> float:
         if self._check_interval_s is not None:
@@ -140,8 +146,8 @@ class ConfigReloader:
     def before_cycle(self, *, force: bool = False) -> str:
         """在下一轮采集前同步配置，返回本次应用的变化类型。
 
-        正常热加载采用“DB 准备 → 硬件应用 → DB 提交”两阶段流程。硬件应用失败
-        时恢复旧上下文/旧指纹，并在下一轮忽略检查间隔立即重试同一变化。
+        硬件应用失败后的第一轮立即重试；连续失败进入 2 秒起步、60 秒封顶的
+        指数退避。DB 错误只交给 DatabaseManager 的重连节流，不触发硬件重试。
         """
 
         if self.db_manager is None:
@@ -155,6 +161,7 @@ class ConfigReloader:
         now = self._clock()
         if not ready:
             self._last_check = now
+            self._cancel_hardware_retry_schedule()
             return "unavailable"
         if not was_ready:
             self._last_check = now
@@ -162,17 +169,18 @@ class ConfigReloader:
                 "structure", self.db_manager.context, recovered=True
             )
             if result == "error":
-                self._retry_pending = True
                 self._restore_snapshot(snapshot)
+                self._schedule_hardware_retry(now)
             else:
-                self._retry_pending = False
+                self._reset_hardware_retry()
             return result
-        if (
-            not force
-            and not self._retry_pending
-            and now - self._last_check < self._effective_check_interval_s()
-        ):
-            return "none"
+
+        if not force:
+            if self._hardware_retry_at is not None:
+                if now < self._hardware_retry_at:
+                    return "cooldown"
+            elif now - self._last_check < self._effective_check_interval_s():
+                return "none"
         self._last_check = now
 
         prepare = getattr(self.db_manager, "prepare_config_change", None)
@@ -181,25 +189,85 @@ class ConfigReloader:
             kind = self.db_manager.reload_if_changed()
             if kind in ("parameters", "structure"):
                 result = self._adopt(kind, self.db_manager.context)
-                self._retry_pending = result == "error"
+                if result == "error":
+                    self._schedule_hardware_retry(now)
+                else:
+                    self._reset_hardware_retry()
                 return result
-            self._retry_pending = False
+            if kind in ("error", "unavailable"):
+                self._cancel_hardware_retry_schedule()
+            else:
+                self._reset_hardware_retry()
             return kind
 
         kind = prepare()
         if kind not in ("parameters", "structure"):
-            if kind in ("none", "unsupported"):
-                self._retry_pending = False
+            if kind in ("error", "unavailable"):
+                # DB 故障不得把硬件重试标记变成绕过 db-retry-interval 的触发器。
+                self._cancel_hardware_retry_schedule()
+            else:
+                self._reset_hardware_retry()
             return kind
         result = self._adopt(kind, self.db_manager.pending_context)
         if result == "error":
             self.db_manager.rollback_config_change()
-            self._retry_pending = True
+            self._schedule_hardware_retry(now)
             return result
         # 只有 flags/新增传感器探测等外部应用全部成功后才推进 DB 指纹。
         self.db_manager.commit_config_change()
-        self._retry_pending = False
+        self._reset_hardware_retry()
         return result
+
+    def _cancel_hardware_retry_schedule(self) -> None:
+        """取消硬件执行时间，但保留连续失败计数供恢复后的退避使用。"""
+
+        self._hardware_retry_at = None
+
+    def _reset_hardware_retry(self) -> None:
+        self._hardware_retry_failures = 0
+        self._hardware_retry_at = None
+        self._structure_error = None
+        self._last_hardware_log_signature = None
+
+    def _schedule_hardware_retry(self, now: float) -> None:
+        """首次允许下一轮立即重试，后续按错误与退避档位去重记录日志。"""
+
+        previous_failures = self._hardware_retry_failures
+        self._hardware_retry_failures += 1
+        error = self._structure_error or "未知结构应用错误"
+        if previous_failures == 0:
+            delay = 0.0
+            self._hardware_retry_at = now
+        else:
+            # 限制指数移位次数；2 秒起，最多 60 秒，并至少等待一个轮询间隔。
+            exponential = HARDWARE_RETRY_INITIAL_S * (
+                2 ** min(previous_failures - 1, 8)
+            )
+            delay = max(
+                self.settings.interval_s,
+                min(HARDWARE_RETRY_MAX_S, exponential),
+            )
+            self._hardware_retry_at = now + delay
+        signature = (error, delay)
+        if signature == self._last_hardware_log_signature:
+            return
+        self._last_hardware_log_signature = signature
+        if delay == 0:
+            self.logger.error(
+                "结构配置应用失败，保留旧上下文、旧 driver 与旧配置指纹；"
+                "下一轮立即重试（连续失败 %d 次）: %s",
+                self._hardware_retry_failures,
+                error,
+            )
+        else:
+            self.logger.error(
+                "结构配置应用失败，保留旧配置继续采集；%.1f 秒后重试"
+                "（连续失败 %d 次，退避上限 %.0f 秒）: %s",
+                delay,
+                self._hardware_retry_failures,
+                HARDWARE_RETRY_MAX_S,
+                error,
+            )
 
     def _restore_snapshot(self, snapshot: Any) -> None:
         if snapshot is None:
@@ -218,6 +286,7 @@ class ConfigReloader:
         )
         new_drivers = old_drivers
         if kind == "structure":
+            self._structure_error = None
             try:
                 candidate_drivers = self._driver_factory(context)
                 if self._on_structure_change is not None:
@@ -228,12 +297,7 @@ class ConfigReloader:
                         candidate_drivers = list(applied_drivers)
                 new_drivers = candidate_drivers
             except Exception as exc:
-                self.logger.error(
-                    "结构配置应用失败，保留旧上下文、旧 driver 与旧配置指纹，"
-                    "下一轮继续重试: %s: %s",
-                    type(exc).__name__,
-                    exc,
-                )
+                self._structure_error = f"{type(exc).__name__}: {exc}"
                 return "error"
 
         # 外部应用全部成功后才提交协调器状态；此前任何异常都保持旧对象不变。

@@ -1135,14 +1135,13 @@ class DatabaseManager:
             # load_context 在设备缺失时可能清空 storage.context，必须恢复旧值，
             # 确保后续写入与 JSONL 仍使用最后一次有效配置。
             self.storage.context = previous_context
-            error = f"{type(exc).__name__}: {exc}"
-            if error != self._last_config_error:
-                self.logger.warning(
-                    "配置热加载读取失败，保留上一次有效配置继续采集，"
-                    "DB 恢复后自动重试: %s",
-                    error,
-                )
-            self._last_config_error = error
+            self._last_config_error = f"{type(exc).__name__}: {exc}"
+            # PgStorage 读失败会关闭连接；必须同时让 manager 进入未就绪状态，
+            # 否则下一次硬件重试会在 PgStorage._ensure_conn 中绕过 DB 重连节流。
+            self._mark_unavailable(
+                exc,
+                reason="配置热加载读取失败，保留上一次有效配置继续采集",
+            )
             return "error"
 
         self._pending_config = _PendingConfigChange(
