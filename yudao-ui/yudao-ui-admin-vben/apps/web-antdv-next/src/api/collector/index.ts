@@ -240,6 +240,52 @@ export namespace CollectorApi {
     sensors: ThresholdMatrixSensor[];
   }
 
+  /** 最新值看板设备状态 */
+  export interface DashboardDevice {
+    id: number;
+    name: string;
+    online: boolean;
+    /** 后端序列化为 epoch millis */
+    lastPollAt?: null | number;
+    /** 采集器进程级数据库写入延迟，不是设备级指标 */
+    lastWriteLagMs?: null | number;
+    consecutiveFailures: number;
+    pollIntervalMs: number;
+    staleOffline: boolean;
+  }
+
+  /** 最新值看板通道 */
+  export interface DashboardChannel {
+    id: number;
+    name: string;
+    unit?: null | string;
+    valueKind: string;
+    valueNum?: null | number;
+    valueText?: null | string;
+    /** 存储质量：0 正常、1 不确定、2 坏质量；无数据为空 */
+    quality?: null | number;
+    /** 采样超过三倍设备轮询周期时由接口派生 */
+    stale: boolean;
+    /** 后端序列化为 epoch millis */
+    sampleTime?: null | number;
+  }
+
+  /** 最新值看板传感器分组 */
+  export interface DashboardSensor {
+    id: number;
+    name: string;
+    model?: null | string;
+    channels: DashboardChannel[];
+  }
+
+  /** 最新值看板聚合结果；每次请求返回完整数据，不使用 304 */
+  export interface DashboardLatest {
+    device: DashboardDevice;
+    sensors: DashboardSensor[];
+    /** 后端序列化为 epoch millis */
+    serverTime: number;
+  }
+
   /** 通道阈值批量更新项 */
   export interface ChannelThresholdBatchItem {
     channelId: number;
@@ -659,5 +705,15 @@ export function getAlarmStateList(params?: { deviceId?: number }) {
   return requestClient.get<CollectorApi.AlarmState[]>(
     '/collector/alarm/state/list',
     { params },
+  );
+}
+
+// ==================== 最新值看板 ====================
+
+/** 查询设备最新值；每次返回完整看板，在线/陈旧状态由后端按当前时间重新派生 */
+export function getDashboardLatest(deviceId: number) {
+  return requestClient.get<CollectorApi.DashboardLatest>(
+    '/collector/dashboard/latest',
+    { params: { deviceId } },
   );
 }

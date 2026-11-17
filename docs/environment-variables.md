@@ -98,7 +98,7 @@ Redis 密码需要特别说明：无密码环境下，`application-<profile>.yam
 因此临时覆盖某个值无需改动文件，例如：
 
 ```bash
-YUDAO_DB_HOST=127.0.0.1 SPRING_PROFILES_ACTIVE=remote java -jar yudao-server/target/yudao-server.jar
+YUDAO_DB_HOST=127.0.0.1 SPRING_PROFILES_ACTIVE=remote java -Duser.timezone=Asia/Shanghai -jar yudao-server/target/yudao-server.jar
 ```
 
 ## 5. 启动方式
@@ -110,14 +110,14 @@ YUDAO_DB_HOST=127.0.0.1 SPRING_PROFILES_ACTIVE=remote java -jar yudao-server/tar
 mvn -B package -pl yudao-server -am -Dmaven.test.skip=true
 
 # 以 remote profile 启动（加载 .env.remote）
-SPRING_PROFILES_ACTIVE=remote java -jar yudao-server/target/yudao-server.jar
+SPRING_PROFILES_ACTIVE=remote java -Duser.timezone=Asia/Shanghai -jar yudao-server/target/yudao-server.jar
 ```
 
 PowerShell：
 
 ```powershell
 $env:SPRING_PROFILES_ACTIVE = "remote"
-java -jar yudao-server/target/yudao-server.jar
+java -Duser.timezone=Asia/Shanghai -jar yudao-server/target/yudao-server.jar
 ```
 
 默认端口为 `48080`。启动成功的标志是日志中出现 `Started YudaoServerApplication`。

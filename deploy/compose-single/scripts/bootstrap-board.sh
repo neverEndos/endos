@@ -93,7 +93,8 @@ if [ "$(readlink -f "$COMPOSE_DIR")" != "$(readlink -f "$TARGET")" ]; then
   fi
 fi
 
-for sql in ruoyi-vue-pro.sql quartz.sql collector.sql collector_web_seed.sql; do
+for sql in ruoyi-vue-pro.sql quartz.sql collector.sql collector_web_seed.sql \
+    collector_latest_migration.sql; do
   [ -f "$SQL_SOURCE/$sql" ] || die "缺少初始化 SQL：$SQL_SOURCE/$sql"
   if [ "$SQL_SOURCE" = "$SQL_TARGET" ]; then
     info "初始化 SQL 已就位：$SQL_TARGET/$sql"

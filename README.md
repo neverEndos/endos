@@ -139,7 +139,7 @@ mvn -B package -Dmaven.test.skip=true
 mvn clean package -pl yudao-server -am -Dmaven.test.skip=true
 
 # 启动
-java -jar yudao-server/target/yudao-server.jar
+java -Duser.timezone=Asia/Shanghai -jar yudao-server/target/yudao-server.jar
 ```
 
 - 打包产物：`yudao-server/target/yudao-server.jar`。

@@ -1,21 +1,22 @@
 /*
  采集器采集数据表初始化脚本（PostgreSQL 17）
 
- 适用范围：collector 19 张表（协议注册表、设备、传感器类型、参数模板、传感器、
- 通道、分时段轮询、配置版本、原始采样、小时/天聚合、聚合水位、报警、报警状态、
- 报警游标、设备状态、心跳、命令、保留策略）。
+ 适用范围：collector 20 张表（协议注册表、设备、传感器类型、参数模板、传感器、
+ 通道、分时段轮询、配置版本、原始采样、通道最新值、小时/天聚合、聚合水位、报警、
+ 报警状态、报警游标、设备状态、心跳、命令、保留策略）。
 
  说明：
- 1. 所有表位于 public schema；不建外键，表之间只做逻辑关联，引用完整性由 Service 校验。
+ 1. 所有表位于 public schema；除 collector_channel_latest 对通道表的外键级联外，
+    其余表之间不建外键，只做逻辑关联，引用完整性由 Service 校验。
  2. 配置表使用 bigint 主键 + 独立序列，并保留 BaseDO 字段（creator/create_time/
     updater/update_time/deleted）；时间序列与运行状态表使用业务主键，不保留 BaseDO。
  3. collector_sample_raw 按天 RANGE 分区，本脚本创建示例日分区与 DEFAULT 分区；
     后续分区由维护任务按 collector_retention_policy.partition_lead_days 提前创建。
  4. 业务时间统一使用 timestamp(3) without time zone，语义为 Asia/Shanghai 本地墙钟时间。
- 5. 本脚本支持重复执行：开头会删除并重建下述 19 张 collector 表与 13 个序列，
+ 5. 本脚本支持重复执行：开头会删除并重建下述 20 张 collector 表与 13 个序列，
     执行将清空采集器已有数据，请在确认后执行。已有库的结构升级请按需使用
-    collector_threshold_migration.sql（阈值模型）与 collector_alarm_migration.sql
-    （报警引擎），不要直接重跑本脚本。
+    collector_threshold_migration.sql（阈值模型）、collector_alarm_migration.sql
+    （报警引擎）与 collector_latest_migration.sql（最新值看板），不要直接重跑本脚本。
  6. 数值有限性约束显式排除 NaN 与正负 Infinity（数值类型没有可用的内置有限性判断
     函数）；配置版本 snapshot 必须为 JSON 对象，checksum 必须为 64 位小写十六进制字符串。
 */
@@ -35,6 +36,8 @@ DROP TABLE IF EXISTS public.collector_device;
 DROP TABLE IF EXISTS public.collector_sensor_template;
 DROP TABLE IF EXISTS public.collector_sensor_type;
 DROP TABLE IF EXISTS public.collector_sensor;
+-- 最新值表引用 collector_channel，必须在通道表之前删除。
+DROP TABLE IF EXISTS public.collector_channel_latest;
 DROP TABLE IF EXISTS public.collector_channel;
 DROP TABLE IF EXISTS public.collector_poll_schedule;
 DROP TABLE IF EXISTS public.collector_config_version;
@@ -1807,3 +1810,35 @@ COMMENT ON COLUMN public.collector_alarm_cursor.id IS '固定为 1，限制单�
 COMMENT ON COLUMN public.collector_alarm_cursor.last_sample_time IS '已处理采样的 collect_time（含）';
 COMMENT ON COLUMN public.collector_alarm_cursor.last_sample_id IS '同一 collect_time 下已处理的最大 sample_id（含）';
 COMMENT ON COLUMN public.collector_alarm_cursor.updated_time IS '游标更新时间';
+
+-- =============================================================================
+-- 21. 采集通道最新值（看板）
+-- =============================================================================
+
+CREATE TABLE public.collector_channel_latest (
+    channel_id bigint NOT NULL,
+    device_id bigint NOT NULL,
+    sensor_id bigint NOT NULL,
+    value_num numeric,
+    value_text character varying(64),
+    quality smallint DEFAULT 0 NOT NULL,
+    sample_time timestamp(3) without time zone NOT NULL,
+    updated_time timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT pk_collector_channel_latest PRIMARY KEY (channel_id),
+    CONSTRAINT fk_collector_channel_latest_channel
+        FOREIGN KEY (channel_id) REFERENCES public.collector_channel(id) ON DELETE CASCADE,
+    CONSTRAINT chk_collector_channel_latest_quality CHECK (quality IN (0, 1, 2))
+);
+
+CREATE INDEX idx_collector_channel_latest_device
+    ON public.collector_channel_latest USING btree (device_id);
+
+COMMENT ON TABLE public.collector_channel_latest IS '采集通道最新值表；每通道一行，由采集器与原始采样同事务 upsert';
+COMMENT ON COLUMN public.collector_channel_latest.channel_id IS '通道编号（主键，级联跟随通道删除）';
+COMMENT ON COLUMN public.collector_channel_latest.device_id IS '所属设备编号（冗余，用于看板查询）';
+COMMENT ON COLUMN public.collector_channel_latest.sensor_id IS '所属传感器编号（冗余，用于看板分组）';
+COMMENT ON COLUMN public.collector_channel_latest.value_num IS '数值通道最新工程值';
+COMMENT ON COLUMN public.collector_channel_latest.value_text IS '枚举通道最新值';
+COMMENT ON COLUMN public.collector_channel_latest.quality IS '数据质量：0 正常、1 不确定、2 坏质量；陈旧由后端按采样时间派生，不写回质量码';
+COMMENT ON COLUMN public.collector_channel_latest.sample_time IS '最近一次有效采样时间（Asia/Shanghai 墙钟）';
+COMMENT ON COLUMN public.collector_channel_latest.updated_time IS '最近一次落库时间';
