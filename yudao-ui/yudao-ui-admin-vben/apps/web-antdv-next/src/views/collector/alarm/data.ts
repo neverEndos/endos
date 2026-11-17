@@ -12,6 +12,7 @@ export const ALARM_EVENT_TYPE_OPTIONS = [
   { label: '产生', value: 'raised' },
   { label: '升级', value: 'upgraded' },
   { label: '降级', value: 'downgraded' },
+  { label: '切换', value: 'changed' },
   { label: '恢复', value: 'cleared' },
 ];
 
@@ -39,9 +40,31 @@ export function getAlarmEventTypeConfig(type?: string) {
     raised: { color: 'error', text: '产生' },
     upgraded: { color: 'error', text: '升级' },
     downgraded: { color: 'warning', text: '降级' },
+    changed: { color: 'warning', text: '切换' },
     cleared: { color: 'success', text: '恢复' },
   };
   return configs[type || ''] || { color: 'default', text: type || '-' };
+}
+
+export function getAlarmStatusConfig(status?: number, eventType?: string) {
+  const configs: Record<number, { color: string; text: string }> = {
+    0: { color: 'error', text: '活动' },
+    1: { color: 'warning', text: '已确认' },
+    2:
+      eventType === 'cleared'
+        ? { color: 'success', text: '已恢复' }
+        : { color: 'default', text: '已结束（被接替）' },
+  };
+  return configs[status ?? -1] || { color: 'default', text: '-' };
+}
+
+/** 名称缺失时给出可读的已删除提示，避免只显示空白单元格。 */
+export function formatAlarmEntityName(
+  name: string | undefined,
+  label: string,
+  id?: number,
+) {
+  return name || `${label}已删除（ID ${id ?? '-'}）`;
 }
 
 /** 列表的搜索表单 */
@@ -122,9 +145,24 @@ export function useGridColumns(): VxeTableGridOptions['columns'] {
       fixed: 'left',
       formatter: 'formatDateTime',
     },
-    { field: 'deviceName', title: '设备', minWidth: 140 },
-    { field: 'sensorName', title: '传感器', minWidth: 140 },
-    { field: 'channelName', title: '通道', minWidth: 140 },
+    {
+      field: 'deviceName',
+      title: '设备',
+      minWidth: 140,
+      slots: { default: 'deviceName' },
+    },
+    {
+      field: 'sensorName',
+      title: '传感器',
+      minWidth: 140,
+      slots: { default: 'sensorName' },
+    },
+    {
+      field: 'channelName',
+      title: '通道',
+      minWidth: 140,
+      slots: { default: 'channelName' },
+    },
     {
       field: 'alarmType',
       title: '阈值类型',
@@ -136,6 +174,12 @@ export function useGridColumns(): VxeTableGridOptions['columns'] {
       title: '级别',
       width: 90,
       slots: { default: 'level' },
+    },
+    {
+      field: 'status',
+      title: '状态',
+      width: 90,
+      slots: { default: 'status' },
     },
     { field: 'triggerValue', title: '触发值', width: 110 },
     { field: 'thresholdValue', title: '阈值', width: 110 },
@@ -149,7 +193,7 @@ export function useGridColumns(): VxeTableGridOptions['columns'] {
       field: 'clearedAt',
       title: '恢复时间',
       width: 170,
-      formatter: 'formatDateTime',
+      slots: { default: 'recoveryTime' },
     },
     { field: 'message', title: '报警内容', minWidth: 200 },
   ];

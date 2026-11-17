@@ -349,7 +349,6 @@ export namespace CollectorApi {
 
   /** 通道当前报警状态 */
   export interface AlarmState {
-    id: number;
     deviceId: number;
     deviceName?: string;
     sensorId: number;
