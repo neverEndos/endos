@@ -130,8 +130,22 @@ ssh cat@192.168.0.101 \
 1. `ruoyi-vue-pro.sql`（system/infra 基线）；
 2. `quartz.sql`；
 3. `collector.sql`；
-4. `collector_web_seed.sql`；
-5. `init/05-file-config.sh`（MinIO master 文件配置）。
+4. `collector_web_seed.sql`（采集器菜单）；
+5. `collector_alarm_seed.sql`（报警判定定时任务记录；bootstrap 当前只同步前四项，
+   需先把本文件复制到板端 `/opt/yudao/sql/postgresql/` 并手工执行）；
+6. `init/05-file-config.sh`（MinIO master 文件配置）。
+
+后端启动后还需同步一次定时任务，报警判定作业才会进入 Quartz。推荐使用管理后台
+“定时任务 → 同步”；该操作要求管理员账号具有 `infra:job:create` 权限。若使用命令行，
+`POST /admin-api/infra/job/sync` 必须携带管理员访问令牌：
+
+```bash
+curl -X POST -H 'tenant-id: 1' -H 'Authorization: Bearer <管理员Token>' \
+  http://192.168.0.101/admin-api/infra/job/sync
+```
+
+确认 `采集报警判定` 任务存在、状态为开启，并在“调度日志”中看到至少一次执行记录；
+未同步时 `infra_job` 只有记录，Quartz 不会调度。
 
 **不要在已有数据的库上手工重跑基线 SQL**，其中包含 DROP/重建语句。清空数据目录或
 `down` 后重新 `up` 不等于安全升级；数据库结构升级必须另行备份与评估。
@@ -152,6 +166,40 @@ sudo docker compose run --rm --no-deps minio-init
 ```
 
 MinIO bucket 由 `minio-init` 自动创建。最后一条命令可幂等重跑 bucket 初始化。
+
+### 4.4 既有库升级：报警引擎
+
+已有数据目录不要重跑 `collector.sql`，按顺序执行报警引擎增量：
+
+1. **维护窗口**：`collector_alarm_migration.sql` 包含 `collector_sample_raw` 全表回填，
+   且事务内创建索引会阻塞写入；执行期间暂停采集写入，避免超时。
+2. **结构迁移**：`collector_alarm_migration.sql`（幂等，可重复执行）。
+3. **两个种子**：`collector_web_seed.sql`（报警菜单）与 `collector_alarm_seed.sql`
+   （定时任务记录），均幂等。
+4. **同步 Quartz**：在管理后台“定时任务 → 同步”（需要 `infra:job:create`），或携带
+   管理员 Token 调用一次 `POST /admin-api/infra/job/sync`。种子只写 `infra_job`，
+   不同步则作业不会执行。
+5. **验收检查**：确认“采集报警判定”任务存在且开启；在“调度日志”中看到至少一次
+   执行记录；打开报警记录页确认能查询。部署验收清单应包含“查看一次作业执行日志”。
+
+`bootstrap-board.sh` 当前只同步基线四个 SQL；升级前请先把新增的
+`collector_alarm_migration.sql`、`collector_web_seed.sql`、`collector_alarm_seed.sql`
+复制到板端 `/opt/yudao/sql/postgresql/`，然后执行：
+
+```bash
+cd /opt/yudao/compose-single
+sudo docker compose exec -T postgres psql -U yudao -d ruoyi-vue-pro \
+  < /opt/yudao/sql/postgresql/collector_alarm_migration.sql
+sudo docker compose exec -T postgres psql -U yudao -d ruoyi-vue-pro \
+  < /opt/yudao/sql/postgresql/collector_web_seed.sql
+sudo docker compose exec -T postgres psql -U yudao -d ruoyi-vue-pro \
+  < /opt/yudao/sql/postgresql/collector_alarm_seed.sql
+curl -X POST -H 'tenant-id: 1' -H 'Authorization: Bearer <管理员Token>' \
+  http://192.168.0.101/admin-api/infra/job/sync
+```
+
+报警事件时间统一使用服务器本地墙钟时间（`Asia/Shanghai`），报警页面的时间范围查询
+按同一墙钟语义解释；跨时区客户端请自行换算。
 
 ## 5. 日常更新
 

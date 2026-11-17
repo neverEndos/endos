@@ -314,6 +314,56 @@ export namespace CollectorApi {
     channels: GenerateChannelPreview[];
   }
 
+  /** 报警记录查询参数 */
+  export interface AlarmPageParams {
+    deviceId?: number;
+    sensorId?: number;
+    channelId?: number;
+    level?: number;
+    eventType?: string;
+    triggeredAt?: string[];
+  }
+
+  /** 报警事件记录 */
+  export interface Alarm {
+    id: number;
+    deviceId: number;
+    deviceName?: string;
+    sensorId: number;
+    sensorName?: string;
+    channelId: number;
+    channelName?: string;
+    alarmType: string;
+    eventType: string;
+    level: number;
+    status: number;
+    message?: string;
+    triggerValue?: number;
+    thresholdValue?: number;
+    triggeredAt: Date;
+    lastSeenAt?: Date;
+    occurrenceCount?: number;
+    clearedAt?: Date;
+    clearReason?: string;
+  }
+
+  /** 通道当前报警状态 */
+  export interface AlarmState {
+    deviceId: number;
+    deviceName?: string;
+    sensorId: number;
+    sensorName?: string;
+    channelId: number;
+    channelName?: string;
+    level: number;
+    thresholdType?: string;
+    since?: Date;
+    lastValue?: number;
+    lastThreshold?: number;
+    lastSampleTime?: Date;
+    updatedTime?: Date;
+  }
+
   /** 传感器保存参数 */
   export interface SensorSave {
     id?: number;
@@ -592,4 +642,22 @@ export function previewThreshold(params: CollectorApi.ThresholdPreviewParams) {
 /** 删除通道 */
 export function deleteChannel(id: number) {
   return requestClient.delete(`/collector/channel/delete?id=${id}`);
+}
+
+// ==================== 采集报警 ====================
+
+/** 查询报警记录分页 */
+export function getAlarmPage(params: CollectorApi.AlarmPageParams & PageParam) {
+  return requestClient.get<PageResult<CollectorApi.Alarm>>(
+    '/collector/alarm/page',
+    { params },
+  );
+}
+
+/** 查询通道当前报警状态 */
+export function getAlarmStateList(params?: { deviceId?: number }) {
+  return requestClient.get<CollectorApi.AlarmState[]>(
+    '/collector/alarm/state/list',
+    { params },
+  );
 }
