@@ -18,7 +18,7 @@ bootstrap-board.sh —— 单机 Compose 新板初始化
   --run                 执行初始化；只初始化，不会隐式启动应用
   --start               与 --run 同用时执行 compose config 和 compose up -d
   --skip-packages       跳过 apt 软件包检查/安装
-  --env-file <路径>     安装为 /opt/yudao/compose-single/.env（0600）
+  --env-file <路径>     安装为 /opt/yudao/compose-single/.env（0600，替换已有文件）
   --with-collector      安装 collector.service 与 /etc/yudao/env.remote，不启动 collector
   --service-user <用户> collector 运行用户，默认 sudo 前的用户
   --dry-run             只打印动作
@@ -27,7 +27,7 @@ bootstrap-board.sh —— 单机 Compose 新板初始化
 幂等动作：
   - 缺少时安装 docker.io、docker-compose-v2、python3-psycopg2；
   - 创建 /opt/yudao/{compose-single,releases,data,logs,backups,collector}；
-  - 安装 Compose 配置和 PostgreSQL 初始化 SQL，保留已有 .env；
+  - 安装 Compose 配置和 PostgreSQL 初始化 SQL，未显式 --env-file 时保留已有 .env；
   - PostgreSQL 绑定目录属主设为 70:70（postgres:17-alpine）；
   - 只有显式 --start 才启动应用，启动前需先用 apply-*.sh --stage-only 安装产物。
 EOF
@@ -140,7 +140,8 @@ if [ "$WITH_COLLECTOR" -eq 1 ]; then
     chown -R "$SERVICE_USER:$SERVICE_USER" "$BASE/collector" "$BASE/logs"
     systemctl daemon-reload
   fi
-  info "collector.service 已安装但未启动；发布代码后再启动"
+  run systemctl enable collector
+  info "collector.service 已安装并设为开机启用，但未启动；发布代码后再启动"
 fi
 
 COMPOSE_DIR="$TARGET"

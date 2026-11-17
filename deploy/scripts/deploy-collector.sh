@@ -270,7 +270,9 @@ else
   fi
 fi
 
-# ---------- 5. 清理旧版本 ----------
+# ---------- 5. 确保开机启用并清理旧版本 ----------
+info "确保 collector 开机启用（不额外启动进程）"
+run_sudo systemctl enable "$UNIT_NAME"
 prune_releases "$COLLECTOR_DIR/releases" "$KEEP" "$VERSION"
 
 info "collector 部署完成：$VERSION"

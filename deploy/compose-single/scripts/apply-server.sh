@@ -29,7 +29,7 @@ apply-server.sh —— 单机 Compose 后端更新
 更新流程：
   1. jar 写入 releases/backend/<版本>/yudao-server.jar，current.jar 使用相对软链接；
   2. docker compose restart yudao-server；
-  3. 从 web 容器 POST /admin-api/system/captcha/get，验证 48080 与 Redis；
+  3. 从 web 容器 POST /admin-api/system/captcha/get，要求 HTTP 成功且响应含业务成功标识；
   4. 失败时恢复更新前的软链接；同版本更新则恢复更新前的 jar，并再次重启检查。
 EOF
 }

@@ -61,22 +61,45 @@ switch_symlink() {
 }
 
 wait_backend() {
-  local timeout="${1:-240}" deadline
+  local timeout="${1:-240}" deadline body response_snippet=""
   if is_dry_run; then
-    info "[dry-run] 从 web 容器请求后端 48080，等待上限 ${timeout}s"
+    info "[dry-run] 从 web 容器请求后端 48080，校验 HTTP 与业务成功标识，等待上限 ${timeout}s"
     return 0
   fi
+  require_cmd python3
+  require_cmd mktemp
+  body="$(mktemp "${TMPDIR:-/tmp}/yudao-backend-health.XXXXXX")"
   deadline=$((SECONDS + timeout))
   while [ "$SECONDS" -lt "$deadline" ]; do
-    if compose exec -T web wget -T 5 -q -O /dev/null \
+    response_snippet=""
+    # wget 负责确认 HTTP 成功；业务异常也可能返回 HTTP 200，必须再解析根节点。
+    # 此接口声明 ResponseModel（成功 repCode="0000"）；兼容返回 CommonResult(code=0) 的版本。
+    if compose exec -T web wget -T 5 -q -O - \
       --header='Content-Type: application/json' --post-data='{}' \
-      http://yudao-server:48080/admin-api/system/captcha/get >/dev/null 2>&1; then
-      info "后端 48080 健康检查通过"
-      return 0
+      http://yudao-server:48080/admin-api/system/captcha/get >"$body" 2>/dev/null; then
+      if python3 -c 'import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        result = json.load(f)
+except (OSError, UnicodeError, ValueError):
+    sys.exit(1)
+common_success = type(result) is dict and type(result.get("code")) is int and result["code"] == 0
+captcha_success = type(result) is dict and result.get("repCode") == "0000"
+sys.exit(0 if common_success or captcha_success else 1)' "$body"; then
+        rm -f "$body"
+        info "后端 48080 健康检查通过（HTTP 与业务成功标识均正常）"
+        return 0
+      fi
     fi
+    response_snippet="$(head -c 1024 "$body" 2>/dev/null || true)"
     sleep 3
   done
   error "后端健康检查超时（${timeout}s）"
+  if [ -n "$response_snippet" ]; then
+    error "最后一次非空响应片段（未通过业务成功校验）："
+    printf '%s\n' "$response_snippet" >&2
+  fi
+  rm -f "$body"
   return 1
 }
 
