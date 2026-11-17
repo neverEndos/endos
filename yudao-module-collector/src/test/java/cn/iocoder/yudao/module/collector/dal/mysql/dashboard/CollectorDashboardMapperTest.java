@@ -120,7 +120,8 @@ public class CollectorDashboardMapperTest {
             statement.execute("""
                     INSERT INTO collector_channel_latest VALUES
                         (101, 7, 10, 12.5, NULL, 0, TIMESTAMP '2026-11-17 12:00:00', CURRENT_TIMESTAMP),
-                        (102, 7, 10, NULL, '11', 2, TIMESTAMP '2026-11-17 12:00:00', CURRENT_TIMESTAMP)
+                        (102, 7, 10, NULL, '11', 2, TIMESTAMP '2026-11-17 12:00:00', CURRENT_TIMESTAMP),
+                        (103, 7, 10, NULL, NULL, 0, TIMESTAMP '2026-11-17 12:00:02', CURRENT_TIMESTAMP)
                     """);
         }
 
@@ -151,6 +152,8 @@ public class CollectorDashboardMapperTest {
         assertEquals(Integer.valueOf(1), row.getOnline());
         assertEquals(Integer.valueOf(9), row.getLastWriteLagMs());
         assertEquals(java.time.LocalDateTime.of(2026, 11, 17, 12, 0, 5), row.getLastPollAt());
+        // 禁用通道不出现在看板列表，但其采样仍用于设备活性，避免禁用操作洗掉离线状态。
+        assertEquals(java.time.LocalDateTime.of(2026, 11, 17, 12, 0, 2), row.getLastSampleTime());
         assertNull(mapper.selectDeviceState(99L));
     }
 

@@ -2,7 +2,9 @@ package cn.iocoder.yudao.module.collector.util;
 
 import org.junit.Test;
 
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.TimeZone;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -46,7 +48,21 @@ public class CollectorDashboardUtilsTest {
         assertFalse(CollectorDashboardUtils.isStaleOffline(NOW.minusSeconds(600), NOW, ONE_MINUTE));
         assertTrue(CollectorDashboardUtils.isStaleOffline(
                 NOW.minusSeconds(600).minusNanos(1_000_000), NOW, ONE_MINUTE));
-        assertFalse(CollectorDashboardUtils.isStaleOffline(null, NOW, ONE_MINUTE));
+        assertTrue(CollectorDashboardUtils.isStaleOffline(null, NOW, ONE_MINUTE));
+    }
+
+    @Test
+    public void toEpochMilli_usesShanghaiWhenJvmDefaultsToUtc() {
+        TimeZone previous = TimeZone.getDefault();
+        try {
+            TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+            // 2026-11-17 12:30 Asia/Shanghai 固定对应 04:30 UTC，不随 JVM 默认时区变化。
+            assertEquals(Instant.parse("2026-11-17T04:30:00Z").toEpochMilli(),
+                    CollectorDashboardUtils.toEpochMilli(NOW).longValue());
+            assertNull(CollectorDashboardUtils.toEpochMilli(null));
+        } finally {
+            TimeZone.setDefault(previous);
+        }
     }
 
     @Test

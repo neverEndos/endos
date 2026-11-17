@@ -270,19 +270,25 @@ PGPASSWORD=123456 psql -h 192.168.0.23 -U root -d yudao_board \
   令牌，采集器停采后令牌冻结，页面会永远显示在线。本版每次返回完整响应（16 通道
   约 2 KB，10 秒轮询可忽略），后续如需带宽优化再设计包含派生状态的版本令牌。
 - **陈旧与离线**：通道采样超过 `3 × poll_interval_ms` 时 `stale=true`；设备最大
-  采样时间超过 `10 ×` 时 `staleOffline=true` 且强制 `online=false`。两者都由接口按
-  当前 `serverTime` 实时派生，不写回数据库；前端在两次请求之间也按本地时间继续
-  老化显示。v1 使用设备级 `poll_interval_ms`，通道级轮询尚未落地，查询已预留
-  `collector_channel.poll_interval_ms` 但暂不参与判定。
+  采样时间超过 `10 ×` 时 `staleOffline=true` 且强制 `online=false`。设备活性采样
+  独立统计全部未删除通道，包含列表中过滤掉的禁用通道，避免禁用最后一条通道洗掉
+  离线状态。完全没有采样时回退到 `lastPollAt`（设备状态更新时间）做同样的十倍
+  周期判定，因此刚上电的短窗口仍在线、停采后会离线；采样与状态时间都缺失则直接
+  返回 `online=false, staleOffline=true`。两者都由接口按当前 `serverTime` 实时派生，
+  不写回数据库；前端在两次请求之间也按本地时间继续老化显示。v1 使用设备级
+  `poll_interval_ms`，通道级轮询尚未落地，查询已预留 `collector_channel.poll_interval_ms`
+  但暂不参与判定。
 - **质量码**：latest/raw 的 `quality` 保留存储语义（0 正常、1 不确定、2 坏质量）；
   “陈旧”是独立的派生标记，不再复用 `quality=2`。
 - **写入延迟**：`lastWriteLagMs` 来自 `collector_heartbeat`，是采集器**进程级**
   数据库写入延迟，不是设备级指标；页面显示为“采集器写入延迟”。
 - **通道过滤**：`collector_channel.enabled=0` 的通道不出现在看板中。
 - **时间**：采集器、DDL 与后端统一使用 `Asia/Shanghai` 墙钟；接口中的
-  `serverTime/lastPollAt/sampleTime` 序列化为 epoch millis（前端按 `null | number`
-  处理）。页面分别显示“最后成功请求”（浏览器请求时间）与“最后数据更新”
-  （看板中最大采样时间），断连时保留最后一次成功数据。
+  `serverTime/lastPollAt/sampleTime` 由服务端显式按该时区转为 epoch millis（前端按
+  `null | number` 处理），不经过 JVM 默认时区。裸 jar 启动仍统一使用
+  `java -Duser.timezone=Asia/Shanghai -jar yudao-server/target/yudao-server.jar`，保证其他
+  接口的全局时间序列化一致。页面分别显示“最后成功请求”（浏览器请求时间）与
+  “最后数据更新”（看板中最大采样时间），断连时保留最后一次成功数据。
 
 ## HSI 协议要点
 

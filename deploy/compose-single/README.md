@@ -67,7 +67,10 @@ pnpm build:antdv-next
 - `yudao-ui/yudao-ui-admin-vben/apps/web-antdv-next/dist/`。
 
 前端生产配置使用同源 `/admin-api`，验证码关闭，与 `.env` 的
-`YUDAO_CAPTCHA_ENABLE=false` 对齐。
+`YUDAO_CAPTCHA_ENABLE=false` 对齐。Compose 已为后端设置 `TZ=Asia/Shanghai`；若在宿主机
+直接启动裸 jar，必须显式执行 `java -Duser.timezone=Asia/Shanghai -jar yudao-server/target/yudao-server.jar`
+（或保证系统 TZ 一致），避免全局 `LocalDateTime` 时间戳序列化受 JVM 默认时区影响。
+最新值看板的三个时间字段已额外在服务端按 Asia/Shanghai 显式转为 epoch millis，不依赖该默认值。
 
 ## 4. 首次部署
 

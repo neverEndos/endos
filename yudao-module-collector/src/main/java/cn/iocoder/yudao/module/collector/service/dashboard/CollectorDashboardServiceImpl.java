@@ -16,7 +16,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.DEVICE_NOT_EXISTS;
@@ -49,21 +48,20 @@ public class CollectorDashboardServiceImpl implements CollectorDashboardService 
         List<CollectorDashboardSensorRow> sensorRows = dashboardMapper.selectSensors(deviceId);
         List<CollectorDashboardChannelRow> channelRows = dashboardMapper.selectChannelLatest(deviceId);
 
-        LocalDateTime maxSampleTime = channelRows.stream()
-                .map(CollectorDashboardChannelRow::getSampleTime)
-                .filter(Objects::nonNull)
-                .max(LocalDateTime::compareTo)
-                .orElse(null);
+        // 设备活性采样独立查询，不受看板“仅显示启用通道”的过滤影响。
+        LocalDateTime maxSampleTime = deviceRow.getLastSampleTime();
         // v1 以设备级 poll_interval_ms 判定陈旧；通道级轮询尚未落地。
         int pollIntervalMs = deviceRow.getPollIntervalMs() != null && deviceRow.getPollIntervalMs() > 0
                 ? deviceRow.getPollIntervalMs() : CollectorDashboardUtils.DEFAULT_POLL_INTERVAL_MS;
+        // 没有启用通道采样时，以设备状态更新时间判断采集器活性；两者都缺失则直接离线。
+        LocalDateTime activityTime = maxSampleTime != null ? maxSampleTime : deviceRow.getLastPollAt();
         boolean staleOffline = CollectorDashboardUtils.isStaleOffline(
-                maxSampleTime, serverTime, pollIntervalMs);
+                activityTime, serverTime, pollIntervalMs);
 
         CollectorDashboardLatestRespVO respVO = new CollectorDashboardLatestRespVO();
         respVO.setDevice(buildDevice(deviceRow, pollIntervalMs, staleOffline));
         respVO.setSensors(buildSensors(sensorRows, channelRows, serverTime, pollIntervalMs));
-        respVO.setServerTime(serverTime);
+        respVO.setServerTime(CollectorDashboardUtils.toEpochMilli(serverTime));
         return respVO;
     }
 
@@ -74,7 +72,7 @@ public class CollectorDashboardServiceImpl implements CollectorDashboardService 
         device.setId(row.getId());
         device.setName(row.getName());
         device.setOnline(Integer.valueOf(1).equals(row.getOnline()) && !staleOffline);
-        device.setLastPollAt(row.getLastPollAt());
+        device.setLastPollAt(CollectorDashboardUtils.toEpochMilli(row.getLastPollAt()));
         // 心跳是采集器进程级记录，不是设备级；字段名保留以兼容契约。
         device.setLastWriteLagMs(row.getLastWriteLagMs());
         device.setConsecutiveFailures(row.getConsecutiveFailures());
@@ -112,7 +110,7 @@ public class CollectorDashboardServiceImpl implements CollectorDashboardService 
                     row.getQuality(), row.getSampleTime()));
             channel.setStale(CollectorDashboardUtils.isStale(
                     row.getSampleTime(), serverTime, pollIntervalMs));
-            channel.setSampleTime(row.getSampleTime());
+            channel.setSampleTime(CollectorDashboardUtils.toEpochMilli(row.getSampleTime()));
             sensor.getChannels().add(channel);
         }
         return new ArrayList<>(sensorMap.values());

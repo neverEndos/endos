@@ -5,6 +5,7 @@ import cn.iocoder.yudao.module.collector.dal.dataobject.dashboard.CollectorDashb
 import cn.iocoder.yudao.module.collector.dal.dataobject.dashboard.CollectorDashboardDeviceRow;
 import cn.iocoder.yudao.module.collector.dal.dataobject.dashboard.CollectorDashboardSensorRow;
 import cn.iocoder.yudao.module.collector.dal.mysql.dashboard.CollectorDashboardMapper;
+import cn.iocoder.yudao.module.collector.util.CollectorDashboardUtils;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -25,6 +26,7 @@ public class CollectorDashboardServiceImplTest {
     private static final int POLL_INTERVAL_MS = 60_000;
 
     private CollectorDashboardServiceImpl service;
+    private FixedMapper mapper;
 
     @Before
     public void setUp() throws Exception {
@@ -32,7 +34,8 @@ public class CollectorDashboardServiceImplTest {
         Field mapperField = CollectorDashboardServiceImpl.class
                 .getDeclaredField("dashboardMapper");
         mapperField.setAccessible(true);
-        mapperField.set(service, new FixedMapper());
+        mapper = new FixedMapper();
+        mapperField.set(service, mapper);
     }
 
     @Test
@@ -70,7 +73,8 @@ public class CollectorDashboardServiceImplTest {
         CollectorDashboardLatestRespVO response = service.getLatest(
                 7L, SAMPLE_TIME.plusSeconds(180));
 
-        assertEquals(SAMPLE_TIME.plusSeconds(180), response.getServerTime());
+        assertEquals(CollectorDashboardUtils.toEpochMilli(SAMPLE_TIME.plusSeconds(180)),
+                response.getServerTime());
         assertEquals(7L, response.getDevice().getId().longValue());
         assertEquals("测试设备", response.getDevice().getName());
         assertEquals(Integer.valueOf(POLL_INTERVAL_MS), response.getDevice().getPollIntervalMs());
@@ -95,6 +99,50 @@ public class CollectorDashboardServiceImplTest {
         assertFalse(empty.getStale());
     }
 
+    @Test
+    public void deviceWithoutSamples_usesLastPollAtAndEventuallyGoesOffline() {
+        // 模拟启用通道尚无 latest 行：刚上电的短窗口保持在线，超过十倍周期后必须离线。
+        mapper.lastSampleTime = null;
+        mapper.lastPollAt = SAMPLE_TIME;
+        mapper.channelRows = List.of(mapper.channelRow(103L, "temperature_c", "number",
+                null, null, null, null));
+        CollectorDashboardLatestRespVO starting = service.getLatest(7L, SAMPLE_TIME.plusSeconds(30));
+        assertTrue(starting.getDevice().getOnline());
+        assertFalse(starting.getDevice().getStaleOffline());
+
+        CollectorDashboardLatestRespVO atBoundary = service.getLatest(7L, SAMPLE_TIME.plusSeconds(600));
+        assertTrue(atBoundary.getDevice().getOnline());
+        assertFalse(atBoundary.getDevice().getStaleOffline());
+        CollectorDashboardLatestRespVO afterTen = service.getLatest(
+                7L, SAMPLE_TIME.plusSeconds(600).plusNanos(1_000_000));
+        assertFalse(afterTen.getDevice().getOnline());
+        assertTrue(afterTen.getDevice().getStaleOffline());
+
+        // 全部通道禁用时同样回退到 lastPollAt；采样和状态时间都缺失则直接离线。
+        mapper.channelRows = List.of();
+        assertTrue(service.getLatest(7L, SAMPLE_TIME.plusSeconds(601))
+                .getDevice().getStaleOffline());
+        mapper.lastPollAt = null;
+        CollectorDashboardLatestRespVO noActivity = service.getLatest(7L, SAMPLE_TIME);
+        assertFalse(noActivity.getDevice().getOnline());
+        assertTrue(noActivity.getDevice().getStaleOffline());
+    }
+
+    @Test
+    public void disablingLastSampledChannel_doesNotClearStaleOffline() {
+        mapper.lastPollAt = SAMPLE_TIME;
+        LocalDateTime stoppedAfterTenIntervals = SAMPLE_TIME.plusSeconds(601);
+        CollectorDashboardLatestRespVO beforeDisable = service.getLatest(7L, stoppedAfterTenIntervals);
+        assertFalse(beforeDisable.getDevice().getOnline());
+        assertTrue(beforeDisable.getDevice().getStaleOffline());
+
+        // 列表查询不再返回任何启用通道，但设备级最大采样时间仍保留，离线状态不能被洗掉。
+        mapper.channelRows = List.of();
+        CollectorDashboardLatestRespVO afterDisable = service.getLatest(7L, stoppedAfterTenIntervals);
+        assertFalse(afterDisable.getDevice().getOnline());
+        assertTrue(afterDisable.getDevice().getStaleOffline());
+    }
+
     private static CollectorDashboardLatestRespVO.Channel firstChannel(
             CollectorDashboardLatestRespVO response) {
         return response.getSensors().get(0).getChannels().get(0);
@@ -103,13 +151,22 @@ public class CollectorDashboardServiceImplTest {
     /** 固定数据源：设备在线，两个通道有采样，一个通道尚无最新值。 */
     private static class FixedMapper implements CollectorDashboardMapper {
 
+        private LocalDateTime lastPollAt = SAMPLE_TIME.plusSeconds(1);
+        private LocalDateTime lastSampleTime = SAMPLE_TIME;
+        private List<CollectorDashboardChannelRow> channelRows = List.of(
+                channelRow(101L, "iso_4", "number", new BigDecimal("12.5"),
+                        null, 2, SAMPLE_TIME),
+                channelRow(102L, "flow_state", "enum", null, "11", 0, SAMPLE_TIME),
+                channelRow(103L, "temperature_c", "number", null, null, null, null));
+
         @Override
         public CollectorDashboardDeviceRow selectDeviceState(Long deviceId) {
             CollectorDashboardDeviceRow row = new CollectorDashboardDeviceRow();
             row.setId(deviceId);
             row.setName("测试设备");
             row.setOnline(1);
-            row.setLastPollAt(SAMPLE_TIME.plusSeconds(1));
+            row.setLastPollAt(lastPollAt);
+            row.setLastSampleTime(lastSampleTime);
             row.setLastWriteLagMs(3);
             row.setConsecutiveFailures(0);
             row.setPollIntervalMs(POLL_INTERVAL_MS);
@@ -127,16 +184,12 @@ public class CollectorDashboardServiceImplTest {
 
         @Override
         public List<CollectorDashboardChannelRow> selectChannelLatest(Long deviceId) {
-            return List.of(
-                    channelRow(101L, "iso_4", "number", new BigDecimal("12.5"),
-                            null, 2, SAMPLE_TIME),
-                    channelRow(102L, "flow_state", "enum", null, "11", 0, SAMPLE_TIME),
-                    channelRow(103L, "temperature_c", "number", null, null, null, null));
+            return channelRows;
         }
 
-        private CollectorDashboardChannelRow channelRow(Long id, String name, String valueKind,
-                                                        BigDecimal valueNum, String valueText,
-                                                        Integer quality, LocalDateTime sampleTime) {
+        private static CollectorDashboardChannelRow channelRow(Long id, String name, String valueKind,
+                                                               BigDecimal valueNum, String valueText,
+                                                               Integer quality, LocalDateTime sampleTime) {
             CollectorDashboardChannelRow row = new CollectorDashboardChannelRow();
             row.setId(id);
             row.setSensorId(10L);

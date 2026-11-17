@@ -23,11 +23,19 @@ public final class CollectorDashboardUtils {
                 && isOlderThan(sampleTime, serverTime, pollIntervalMs, STALE_MULTIPLIER);
     }
 
-    /** 最新采样超过十倍轮询周期时，看板将设备标注为因数据陈旧离线。 */
-    public static boolean isStaleOffline(LocalDateTime maxSampleTime, LocalDateTime serverTime,
+    /**
+     * 活性时间超过十倍轮询周期时，看板将设备标注为因数据陈旧离线。
+     * 活性时间由 Service 取最新采样，无采样时回退到设备状态更新时间；两者都缺失时直接离线。
+     */
+    public static boolean isStaleOffline(LocalDateTime activityTime, LocalDateTime serverTime,
                                          Integer pollIntervalMs) {
-        return maxSampleTime != null
-                && isOlderThan(maxSampleTime, serverTime, pollIntervalMs, OFFLINE_MULTIPLIER);
+        return activityTime == null
+                || isOlderThan(activityTime, serverTime, pollIntervalMs, OFFLINE_MULTIPLIER);
+    }
+
+    /** 看板时间字段显式按 Asia/Shanghai 转为 epoch millis，避免 JVM 默认时区影响。 */
+    public static Long toEpochMilli(LocalDateTime dateTime) {
+        return dateTime != null ? dateTime.atZone(SHANGHAI_ZONE).toInstant().toEpochMilli() : null;
     }
 
     /**

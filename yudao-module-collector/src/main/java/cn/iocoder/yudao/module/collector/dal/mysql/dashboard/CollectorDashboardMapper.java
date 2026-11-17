@@ -18,6 +18,10 @@ public interface CollectorDashboardMapper {
                    COALESCE(s.online, 0) AS online,
                    COALESCE(s.update_time, d.update_time) AS last_poll_at,
                    COALESCE(s.consecutive_failures, 0) AS consecutive_failures,
+                   (SELECT MAX(l.sample_time)
+                    FROM collector_channel c0
+                    JOIN collector_channel_latest l ON l.channel_id = c0.id
+                    WHERE c0.device_id = d.id AND c0.deleted = 0) AS last_sample_time,
                    h.write_lag_ms AS last_write_lag_ms
             FROM collector_device d
             LEFT JOIN collector_device_status s ON s.device_id = d.id

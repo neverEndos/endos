@@ -4,7 +4,6 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
 import java.math.BigDecimal;
-import java.time.LocalDateTime;
 import java.util.List;
 
 @Schema(description = "管理后台 - 采集设备最新值看板 Response VO")
@@ -19,7 +18,7 @@ public class CollectorDashboardLatestRespVO {
 
     @Schema(description = "后端服务器时间（Asia/Shanghai，序列化为 epoch millis）",
             requiredMode = Schema.RequiredMode.REQUIRED)
-    private LocalDateTime serverTime;
+    private Long serverTime;
 
     @Data
     public static class Device {
@@ -30,11 +29,12 @@ public class CollectorDashboardLatestRespVO {
         @Schema(description = "设备名称", requiredMode = Schema.RequiredMode.REQUIRED)
         private String name;
 
-        @Schema(description = "是否在线；采样超过十倍轮询周期时强制离线", requiredMode = Schema.RequiredMode.REQUIRED)
+        @Schema(description = "是否在线；最新采样超过十倍轮询周期时强制离线，无采样时按状态更新时间判定",
+                requiredMode = Schema.RequiredMode.REQUIRED)
         private Boolean online;
 
         @Schema(description = "最近一次轮询状态更新时间（epoch millis）")
-        private LocalDateTime lastPollAt;
+        private Long lastPollAt;
 
         @Schema(description = "采集器进程最近一次数据库写入延迟（毫秒，非设备级）")
         private Integer lastWriteLagMs;
@@ -45,7 +45,8 @@ public class CollectorDashboardLatestRespVO {
         @Schema(description = "设备轮询周期（毫秒）", requiredMode = Schema.RequiredMode.REQUIRED)
         private Integer pollIntervalMs;
 
-        @Schema(description = "是否因最新采样超过十倍轮询周期而离线", requiredMode = Schema.RequiredMode.REQUIRED)
+        @Schema(description = "是否陈旧离线：最新采样超十倍周期；无采样时按状态更新时间，均无则离线",
+                requiredMode = Schema.RequiredMode.REQUIRED)
         private Boolean staleOffline;
 
     }
@@ -96,7 +97,7 @@ public class CollectorDashboardLatestRespVO {
         private Boolean stale;
 
         @Schema(description = "采样时间（epoch millis）")
-        private LocalDateTime sampleTime;
+        private Long sampleTime;
 
     }
 
