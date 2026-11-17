@@ -34,4 +34,15 @@ public interface CollectorAlarmMapper extends BaseMapperX<CollectorAlarmDO> {
                 .isNull(CollectorAlarmDO::getClearedAt));
     }
 
+    /**
+     * 查询全部通道级活动事件，用于不依赖新采样的抑制对账。
+     */
+    default List<CollectorAlarmDO> selectActiveChannelList() {
+        return selectList(new LambdaQueryWrapperX<CollectorAlarmDO>()
+                .gt(CollectorAlarmDO::getChannelId, 0L)
+                .isNull(CollectorAlarmDO::getClearedAt)
+                .orderByAsc(CollectorAlarmDO::getChannelId)
+                .orderByAsc(CollectorAlarmDO::getId));
+    }
+
 }

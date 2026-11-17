@@ -24,8 +24,11 @@ public class CollectorAlarmEvaluator {
      * @return null 表示通道可正常判定；否则返回需要写入恢复事件的原因
      */
     public String suppressionReason(CollectorChannelDO channel) {
-        if (channel == null) {
+        if (channel == null || Boolean.TRUE.equals(channel.getDeleted())) {
             return "通道不存在或已逻辑删除";
+        }
+        if (!Objects.equals(channel.getEnabled(), 1)) {
+            return "通道已停用";
         }
         if (!"number".equals(channel.getValueKind())) {
             return "通道已改为非数值类型";

@@ -17,4 +17,13 @@ public interface CollectorAlarmStateMapper extends BaseMapperX<CollectorAlarmSta
                 .orderByAsc(CollectorAlarmStateDO::getChannelId));
     }
 
+    /**
+     * 查询仍处于报警级别的通道状态，用于不依赖新采样的抑制对账。
+     */
+    default List<CollectorAlarmStateDO> selectListByPositiveLevel() {
+        return selectList(new LambdaQueryWrapperX<CollectorAlarmStateDO>()
+                .gt(CollectorAlarmStateDO::getLevel, 0)
+                .orderByAsc(CollectorAlarmStateDO::getChannelId));
+    }
+
 }

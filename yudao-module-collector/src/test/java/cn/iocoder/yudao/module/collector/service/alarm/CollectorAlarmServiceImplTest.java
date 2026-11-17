@@ -80,6 +80,8 @@ public class CollectorAlarmServiceImplTest {
         when(channelMapper.selectBatchIds(anyCollection())).thenReturn(List.of(channel));
         when(stateMapper.selectBatchIds(anyCollection())).thenReturn(List.of());
         when(alarmMapper.selectActiveListByChannelIds(anyCollection())).thenReturn(List.of());
+        when(alarmMapper.selectActiveChannelList()).thenReturn(List.of());
+        when(stateMapper.selectListByPositiveLevel()).thenReturn(List.of());
         when(alarmMapper.insert(any(CollectorAlarmDO.class))).thenReturn(1);
         when(alarmMapper.updateById(any(CollectorAlarmDO.class))).thenReturn(1);
         when(stateMapper.insert(any(CollectorAlarmStateDO.class))).thenReturn(1);
@@ -131,6 +133,9 @@ public class CollectorAlarmServiceImplTest {
         verify(alarmMapper, times(3)).updateById(updatedCaptor.capture());
         assertEquals(List.of("raised", "upgraded", "downgraded"),
                 updatedCaptor.getAllValues().stream().map(CollectorAlarmDO::getEventType).toList());
+        String recoveryCloseReason = updatedCaptor.getAllValues().get(2).getClearReason();
+        assertTrue(recoveryCloseReason.contains("cleared"));
+        assertTrue(recoveryCloseReason.contains("数值恢复正常"));
 
         // 首批插入状态，后三条更新状态；最终状态归零，游标推进到批次最后一条。
         ArgumentCaptor<CollectorAlarmStateDO> stateCaptor = ArgumentCaptor.forClass(CollectorAlarmStateDO.class);
@@ -269,6 +274,97 @@ public class CollectorAlarmServiceImplTest {
     }
 
     @Test
+    public void evaluate_reconcilesLogicallyDeletedChannelWithoutNewSamples() {
+        CollectorAlarmStateDO warning = state(2, THRESHOLD_HIGH_WARNING);
+        warning.setLastValue(75D);
+        warning.setLastSampleTime(BASE_TIME.minusSeconds(30));
+        warning.setLastSampleId(41L);
+        CollectorAlarmDO active = activeAlarm(2, THRESHOLD_HIGH_WARNING);
+        channel.setDeleted(true);
+        when(alarmMapper.selectActiveChannelList()).thenReturn(List.of(active));
+        when(stateMapper.selectListByPositiveLevel()).thenReturn(List.of(warning));
+        when(channelMapper.selectListIncludingDeletedByIds(anyCollection())).thenReturn(List.of(channel));
+
+        CollectorAlarmService.EvaluationResult result = service.evaluatePendingSamples();
+
+        assertEquals(0, result.processedCount());
+        assertEquals(1, result.transitionCount());
+        verify(sampleRawMapper).selectListAfter(any(), any(), any());
+        ArgumentCaptor<CollectorAlarmDO> clearedCaptor = ArgumentCaptor.forClass(CollectorAlarmDO.class);
+        verify(alarmMapper).insert(clearedCaptor.capture());
+        CollectorAlarmDO cleared = clearedCaptor.getValue();
+        assertEquals("cleared", cleared.getEventType());
+        assertEquals("通道不存在或已逻辑删除", cleared.getClearReason());
+        assertEquals(Double.valueOf(75D), cleared.getTriggerValue());
+        assertNotNull(cleared.getTriggeredAt());
+        assertEquals(cleared.getTriggeredAt(), cleared.getClearedAt());
+        verify(alarmMapper).updateById(active);
+        assertEquals("raised", active.getEventType());
+        assertEquals(cleared.getClearedAt(), active.getClearedAt());
+
+        ArgumentCaptor<CollectorAlarmStateDO> stateCaptor = ArgumentCaptor.forClass(CollectorAlarmStateDO.class);
+        verify(stateMapper).updateById(stateCaptor.capture());
+        assertEquals(Integer.valueOf(0), stateCaptor.getValue().getLevel());
+        assertNull(stateCaptor.getValue().getThresholdType());
+        assertEquals(Long.valueOf(41L), stateCaptor.getValue().getLastSampleId());
+        verify(cursorMapper, never()).updateById(any(CollectorAlarmCursorDO.class));
+    }
+
+    @Test
+    public void evaluate_reconcilesDisabledChannelWithoutNewSamples() {
+        CollectorAlarmStateDO warning = state(2, THRESHOLD_HIGH_WARNING);
+        warning.setLastValue(75D);
+        CollectorAlarmDO active = activeAlarm(2, THRESHOLD_HIGH_WARNING);
+        channel.setEnabled(0);
+        when(alarmMapper.selectActiveChannelList()).thenReturn(List.of(active));
+        when(stateMapper.selectListByPositiveLevel()).thenReturn(List.of(warning));
+        when(channelMapper.selectListIncludingDeletedByIds(anyCollection())).thenReturn(List.of(channel));
+
+        CollectorAlarmService.EvaluationResult result = service.evaluatePendingSamples();
+
+        assertEquals(0, result.processedCount());
+        assertEquals(1, result.transitionCount());
+        ArgumentCaptor<CollectorAlarmDO> clearedCaptor = ArgumentCaptor.forClass(CollectorAlarmDO.class);
+        verify(alarmMapper).insert(clearedCaptor.capture());
+        assertEquals("cleared", clearedCaptor.getValue().getEventType());
+        assertEquals("通道已停用", clearedCaptor.getValue().getClearReason());
+        verify(alarmMapper).updateById(active);
+        assertNotNull(active.getClearedAt());
+        ArgumentCaptor<CollectorAlarmStateDO> stateCaptor = ArgumentCaptor.forClass(CollectorAlarmStateDO.class);
+        verify(stateMapper).updateById(stateCaptor.capture());
+        assertEquals(Integer.valueOf(0), stateCaptor.getValue().getLevel());
+        verify(cursorMapper, never()).updateById(any(CollectorAlarmCursorDO.class));
+    }
+
+    @Test
+    public void evaluate_reconciliationIsIdempotentWithoutNewSamples() {
+        CollectorAlarmStateDO warning = state(2, THRESHOLD_HIGH_WARNING);
+        CollectorAlarmDO active = activeAlarm(2, THRESHOLD_HIGH_WARNING);
+        channel.setDeleted(true);
+        when(alarmMapper.selectActiveChannelList())
+                .thenReturn(List.of(active))
+                .thenReturn(List.of());
+        when(stateMapper.selectListByPositiveLevel())
+                .thenReturn(List.of(warning))
+                .thenReturn(List.of());
+        when(channelMapper.selectListIncludingDeletedByIds(anyCollection())).thenReturn(List.of(channel));
+
+        CollectorAlarmService.EvaluationResult first = service.evaluatePendingSamples();
+        CollectorAlarmService.EvaluationResult second = service.evaluatePendingSamples();
+
+        assertEquals(0, first.processedCount());
+        assertEquals(1, first.transitionCount());
+        assertEquals(0, second.processedCount());
+        assertEquals(0, second.transitionCount());
+        // 第二次查询模拟首次提交后的数据库：活动事件已关闭、状态已归零，因此不再追加事件。
+        verify(alarmMapper, times(1)).insert(any(CollectorAlarmDO.class));
+        verify(alarmMapper, times(1)).updateById(any(CollectorAlarmDO.class));
+        verify(stateMapper, times(1)).updateById(any(CollectorAlarmStateDO.class));
+        verify(sampleRawMapper, times(2)).selectListAfter(any(), any(), any());
+        verify(cursorMapper, never()).updateById(any(CollectorAlarmCursorDO.class));
+    }
+
+    @Test
     public void evaluate_isIdempotentWhenCursorAlreadyAdvanced() {
         List<CollectorSampleRawDO> samples = List.of(
                 sample(1L, 75D, BASE_TIME),
@@ -323,6 +419,9 @@ public class CollectorAlarmServiceImplTest {
 
     @Test
     public void evaluate_rollsBackAndDoesNotAdvanceCursorWhenInsertFails() {
+        // 这是 mocked mapper/事务管理器的装配级证据：证明异常走 rollback 且不推进游标，
+        // 不等同于真实 PostgreSQL 事务回滚集成测试。
+
         when(sampleRawMapper.selectListAfter(any(), any(), any())).thenReturn(List.of(
                 sample(1L, 75D, BASE_TIME),
                 sample(2L, 95D, BASE_TIME.plusSeconds(30))));
@@ -354,6 +453,7 @@ public class CollectorAlarmServiceImplTest {
         result.setDeviceId(DEVICE_ID);
         result.setSensorId(SENSOR_ID);
         result.setValueKind("number");
+        result.setEnabled(1);
         result.setAlarmEnabled(1);
         result.setAlarmDeadband(0D);
         result.setThresholdLowError(10D);

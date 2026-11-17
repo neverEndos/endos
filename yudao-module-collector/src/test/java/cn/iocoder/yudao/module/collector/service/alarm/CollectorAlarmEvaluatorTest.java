@@ -104,6 +104,7 @@ public class CollectorAlarmEvaluatorTest {
     private CollectorChannelDO channel(double deadband) {
         CollectorChannelDO channel = new CollectorChannelDO();
         channel.setValueKind("number");
+        channel.setEnabled(1);
         channel.setAlarmEnabled(1);
         channel.setAlarmDeadband(deadband);
         channel.setThresholdLowError(10D);

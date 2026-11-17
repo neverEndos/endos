@@ -27,6 +27,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -120,12 +121,12 @@ public class CollectorAlarmServiceImpl implements CollectorAlarmService {
             if (batch == null) {
                 break;
             }
+            processedCount += batch.processedCount();
+            transitionCount += batch.transitionCount();
             if (batch.initialized()) {
                 initialized = true;
                 break;
             }
-            processedCount += batch.processedCount();
-            transitionCount += batch.transitionCount();
             if (batch.processedCount() > 0) {
                 batchCount++;
             }
@@ -141,13 +142,20 @@ public class CollectorAlarmServiceImpl implements CollectorAlarmService {
      */
     private BatchResult evaluateBatch() {
         CollectorAlarmCursorDO cursor = cursorMapper.selectSingletonForUpdate();
+        LocalDateTime updatedTime = LocalDateTime.now();
         if (cursor == null) {
-            return new BatchResult(0, 0, initializeCursor());
+            boolean initialized = initializeCursor();
+            int transitionCount = reconcileSuppressedAlarms(updatedTime);
+            return new BatchResult(0, transitionCount, initialized);
         }
+
+        // 独立抑制对账：即使通道删除/停用后没有任何新采样，也能关闭旧活动报警。
+        // 对账只处理状态与事件，不读取或推进采样游标，并与本批采样处理共用同一事务。
+        int transitionCount = reconcileSuppressedAlarms(updatedTime);
         List<CollectorSampleRawDO> samples = sampleRawMapper.selectListAfter(
                 cursor.getLastSampleTime(), cursor.getLastSampleId(), EVALUATE_BATCH_SIZE);
         if (samples.isEmpty()) {
-            return new BatchResult(0, 0, false);
+            return new BatchResult(0, transitionCount, false);
         }
 
         Set<Long> channelIds = samples.stream().map(CollectorSampleRawDO::getChannelId).collect(Collectors.toSet());
@@ -159,8 +167,6 @@ public class CollectorAlarmServiceImpl implements CollectorAlarmService {
                 .stream().collect(Collectors.toMap(CollectorAlarmDO::getChannelId, Function.identity(),
                         (left, right) -> left.getId() > right.getId() ? left : right)));
 
-        int transitionCount = 0;
-        LocalDateTime updatedTime = LocalDateTime.now();
         for (CollectorSampleRawDO sample : samples) {
             CollectorChannelDO channel = channelMap.get(sample.getChannelId());
             CollectorAlarmStateDO state = stateMap.get(sample.getChannelId());
@@ -176,7 +182,7 @@ public class CollectorAlarmServiceImpl implements CollectorAlarmService {
                         // 通道和历史状态都不存在，没有可恢复或可落库的对象。
                         continue;
                     }
-                    state = newState(channel, activeAlarm, sample);
+                    state = newState(channel, activeAlarm, sample.getChannelId());
                 }
                 if (previousLevel > 0 || activeAlarm != null) {
                     if (activeAlarm != null) {
@@ -200,7 +206,7 @@ public class CollectorAlarmServiceImpl implements CollectorAlarmService {
             }
             boolean insertState = state == null;
             if (insertState) {
-                state = newState(channel, null, sample);
+                state = newState(channel, null, sample.getChannelId());
             }
             int previousLevel = previousLevel(state, activeAlarm);
             String previousThresholdType = state.getThresholdType();
@@ -208,10 +214,16 @@ public class CollectorAlarmServiceImpl implements CollectorAlarmService {
                     && !Objects.equals(previousThresholdType, decision.thresholdType());
             if (previousLevel != decision.level() || thresholdChanged) {
                 if (activeAlarm != null) {
-                    String eventType = transitionEventType(previousLevel, decision.level(), thresholdChanged);
-                    closeActiveAlarm(activeAlarm, sample.getCollectTime(), String.format(
-                            "被后续 %s 事件接替（级别 %d→%d，阈值 %s→%s）", eventType, previousLevel,
-                            decision.level(), previousThresholdType, decision.thresholdType()));
+                    String closeReason;
+                    if (decision.level() == 0) {
+                        closeReason = "被后续 cleared 事件接替：数值恢复正常";
+                    } else {
+                        String eventType = transitionEventType(previousLevel, decision.level(), thresholdChanged);
+                        closeReason = String.format("被后续 %s 事件接替（级别 %d→%d，阈值 %s→%s）",
+                                eventType, previousLevel, decision.level(),
+                                previousThresholdType, decision.thresholdType());
+                    }
+                    closeActiveAlarm(activeAlarm, sample.getCollectTime(), closeReason);
                     activeAlarmMap.remove(sample.getChannelId());
                 }
                 if (decision.level() > 0) {
@@ -246,6 +258,62 @@ public class CollectorAlarmServiceImpl implements CollectorAlarmService {
         return new BatchResult(samples.size(), transitionCount, false);
     }
 
+    /**
+     * 对账所有通道级活动事件与报警状态，不依赖该通道是否还有新采样。
+     * 已删除、已停用、非数值或关闭报警的通道会被关闭活动事件、追加独立 cleared 事件并归零状态。
+     * 首次对账后活动事件和正级别状态均消失，因此重复执行不会产生重复 cleared 事件。
+     *
+     * @return 本次对账追加的 cleared 事件数
+     */
+    private int reconcileSuppressedAlarms(LocalDateTime updatedTime) {
+        List<CollectorAlarmDO> activeAlarms = alarmMapper.selectActiveChannelList();
+        List<CollectorAlarmStateDO> activeStates = stateMapper.selectListByPositiveLevel();
+        if (activeAlarms.isEmpty() && activeStates.isEmpty()) {
+            return 0;
+        }
+        Map<Long, CollectorAlarmDO> activeAlarmMap = activeAlarms.stream().collect(Collectors.toMap(
+                CollectorAlarmDO::getChannelId, Function.identity(),
+                (left, right) -> left.getId() > right.getId() ? left : right));
+        Map<Long, CollectorAlarmStateDO> stateMap = activeStates.stream().collect(Collectors.toMap(
+                CollectorAlarmStateDO::getChannelId, Function.identity()));
+        Set<Long> channelIds = new HashSet<>(activeAlarmMap.keySet());
+        channelIds.addAll(stateMap.keySet());
+        Map<Long, CollectorChannelDO> channelMap = channelMapper.selectListIncludingDeletedByIds(channelIds).stream()
+                .collect(Collectors.toMap(CollectorChannelDO::getId, Function.identity()));
+
+        int transitionCount = 0;
+        for (Long channelId : channelIds.stream().sorted().toList()) {
+            CollectorChannelDO channel = channelMap.get(channelId);
+            String suppressionReason = evaluator.suppressionReason(channel);
+            if (suppressionReason == null) {
+                continue;
+            }
+            CollectorAlarmDO activeAlarm = activeAlarmMap.get(channelId);
+            CollectorAlarmStateDO state = stateMap.get(channelId);
+            int previousLevel = previousLevel(state, activeAlarm);
+            if (previousLevel <= 0 && activeAlarm == null) {
+                continue;
+            }
+            if (activeAlarm != null) {
+                closeActiveAlarm(activeAlarm, updatedTime, suppressionReason);
+            }
+            Double currentValue = state != null && state.getLastValue() != null
+                    ? state.getLastValue() : activeAlarm == null ? null : activeAlarm.getTriggerValue();
+            alarmMapper.insert(createClearedAlarm(channel, state, activeAlarm, channelId,
+                    previousLevel, suppressionReason, currentValue, updatedTime));
+
+            boolean insertState = state == null;
+            if (insertState) {
+                state = newState(channel, activeAlarm, channelId);
+                state.setLastValue(currentValue);
+            }
+            resetSuppressedState(state, updatedTime);
+            saveState(state, insertState);
+            transitionCount++;
+        }
+        return transitionCount;
+    }
+
     private boolean initializeCursor() {
         CollectorSampleRawDO latest = sampleRawMapper.selectLatest();
         CollectorAlarmCursorDO cursor = new CollectorAlarmCursorDO();
@@ -262,9 +330,9 @@ public class CollectorAlarmServiceImpl implements CollectorAlarmService {
     }
 
     private CollectorAlarmStateDO newState(CollectorChannelDO channel, CollectorAlarmDO activeAlarm,
-                                           CollectorSampleRawDO sample) {
+                                           Long channelId) {
         CollectorAlarmStateDO state = new CollectorAlarmStateDO();
-        state.setChannelId(sample.getChannelId());
+        state.setChannelId(channelId);
         state.setDeviceId(channel != null ? channel.getDeviceId() : activeAlarm.getDeviceId());
         state.setSensorId(channel != null ? channel.getSensorId() : activeAlarm.getSensorId());
         state.setLevel(0);
@@ -297,13 +365,20 @@ public class CollectorAlarmServiceImpl implements CollectorAlarmService {
 
     private void updateSuppressedState(CollectorAlarmStateDO state, CollectorSampleRawDO sample,
                                        LocalDateTime updatedTime) {
+        resetSuppressedState(state, updatedTime);
+        state.setLastValue(sample.getValue());
+        state.setLastSampleTime(sample.getCollectTime());
+        state.setLastSampleId(sample.getSampleId());
+    }
+
+    /**
+     * 无新采样的对账只归零报警状态，保留最近采样位置，不伪造新的采样进度。
+     */
+    private void resetSuppressedState(CollectorAlarmStateDO state, LocalDateTime updatedTime) {
         state.setLevel(0);
         state.setThresholdType(null);
         state.setSince(null);
-        state.setLastValue(sample.getValue());
         state.setLastThreshold(null);
-        state.setLastSampleTime(sample.getCollectTime());
-        state.setLastSampleId(sample.getSampleId());
         state.setUpdatedTime(updatedTime);
     }
 
@@ -340,6 +415,17 @@ public class CollectorAlarmServiceImpl implements CollectorAlarmService {
     private CollectorAlarmDO createClearedAlarm(CollectorChannelDO channel, CollectorAlarmStateDO state,
                                                 CollectorAlarmDO activeAlarm, CollectorSampleRawDO sample,
                                                 int previousLevel, String clearReason) {
+        return createClearedAlarm(channel, state, activeAlarm, sample.getChannelId(), previousLevel,
+                clearReason, sample.getValue(), sample.getCollectTime());
+    }
+
+    /**
+     * 构造独立恢复事件；无新采样的对账使用当前时间和最近已知值，不伪造采样记录。
+     */
+    private CollectorAlarmDO createClearedAlarm(CollectorChannelDO channel, CollectorAlarmStateDO state,
+                                                CollectorAlarmDO activeAlarm, Long channelId,
+                                                int previousLevel, String clearReason,
+                                                Double currentValue, LocalDateTime eventTime) {
         String thresholdType = clearThresholdType(state, activeAlarm);
         // alarm_type 为非空列；极端脏数据下使用 unknown，避免恢复事件写入失败。
         thresholdType = thresholdType == null ? "unknown" : thresholdType;
@@ -350,19 +436,21 @@ public class CollectorAlarmServiceImpl implements CollectorAlarmService {
         CollectorAlarmDO alarm = new CollectorAlarmDO();
         alarm.setDeviceId(deviceId);
         alarm.setSensorId(sensorId);
-        alarm.setChannelId(sample.getChannelId());
+        alarm.setChannelId(channelId);
         alarm.setAlarmType(thresholdType);
         alarm.setEventType("cleared");
         alarm.setLevel(previousLevel);
-        alarm.setDedupeKey(buildDedupeKey(deviceId, sensorId, sample.getChannelId(), thresholdType));
+        alarm.setDedupeKey(buildDedupeKey(deviceId, sensorId, channelId, thresholdType));
         alarm.setStatus(STATUS_CLEARED);
-        alarm.setMessage(String.format("通道值 %.6g 已恢复（%s）", sample.getValue(), clearReason));
-        alarm.setTriggerValue(sample.getValue());
+        alarm.setMessage(currentValue == null
+                ? String.format("通道报警已清除（%s）", clearReason)
+                : String.format("通道值 %.6g 已恢复（%s）", currentValue, clearReason));
+        alarm.setTriggerValue(currentValue);
         alarm.setThresholdValue(thresholdValue);
-        alarm.setTriggeredAt(sample.getCollectTime());
-        alarm.setLastSeenAt(sample.getCollectTime());
+        alarm.setTriggeredAt(eventTime);
+        alarm.setLastSeenAt(eventTime);
         alarm.setOccurrenceCount(1);
-        alarm.setClearedAt(sample.getCollectTime());
+        alarm.setClearedAt(eventTime);
         alarm.setClearReason(clearReason);
         return alarm;
     }
