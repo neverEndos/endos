@@ -2,7 +2,9 @@ package cn.iocoder.yudao.module.collector.service.channel;
 
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.framework.common.util.object.BeanUtils;
+import cn.iocoder.yudao.module.collector.controller.admin.channel.vo.CollectorChannelDeviceRespVO;
 import cn.iocoder.yudao.module.collector.controller.admin.channel.vo.CollectorChannelPageReqVO;
+import cn.iocoder.yudao.module.collector.controller.admin.channel.vo.CollectorChannelThresholdBatchUpdateReqVO;
 import cn.iocoder.yudao.module.collector.controller.admin.channel.vo.CollectorChannelThresholdPreviewReqVO;
 import cn.iocoder.yudao.module.collector.controller.admin.channel.vo.CollectorChannelThresholdPreviewRespVO;
 import cn.iocoder.yudao.module.collector.controller.admin.channel.vo.CollectorChannelThresholdUpdateReqVO;
@@ -10,8 +12,11 @@ import cn.iocoder.yudao.module.collector.controller.admin.channel.vo.CollectorCh
 import cn.iocoder.yudao.module.collector.dal.dataobject.channel.CollectorChannelDO;
 import cn.iocoder.yudao.module.collector.dal.dataobject.protocol.CollectorProtocolDO;
 import cn.iocoder.yudao.module.collector.dal.dataobject.sensor.CollectorSensorDO;
+import cn.iocoder.yudao.module.collector.dal.dataobject.sensortype.CollectorSensorTypeDO;
 import cn.iocoder.yudao.module.collector.dal.mysql.channel.CollectorChannelMapper;
 import cn.iocoder.yudao.module.collector.dal.mysql.reference.CollectorReferenceMapper;
+import cn.iocoder.yudao.module.collector.dal.mysql.sensortype.CollectorSensorTypeMapper;
+import cn.iocoder.yudao.module.collector.service.device.CollectorDeviceService;
 import cn.iocoder.yudao.module.collector.service.protocol.CollectorProtocolService;
 import cn.iocoder.yudao.module.collector.service.sensor.CollectorSensorService;
 import cn.iocoder.yudao.module.collector.util.CollectorJsonSchemaValidator;
@@ -19,12 +24,21 @@ import cn.iocoder.yudao.module.collector.util.CollectorThresholdUtils;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import jakarta.annotation.Resource;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
+import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.CHANNEL_ENUM_THRESHOLD_FORBIDDEN;
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.CHANNEL_HAS_CHILDREN;
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.CHANNEL_NOT_EXISTS;
+import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.CHANNEL_NOT_IN_DEVICE;
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.CHANNEL_THRESHOLD_INVALID;
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.CHANNEL_VALUE_INVALID;
 
@@ -38,6 +52,12 @@ public class CollectorChannelServiceImpl implements CollectorChannelService {
 
     @Resource
     private CollectorReferenceMapper referenceMapper;
+
+    @Resource
+    private CollectorSensorTypeMapper sensorTypeMapper;
+
+    @Resource
+    private CollectorDeviceService deviceService;
 
     @Resource
     private CollectorSensorService sensorService;
@@ -56,6 +76,37 @@ public class CollectorChannelServiceImpl implements CollectorChannelService {
     @Override
     public CollectorChannelDO getChannel(Long id) {
         return channelMapper.selectById(id);
+    }
+
+    @Override
+    public CollectorChannelDeviceRespVO getChannelListByDevice(Long deviceId) {
+        deviceService.validateDeviceExists(deviceId);
+        List<CollectorSensorDO> sensors = sensorService.getSensorList(deviceId, null);
+        Map<Long, List<CollectorChannelDO>> channelMap = channelMapper.selectListByDeviceId(deviceId).stream()
+                .collect(Collectors.groupingBy(CollectorChannelDO::getSensorId));
+        Set<Long> sensorTypeIds = sensors.stream().map(CollectorSensorDO::getSensorTypeId)
+                .filter(java.util.Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, CollectorSensorTypeDO> sensorTypeMap = sensorTypeIds.isEmpty() ? Map.of()
+                : sensorTypeMapper.selectByIds(sensorTypeIds).stream()
+                .collect(Collectors.toMap(CollectorSensorTypeDO::getId, Function.identity()));
+
+        List<CollectorChannelDeviceRespVO.Sensor> sensorList = new ArrayList<>();
+        for (CollectorSensorDO sensor : sensors) {
+            List<CollectorChannelDO> channels = channelMap.get(sensor.getId());
+            if (channels == null || channels.isEmpty()) {
+                continue;
+            }
+            CollectorChannelDeviceRespVO.Sensor sensorVO = new CollectorChannelDeviceRespVO.Sensor();
+            sensorVO.setId(sensor.getId());
+            sensorVO.setName(sensor.getSensorName());
+            CollectorSensorTypeDO sensorType = sensorTypeMap.get(sensor.getSensorTypeId());
+            sensorVO.setModel(sensorType != null ? sensorType.getTypeName() : null);
+            sensorVO.setChannels(BeanUtils.toBean(channels, CollectorChannelDeviceRespVO.Channel.class));
+            sensorList.add(sensorVO);
+        }
+        CollectorChannelDeviceRespVO respVO = new CollectorChannelDeviceRespVO();
+        respVO.setSensors(sensorList);
+        return respVO;
     }
 
     @Override
@@ -123,6 +174,38 @@ public class CollectorChannelServiceImpl implements CollectorChannelService {
                 .set(CollectorChannelDO::getDeadband, deadband)
                 .set(CollectorChannelDO::getAlarmDeadband, alarmDeadband);
         channelMapper.update(null, updateWrapper);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Integer updateChannelThresholdBatch(CollectorChannelThresholdBatchUpdateReqVO batchReqVO) {
+        deviceService.validateDeviceExists(batchReqVO.getDeviceId());
+        Map<Long, CollectorChannelDO> channelMap = channelMapper.selectListByDeviceId(batchReqVO.getDeviceId()).stream()
+                .collect(Collectors.toMap(CollectorChannelDO::getId, Function.identity()));
+        Set<Long> channelIds = new HashSet<>();
+        for (CollectorChannelThresholdBatchUpdateReqVO.Channel item : batchReqVO.getChannels()) {
+            if (!channelIds.add(item.getChannelId())) {
+                throw exception(CHANNEL_THRESHOLD_INVALID);
+            }
+            CollectorChannelDO channel = channelMap.get(item.getChannelId());
+            if (channel == null) {
+                // 设备归属在 Service 统一校验，禁止借助批量接口跨设备写入。
+                throw exception(CHANNEL_NOT_IN_DEVICE, item.getChannelId(), batchReqVO.getDeviceId());
+            }
+            if (VALUE_KIND_ENUM.equals(channel.getValueKind())) {
+                throw exception(CHANNEL_ENUM_THRESHOLD_FORBIDDEN, item.getChannelId());
+            }
+
+            // 复用单通道更新的阈值、开关与死区校验；量程和报警死区不在矩阵中修改，保持原值。
+            CollectorChannelThresholdUpdateReqVO updateReqVO = BeanUtils.toBean(item,
+                    CollectorChannelThresholdUpdateReqVO.class);
+            updateReqVO.setId(item.getChannelId());
+            updateReqVO.setValueMin(channel.getValueMin());
+            updateReqVO.setValueMax(channel.getValueMax());
+            updateReqVO.setAlarmDeadband(channel.getAlarmDeadband());
+            updateChannelThreshold(updateReqVO);
+        }
+        return batchReqVO.getChannels().size();
     }
 
     @Override
@@ -196,10 +279,15 @@ public class CollectorChannelServiceImpl implements CollectorChannelService {
                 throw exception(CHANNEL_THRESHOLD_INVALID);
             }
         }
-        if (thresholds[0] != null && thresholds[1] != null && thresholds[0] > thresholds[1]
-                || thresholds[1] != null && thresholds[2] != null && thresholds[1] > thresholds[2]
-                || thresholds[2] != null && thresholds[3] != null && thresholds[2] > thresholds[3]) {
-            throw exception(CHANNEL_THRESHOLD_INVALID);
+        Double previous = null;
+        for (Double threshold : thresholds) {
+            if (threshold == null) {
+                continue;
+            }
+            if (previous != null && threshold < previous) {
+                throw exception(CHANNEL_THRESHOLD_INVALID);
+            }
+            previous = threshold;
         }
     }
 

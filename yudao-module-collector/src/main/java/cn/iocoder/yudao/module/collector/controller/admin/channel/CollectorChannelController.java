@@ -3,7 +3,9 @@ package cn.iocoder.yudao.module.collector.controller.admin.channel;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.framework.common.util.object.BeanUtils;
+import cn.iocoder.yudao.module.collector.controller.admin.channel.vo.CollectorChannelDeviceRespVO;
 import cn.iocoder.yudao.module.collector.controller.admin.channel.vo.CollectorChannelPageReqVO;
+import cn.iocoder.yudao.module.collector.controller.admin.channel.vo.CollectorChannelThresholdBatchUpdateReqVO;
 import cn.iocoder.yudao.module.collector.controller.admin.channel.vo.CollectorChannelRespVO;
 import cn.iocoder.yudao.module.collector.controller.admin.channel.vo.CollectorChannelThresholdPreviewReqVO;
 import cn.iocoder.yudao.module.collector.controller.admin.channel.vo.CollectorChannelThresholdPreviewRespVO;
@@ -52,6 +54,14 @@ public class CollectorChannelController {
         return success(BeanUtils.toBean(channel, CollectorChannelRespVO.class));
     }
 
+    @GetMapping("/list-by-device")
+    @Operation(summary = "按设备获得通道阈值矩阵")
+    @Parameter(name = "deviceId", description = "设备编号", required = true, example = "1")
+    @PreAuthorize("@ss.hasPermission('collector:channel:query')")
+    public CommonResult<CollectorChannelDeviceRespVO> getChannelListByDevice(@RequestParam("deviceId") Long deviceId) {
+        return success(channelService.getChannelListByDevice(deviceId));
+    }
+
     @PutMapping("/update")
     @Operation(summary = "修改通道通用信息")
     @PreAuthorize("@ss.hasPermission('collector:channel:update')")
@@ -67,6 +77,14 @@ public class CollectorChannelController {
             @Valid @RequestBody CollectorChannelThresholdUpdateReqVO updateReqVO) {
         channelService.updateChannelThreshold(updateReqVO);
         return success(true);
+    }
+
+    @PutMapping("/update-threshold-batch")
+    @Operation(summary = "批量修改设备下通道的阈值与报警配置")
+    @PreAuthorize("@ss.hasPermission('collector:channel:update')")
+    public CommonResult<Integer> updateChannelThresholdBatch(
+            @Valid @RequestBody CollectorChannelThresholdBatchUpdateReqVO updateReqVO) {
+        return success(channelService.updateChannelThresholdBatch(updateReqVO));
     }
 
     @GetMapping("/preview-threshold")
