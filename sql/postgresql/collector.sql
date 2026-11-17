@@ -1,21 +1,22 @@
 /*
  采集器采集数据表初始化脚本（PostgreSQL 17）
 
- 适用范围：collector 19 张表（协议注册表、设备、传感器类型、参数模板、传感器、
- 通道、分时段轮询、配置版本、原始采样、小时/天聚合、聚合水位、报警、报警状态、
- 报警游标、设备状态、心跳、命令、保留策略）。
+ 适用范围：collector 20 张表（协议注册表、设备、传感器类型、参数模板、传感器、
+ 通道、分时段轮询、配置版本、原始采样、通道最新值、小时/天聚合、聚合水位、报警、
+ 报警状态、报警游标、设备状态、心跳、命令、保留策略）。
 
  说明：
- 1. 所有表位于 public schema；不建外键，表之间只做逻辑关联，引用完整性由 Service 校验。
+ 1. 所有表位于 public schema；除 collector_channel_latest 对通道表的外键级联外，
+    其余表之间不建外键，只做逻辑关联，引用完整性由 Service 校验。
  2. 配置表使用 bigint 主键 + 独立序列，并保留 BaseDO 字段（creator/create_time/
     updater/update_time/deleted）；时间序列与运行状态表使用业务主键，不保留 BaseDO。
  3. collector_sample_raw 按天 RANGE 分区，本脚本创建示例日分区与 DEFAULT 分区；
     后续分区由维护任务按 collector_retention_policy.partition_lead_days 提前创建。
  4. 业务时间统一使用 timestamp(3) without time zone，语义为 Asia/Shanghai 本地墙钟时间。
- 5. 本脚本支持重复执行：开头会删除并重建下述 19 张 collector 表与 13 个序列，
+ 5. 本脚本支持重复执行：开头会删除并重建下述 20 张 collector 表与 13 个序列，
     执行将清空采集器已有数据，请在确认后执行。已有库的结构升级请按需使用
-    collector_threshold_migration.sql（阈值模型）与 collector_alarm_migration.sql
-    （报警引擎），不要直接重跑本脚本。
+    collector_threshold_migration.sql（阈值模型）、collector_alarm_migration.sql
+    （报警引擎）与 collector_latest_migration.sql（最新值看板），不要直接重跑本脚本。
  6. 数值有限性约束显式排除 NaN 与正负 Infinity（数值类型没有可用的内置有限性判断
     函数）；配置版本 snapshot 必须为 JSON 对象，checksum 必须为 64 位小写十六进制字符串。
 */
@@ -35,6 +36,8 @@ DROP TABLE IF EXISTS public.collector_device;
 DROP TABLE IF EXISTS public.collector_sensor_template;
 DROP TABLE IF EXISTS public.collector_sensor_type;
 DROP TABLE IF EXISTS public.collector_sensor;
+-- 最新值表引用 collector_channel，必须在通道表之前删除。
+DROP TABLE IF EXISTS public.collector_channel_latest;
 DROP TABLE IF EXISTS public.collector_channel;
 DROP TABLE IF EXISTS public.collector_poll_schedule;
 DROP TABLE IF EXISTS public.collector_config_version;

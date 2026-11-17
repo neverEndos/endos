@@ -19,7 +19,7 @@ const POLL_INTERVAL_OPTIONS = [
   { label: '30秒', value: 30000 },
   { label: '1分钟', value: 60000 },
   { label: '关闭自动刷新', value: 0 },
-] as const;
+];
 const BACKOFF_DELAYS = [5000, 10000, 30000] as const;
 const STORAGE_KEY = 'collector.dashboard.poll-interval-ms';
 const DEFAULT_POLL_INTERVAL = 10000;
@@ -128,7 +128,7 @@ function updateField<T, K extends keyof T>(target: T, key: K, value: T[K]) {
   if (target[key] !== value) target[key] = value;
 }
 
-/** 保留未变化通道的响应式对象，配合 v-memo 只更新变化单元格。 */
+/** 保留未变化通道的响应式对象，页面只更新实际发生变化的值。 */
 function mergeChannels(
   current: CollectorApi.DashboardChannel[],
   incoming: CollectorApi.DashboardChannel[],
@@ -201,12 +201,7 @@ function scheduleNext() {
 /** 串行拉取；旧设备或已卸载页面的迟到响应会被丢弃。 */
 async function refresh(manual: boolean) {
   const deviceId = selectedDeviceId.value;
-  if (
-    deviceId === undefined ||
-    inFlight ||
-    destroyed ||
-    document.hidden
-  ) {
+  if (deviceId === undefined || inFlight || destroyed || document.hidden) {
     return;
   }
   clearPollTimer();
@@ -300,6 +295,12 @@ async function loadDevices() {
 }
 
 onMounted(() => {
+  try {
+    // 首次进入即持久化默认（或已保存）的轮询间隔，刷新后保持同一节奏。
+    localStorage.setItem(STORAGE_KEY, String(pollInterval.value));
+  } catch {
+    // 隐私模式禁用 localStorage 时仍保持本次页面内设置。
+  }
   document.addEventListener('visibilitychange', handleVisibilityChange);
   clockTimer = setInterval(() => {
     if (!document.hidden) clockNow.value = Date.now();
@@ -401,7 +402,9 @@ onBeforeUnmount(() => {
               {{ pollInterval === 0 ? '自动刷新已关闭' : '页面隐藏时暂停轮询' }}
             </div>
           </div>
-          <div class="mt-5 grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
+          <div
+            class="mt-5 grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5"
+          >
             <div>
               <div class="text-xs opacity-60">最后采样时间</div>
               <div class="mt-1 font-medium" data-testid="last-sample-time">
@@ -456,7 +459,10 @@ onBeforeUnmount(() => {
             <template #title>
               <div class="flex flex-wrap items-center gap-2">
                 <span>{{ sensor.name }}</span>
-                <span v-if="sensor.model" class="text-xs font-normal opacity-60">
+                <span
+                  v-if="sensor.model"
+                  class="text-xs font-normal opacity-60"
+                >
                   {{ sensor.model }}
                 </span>
               </div>
@@ -492,28 +498,26 @@ onBeforeUnmount(() => {
                       </div>
                     </td>
                     <td>{{ channel.unit || '--' }}</td>
-                    <td
-                      v-memo="[channel.valueNum, channel.valueText, channel.unit]"
-                      class="latest-value"
-                      :data-value="formatValue(channel)"
-                    >
+                    <td class="latest-value" :data-value="formatValue(channel)">
                       {{ formatValue(channel) }}
                     </td>
-                    <td v-memo="[channel.sampleTime]" class="sample-time">
+                    <td class="sample-time">
                       {{ formatDateTime(channel.sampleTime) }}
                     </td>
-                    <td
-                      v-memo="[displayedQuality(channel), connectionError]"
-                      :data-quality="displayedQuality(channel) ?? 'none'"
-                    >
+                    <td :data-quality="displayedQuality(channel) ?? 'none'">
                       <Tag :color="qualityColor(displayedQuality(channel))">
-                        <WarningOutlined
-                          v-if="displayedQuality(channel) !== 0"
-                        />
-                        <span v-else aria-hidden="true">●</span>
+                        <template #icon>
+                          <WarningOutlined
+                            v-if="displayedQuality(channel) !== 0"
+                          />
+                          <span v-else aria-hidden="true">●</span>
+                        </template>
                         {{ qualityText(displayedQuality(channel)) }}
                       </Tag>
-                      <div v-if="connectionError" class="mt-1 text-xs opacity-60">
+                      <div
+                        v-if="connectionError"
+                        class="mt-1 text-xs opacity-60"
+                      >
                         最后成功值
                       </div>
                     </td>
