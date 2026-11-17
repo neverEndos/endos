@@ -231,6 +231,10 @@ collector 不进容器，继续复用 `deploy/scripts/deploy-collector.sh` 与
 `deploy/systemd/collector.service`。bootstrap 会把单元中的 User/Group 渲染为指定用户，
 并生成 `/etc/yudao/env.remote`，让 collector 连接 `127.0.0.1:5432`。bootstrap 和每次
 collector 发布都会幂等执行 `systemctl enable collector`，但不会用 enable 隐式启动进程。
+unit 不写死轮询间隔、超时和重试次数；它们分别读取 `collector_device` 的
+`poll_interval_ms`、`timeout_ms`、`retries`，传感器与通道配置也会按指纹定期热加载。
+后台修改这些配置后无需重启 collector，显式 CLI 覆盖项仍优先。部署脚本保留按实际
+`SERVICE_USER` / `SERVICE_GROUP` 渲染 unit 的 `User` / `Group` 机制。
 
 ```bash
 bash deploy/compose-single/scripts/release-collector.sh --run
