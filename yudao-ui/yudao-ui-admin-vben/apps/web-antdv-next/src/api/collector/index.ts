@@ -205,6 +205,62 @@ export namespace CollectorApi {
     alarmDeadband?: number;
   }
 
+  /** 设备阈值矩阵通道 */
+  export interface ThresholdMatrixChannel {
+    id: number;
+    channelCode: string;
+    channelName: string;
+    unit?: null | string;
+    valueKind?: string;
+    decimalPlaces?: number;
+    valueMin?: null | number;
+    valueMax?: null | number;
+    thresholdLowError?: null | number;
+    thresholdLowWarning?: null | number;
+    thresholdHighWarning?: null | number;
+    thresholdHighError?: null | number;
+    thresholdLowErrorEnabled?: number;
+    thresholdLowWarningEnabled?: number;
+    thresholdHighWarningEnabled?: number;
+    thresholdHighErrorEnabled?: number;
+    alarmEnabled?: number;
+    deadband?: null | number;
+  }
+
+  /** 设备阈值矩阵传感器分组 */
+  export interface ThresholdMatrixSensor {
+    id: number;
+    name: string;
+    model?: null | string;
+    channels: ThresholdMatrixChannel[];
+  }
+
+  /** 设备阈值矩阵 */
+  export interface DeviceThresholdMatrix {
+    sensors: ThresholdMatrixSensor[];
+  }
+
+  /** 通道阈值批量更新项 */
+  export interface ChannelThresholdBatchItem {
+    channelId: number;
+    thresholdLowError?: null | number;
+    thresholdLowWarning?: null | number;
+    thresholdHighWarning?: null | number;
+    thresholdHighError?: null | number;
+    thresholdLowErrorEnabled?: number;
+    thresholdLowWarningEnabled?: number;
+    thresholdHighWarningEnabled?: number;
+    thresholdHighErrorEnabled?: number;
+    alarmEnabled?: number;
+    deadband?: number;
+  }
+
+  /** 通道阈值批量更新参数 */
+  export interface ChannelThresholdBatchUpdate {
+    deviceId: number;
+    channels: ChannelThresholdBatchItem[];
+  }
+
   /** 阈值比例预览参数 */
   export interface ThresholdPreviewParams {
     valueMin?: null | number;
@@ -500,11 +556,29 @@ export function updateChannel(data: CollectorApi.ChannelUpdate) {
   return requestClient.put('/collector/channel/update', data);
 }
 
+/** 查询设备下按传感器分组的通道阈值矩阵 */
+export function getChannelListByDevice(deviceId: number) {
+  return requestClient.get<CollectorApi.DeviceThresholdMatrix>(
+    '/collector/channel/list-by-device',
+    { params: { deviceId } },
+  );
+}
+
 /** 修改通道阈值与报警配置 */
 export function updateChannelThreshold(
   data: CollectorApi.ChannelThresholdUpdate,
 ) {
   return requestClient.put('/collector/channel/update-threshold', data);
+}
+
+/** 批量修改设备下通道的阈值与报警配置 */
+export function updateChannelThresholdBatch(
+  data: CollectorApi.ChannelThresholdBatchUpdate,
+) {
+  return requestClient.put<number>(
+    '/collector/channel/update-threshold-batch',
+    data,
+  );
 }
 
 /** 按量程与比例预览四档阈值 */

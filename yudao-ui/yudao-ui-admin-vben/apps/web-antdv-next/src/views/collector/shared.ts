@@ -16,6 +16,33 @@ export const VALUE_KIND_OPTIONS = [
   { label: '枚举', value: 'enum' },
 ];
 
+/** 四档阈值字段，顺序即低低到高高的校验顺序 */
+export const THRESHOLD_FIELDS = [
+  'thresholdLowError',
+  'thresholdLowWarning',
+  'thresholdHighWarning',
+  'thresholdHighError',
+] as const;
+
+type ThresholdField = (typeof THRESHOLD_FIELDS)[number];
+type ThresholdValues = Partial<Record<ThresholdField, null | number>>;
+
+/** 四档阈值允许空档，但所有非空值必须保持先后顺序 */
+export function isThresholdOrderValid(values: ThresholdValues): boolean {
+  let previous: null | number | undefined;
+  for (const field of THRESHOLD_FIELDS) {
+    const current = values[field];
+    if (current === null || current === undefined) {
+      continue;
+    }
+    if (previous !== null && previous !== undefined && current < previous) {
+      return false;
+    }
+    previous = current;
+  }
+  return true;
+}
+
 /** 四档阈值默认比例：10% / 30% / 70% / 90% */
 export const DEFAULT_THRESHOLD_RATIOS = {
   lowError: 0.1,
@@ -25,7 +52,7 @@ export const DEFAULT_THRESHOLD_RATIOS = {
 };
 
 /** 后端返回的 0/1 开关转换为表单 Switch 使用的布尔值 */
-export function toSwitchValue(value?: boolean | number | null): boolean {
+export function toSwitchValue(value?: boolean | null | number): boolean {
   return value === true || value === 1;
 }
 
@@ -40,9 +67,7 @@ export function formatJson(value?: null | Record<string, any>): string {
 }
 
 /** 解析 JSON 对象文本；非法内容抛出可读错误 */
-export function parseJsonObject(
-  text?: null | string,
-): Record<string, any> {
+export function parseJsonObject(text?: null | string): Record<string, any> {
   if (!text || !text.trim()) {
     return {};
   }
@@ -61,20 +86,16 @@ export function parseJsonObject(
 /** 值类别的表格渲染 */
 export function renderValueKind(valueKind?: string) {
   const isEnum = valueKind === 'enum';
-  return h(
-    Tag,
-    { color: isEnum ? 'orange' : 'blue' },
-    () => (isEnum ? '枚举' : '数值'),
+  return h(Tag, { color: isEnum ? 'orange' : 'blue' }, () =>
+    isEnum ? '枚举' : '数值',
   );
 }
 
 /** 启用状态的表格渲染 */
 export function renderEnabled(enabled?: number) {
   const isEnabled = enabled === 1;
-  return h(
-    Tag,
-    { color: isEnabled ? 'success' : 'default' },
-    () => (isEnabled ? '启用' : '禁用'),
+  return h(Tag, { color: isEnabled ? 'success' : 'default' }, () =>
+    isEnabled ? '启用' : '禁用',
   );
 }
 

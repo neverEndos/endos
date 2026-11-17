@@ -49,5 +49,7 @@ public interface CollectorErrorCodeConstants {
     ErrorCode CHANNEL_THRESHOLD_INVALID = new ErrorCode(1_023_005_001, "通道阈值不合法：数值必须为有限值、量程下限小于等于上限、四档阈值按顺序递增且开关只能为 0/1");
     ErrorCode CHANNEL_HAS_CHILDREN = new ErrorCode(1_023_005_002, "通道已被轮询策略引用，无法删除");
     ErrorCode CHANNEL_VALUE_INVALID = new ErrorCode(1_023_005_003, "通道数值参数不合法：缩放系数、偏移量、死区必须为有限数值");
+    ErrorCode CHANNEL_NOT_IN_DEVICE = new ErrorCode(1_023_005_004, "通道({})不存在或不属于设备({})");
+    ErrorCode CHANNEL_ENUM_THRESHOLD_FORBIDDEN = new ErrorCode(1_023_005_005, "枚举通道({})不允许修改数值阈值、报警开关与死区");
 
 }

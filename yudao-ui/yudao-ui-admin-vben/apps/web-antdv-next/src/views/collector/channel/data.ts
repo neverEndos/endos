@@ -4,7 +4,12 @@ import type { VxeTableGridOptions } from '#/adapter/vxe-table';
 import { z } from '#/adapter/form';
 import { getDeviceSimpleList, getSensorSimpleList } from '#/api/collector';
 
-import { ENABLED_OPTIONS, VALUE_KIND_OPTIONS } from '../shared';
+import {
+  ENABLED_OPTIONS,
+  isThresholdOrderValid,
+  THRESHOLD_FIELDS,
+  VALUE_KIND_OPTIONS,
+} from '../shared';
 
 /** 查询启用的设备精简列表 */
 function getEnabledDeviceList() {
@@ -21,32 +26,15 @@ function nullableNumberRule() {
   return z.number().nullish();
 }
 
-const THRESHOLD_FIELDS = [
-  'thresholdLowError',
-  'thresholdLowWarning',
-  'thresholdHighWarning',
-  'thresholdHighError',
-] as const;
-
-/** 四档阈值允许空档，但所有非空值必须保持先后顺序 */
+/** 复用共享四档顺序校验，保留当前字段的表单校验语义 */
 function thresholdOrderRule(
   values: Record<string, any>,
   currentField: (typeof THRESHOLD_FIELDS)[number],
 ) {
-  return nullableNumberRule().refine((value) => {
-    let previous: null | number | undefined;
-    for (const field of THRESHOLD_FIELDS) {
-      const current = field === currentField ? value : values[field];
-      if (current === null || current === undefined) {
-        continue;
-      }
-      if (previous !== null && previous !== undefined && current < previous) {
-        return false;
-      }
-      previous = current;
-    }
-    return true;
-  }, '四档阈值必须按低低限 ≤ 低限 ≤ 高限 ≤ 高高限排列（允许空档）');
+  return nullableNumberRule().refine(
+    (value) => isThresholdOrderValid({ ...values, [currentField]: value }),
+    '四档阈值必须按低低限 ≤ 低限 ≤ 高限 ≤ 高高限排列（允许空档）',
+  );
 }
 
 /** 通道通用编辑表单；值类别、编码与归属均不允许修改 */

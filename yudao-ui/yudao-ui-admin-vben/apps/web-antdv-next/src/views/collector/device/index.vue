@@ -2,7 +2,7 @@
 import type { VxeTableGridOptions } from '#/adapter/vxe-table';
 import type { CollectorApi } from '#/api/collector';
 
-import { Page, useVbenModal } from '@vben/common-ui';
+import { Page, useVbenDrawer, useVbenModal } from '@vben/common-ui';
 
 import { message } from 'antdv-next';
 
@@ -11,9 +11,15 @@ import { deleteDevice, getDevicePage } from '#/api/collector';
 
 import { useGridColumns, useGridFormSchema } from './data';
 import Form from './modules/form.vue';
+import ThresholdMatrix from './modules/threshold-matrix.vue';
 
 const [FormModal, formModalApi] = useVbenModal({
   connectedComponent: Form,
+  destroyOnClose: true,
+});
+
+const [ThresholdDrawer, thresholdDrawerApi] = useVbenDrawer({
+  connectedComponent: ThresholdMatrix,
   destroyOnClose: true,
 });
 
@@ -30,6 +36,11 @@ function handleCreate() {
 /** 编辑设备 */
 function handleEdit(row: CollectorApi.Device) {
   formModalApi.setData(row).open();
+}
+
+/** 打开设备阈值矩阵 */
+function handleThresholdMatrix(row: CollectorApi.Device) {
+  thresholdDrawerApi.setData(row).open();
 }
 
 /** 删除设备 */
@@ -81,6 +92,7 @@ const [Grid, gridApi] = useVbenVxeGrid({
 <template>
   <Page auto-content-height>
     <FormModal @success="handleRefresh" />
+    <ThresholdDrawer />
     <Grid table-title="采集设备列表">
       <template #toolbar-tools>
         <TableAction
@@ -104,6 +116,12 @@ const [Grid, gridApi] = useVbenVxeGrid({
               icon: ACTION_ICON.EDIT,
               auth: ['collector:device:update'],
               onClick: handleEdit.bind(null, row),
+            },
+            {
+              label: '阈值',
+              type: 'link',
+              auth: ['collector:channel:update'],
+              onClick: handleThresholdMatrix.bind(null, row),
             },
             {
               label: '删除',

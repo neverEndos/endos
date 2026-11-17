@@ -32,6 +32,14 @@ public interface CollectorChannelMapper extends BaseMapperX<CollectorChannelDO> 
                 .last("LIMIT 1"));
     }
 
+    default List<CollectorChannelDO> selectListByDeviceId(Long deviceId) {
+        return selectList(new LambdaQueryWrapperX<CollectorChannelDO>()
+                .eq(CollectorChannelDO::getDeviceId, deviceId)
+                .orderByAsc(CollectorChannelDO::getSensorId)
+                .orderByAsc(CollectorChannelDO::getSort)
+                .orderByAsc(CollectorChannelDO::getId));
+    }
+
     default List<CollectorChannelDO> selectListBySensorId(Long sensorId) {
         return selectList(new LambdaQueryWrapperX<CollectorChannelDO>()
                 .eq(CollectorChannelDO::getSensorId, sensorId)
