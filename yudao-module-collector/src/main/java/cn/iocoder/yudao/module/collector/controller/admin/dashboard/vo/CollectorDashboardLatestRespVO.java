@@ -1,0 +1,101 @@
+package cn.iocoder.yudao.module.collector.controller.admin.dashboard.vo;
+
+import io.swagger.v3.oas.annotations.media.Schema;
+import lombok.Data;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.List;
+
+@Schema(description = "管理后台 - 采集设备最新值看板 Response VO")
+@Data
+public class CollectorDashboardLatestRespVO {
+
+    @Schema(description = "设备状态", requiredMode = Schema.RequiredMode.REQUIRED)
+    private Device device;
+
+    @Schema(description = "按传感器分组的通道最新值", requiredMode = Schema.RequiredMode.REQUIRED)
+    private List<Sensor> sensors;
+
+    @Schema(description = "后端服务器时间", requiredMode = Schema.RequiredMode.REQUIRED)
+    private LocalDateTime serverTime;
+
+    @Schema(description = "数据版本令牌，可用于 If-None-Match 条件请求", requiredMode = Schema.RequiredMode.REQUIRED)
+    private String versionToken;
+
+    @Data
+    public static class Device {
+
+        @Schema(description = "设备编号", requiredMode = Schema.RequiredMode.REQUIRED)
+        private Long id;
+
+        @Schema(description = "设备名称", requiredMode = Schema.RequiredMode.REQUIRED)
+        private String name;
+
+        @Schema(description = "是否在线；采样超过十倍轮询周期时强制离线", requiredMode = Schema.RequiredMode.REQUIRED)
+        private Boolean online;
+
+        @Schema(description = "最近一次轮询状态更新时间")
+        private LocalDateTime lastPollAt;
+
+        @Schema(description = "最近一次心跳报告的数据库写入延迟（毫秒）")
+        private Integer lastWriteLagMs;
+
+        @Schema(description = "连续失败次数", requiredMode = Schema.RequiredMode.REQUIRED)
+        private Integer consecutiveFailures;
+
+        @Schema(description = "设备轮询周期（毫秒）", requiredMode = Schema.RequiredMode.REQUIRED)
+        private Integer pollIntervalMs;
+
+        @Schema(description = "是否因最新采样超过十倍轮询周期而离线", requiredMode = Schema.RequiredMode.REQUIRED)
+        private Boolean staleOffline;
+
+    }
+
+    @Data
+    public static class Sensor {
+
+        @Schema(description = "传感器编号", requiredMode = Schema.RequiredMode.REQUIRED)
+        private Long id;
+
+        @Schema(description = "传感器名称", requiredMode = Schema.RequiredMode.REQUIRED)
+        private String name;
+
+        @Schema(description = "传感器型号")
+        private String model;
+
+        @Schema(description = "通道最新值", requiredMode = Schema.RequiredMode.REQUIRED)
+        private List<Channel> channels;
+
+    }
+
+    @Data
+    public static class Channel {
+
+        @Schema(description = "通道编号", requiredMode = Schema.RequiredMode.REQUIRED)
+        private Long id;
+
+        @Schema(description = "通道名称", requiredMode = Schema.RequiredMode.REQUIRED)
+        private String name;
+
+        @Schema(description = "工程单位")
+        private String unit;
+
+        @Schema(description = "值类别：number 数值、enum 枚举", requiredMode = Schema.RequiredMode.REQUIRED)
+        private String valueKind;
+
+        @Schema(description = "数值通道最新值")
+        private BigDecimal valueNum;
+
+        @Schema(description = "枚举通道最新值")
+        private String valueText;
+
+        @Schema(description = "数据质量：0 正常、1 异常、2 陈旧；无数据时为空")
+        private Integer quality;
+
+        @Schema(description = "采样时间")
+        private LocalDateTime sampleTime;
+
+    }
+
+}
