@@ -22,6 +22,7 @@ jobs:
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
       frontend: ${{ steps.filter.outputs.frontend }}
+      collector: ${{ steps.filter.outputs.collector }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -40,6 +41,10 @@ jobs:
               - '.github/workflows/**'
             frontend:
               - 'yudao-ui/**'
+              - '.github/workflows/**'
+            collector:
+              - 'collector/**'
+              - 'deploy/**'
               - '.github/workflows/**'
 
   # 后端：仅在后端相关文件变更或手动触发时执行 Maven 打包。
@@ -98,11 +103,27 @@ jobs:
       - name: Build (antdv-next)
         run: pnpm build:antdv-next
 
-  # 分支保护 required check：始终运行，汇总 changes/backend/frontend 的结果。
-  # backend/frontend 被跳过说明该侧没有变更，视为通过。
+  # 采集器：仅在采集器、部署脚本或 CI 自身变更或手动触发时执行 Python 单元测试。
+  # 测试全部使用 fake DB/transport，不连接数据库、串口或网络服务。
+  collector:
+    name: Collector (Python)
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.collector == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # psycopg2 仅在真正连接数据库时才延迟导入，单测使用 fake DB，无需安装第三方依赖。
+      - name: Run unit tests
+        run: python -m unittest discover -s collector/tests -v
+
+  # 分支保护 required check：始终运行，汇总 changes/backend/frontend/collector 的结果。
+  # 被跳过的 job 说明该侧没有变更，视为通过。
   build:
     name: build
-    needs: [ changes, backend, frontend ]
+    needs: [ changes, backend, frontend, collector ]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -111,17 +132,19 @@ jobs:
           CHANGES_RESULT: ${{ needs.changes.result }}
           BACKEND_RESULT: ${{ needs.backend.result }}
           FRONTEND_RESULT: ${{ needs.frontend.result }}
+          COLLECTOR_RESULT: ${{ needs.collector.result }}
         run: |
           echo "changes=${CHANGES_RESULT}"
           echo "backend=${BACKEND_RESULT}"
           echo "frontend=${FRONTEND_RESULT}"
+          echo "collector=${COLLECTOR_RESULT}"
 
           failed=0
           if [ "${CHANGES_RESULT}" != "success" ]; then
             echo "::error::changes job 未成功：${CHANGES_RESULT}"
             failed=1
           fi
-          for pair in "backend:${BACKEND_RESULT}" "frontend:${FRONTEND_RESULT}"; do
+          for pair in "backend:${BACKEND_RESULT}" "frontend:${FRONTEND_RESULT}" "collector:${COLLECTOR_RESULT}"; do
             name="${pair%%:*}"
             result="${pair#*:}"
             case "${result}" in
