@@ -132,9 +132,18 @@ class SerialRS485Transport:
             return None
 
     def set_rs485_flags(
-        self, flags: int, delay_rts_before_send: int = 0, delay_rts_after_send: int = 0
+        self,
+        flags: int,
+        delay_rts_before_send: int = 0,
+        delay_rts_after_send: int = 0,
+        *,
+        strict: bool = False,
     ) -> None:
-        """通过 ioctl 设置 ``struct serial_rs485``（8×uint32）。"""
+        """通过 ioctl 设置 ``struct serial_rs485``（8×uint32）。
+
+        启动探测保留旧的宽松行为：内核不支持 ioctl 时可依赖板载自动方向。
+        热加载必须传 ``strict=True``，让调用方明确感知失败并保留旧配置重试。
+        """
         if self.fd is None:
             raise SerialTransportError("串口未打开")
         payload = struct.pack(
@@ -147,6 +156,10 @@ class SerialRS485Transport:
             # 但板载自动方向电路仍可收发；告警后继续，不阻断采集。
             self.rs485_unsupported = True
             self.rs485_flags = None
+            if strict:
+                raise SerialTransportError(
+                    f"TIOCSRS485 设置失败（flags={flags}）: {exc}"
+                ) from exc
             if not self._rs485_warned:
                 self._rs485_warned = True
                 if self.logger is not None:

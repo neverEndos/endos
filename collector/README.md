@@ -20,7 +20,8 @@ collector/
 ├── main.py              # CLI 入口
 ├── poll.py              # 轮询器、RS485 flags 探测、统计与 JSONL 输出
 ├── seed.py              # 幂等 HSI 演示配置种子（协议/类型/设备/传感器/模板/通道）
-├── storage.py           # PostgreSQL 落库（raw/设备状态/心跳）与通道映射解析
+├── storage.py           # PostgreSQL 落库、配置指纹与通道映射解析
+├── runtime_config.py    # CLI/DB 参数优先级与运行中配置热加载
 ├── partitions.py        # collector_sample_raw 未来日分区预创建（纯函数 + DDL）
 ├── transport.py         # Linux 串口 + TIOCSRS485 传输层
 ├── hsi/
@@ -52,10 +53,12 @@ python3 main.py --interval 60 --duration 600
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `--port` | `/dev/ttyS4` | 串口设备 |
+| `--baud` | `9600` | 串口波特率；HSI 当前固定 9600 |
 | `--interval` | 读取 DB（缺失时 `5.0`） | 轮询间隔（秒）。缺省时用 `collector_device.poll_interval_ms`，读取不到才退回 5.0；显式传入优先 |
 | `--duration` | `600.0` | 运行时长（秒），`0` 表示一直运行 |
-| `--timeout` | `1.0` | 单次请求等待应答超时（秒） |
-| `--retries` | `1` | 单次采集失败后的重试次数 |
+| `--timeout` | 读取 DB（缺失时 `1.0`） | 单次请求等待应答超时（秒）。缺省时用 `collector_device.timeout_ms`（毫秒换算为秒），显式传入优先 |
+| `--retries` | 读取 DB（缺失时 `1`） | 单次采集失败后的重试次数。缺省时用 `collector_device.retries`，显式传入优先，显式 `0` 表示不重试 |
+| `--config-check-interval` | 跟随当前轮询间隔 | DB 配置指纹检查间隔（秒）；轮询间隔热更新后，缺省检查间隔也随之更新 |
 | `--output` | `~/collector-proto/data.jsonl` | JSONL 输出路径（每次启动覆盖） |
 | `--log` | `~/collector-proto/proto.log` | 日志路径（每次启动覆盖） |
 | `--flags` | `auto` | `auto` 优先使用 `collector_sensor.connection_config.rs485Flags`（有值时），否则依次尝试 `1,3,5,7,0`；也可传逗号分隔列表（显式列表覆盖 DB 配置） |
@@ -69,7 +72,7 @@ python3 main.py --interval 60 --duration 600
 
 启动流程：打开串口 → 保存原 termios/RS485 配置 → 先以 flags=0 清除遗留状态 →
 连接 PostgreSQL（失败不退出）并执行幂等种子、解析设备/通道配置（含启用状态、
-`poll_interval_ms`、`connection_config.rs485Flags`）→ 按 `--flags` 候选探测
+`poll_interval_ms`、`timeout_ms`、`retries`、`connection_config.rs485Flags`）→ 按 `--flags` 候选探测
 RS485，每个 flags 要求**能应答的**传感器各连续 2 次 msg=1 状态应答，失败则重开
 串口再试下一候选（本现场会回退到 0）。默认宽松策略：探测中无应答的传感器只
 WARN，并在后续轮询中跳过；`--require-sensors` 可恢复“所有已启用传感器都必须
@@ -80,6 +83,49 @@ WARN，并在后续轮询中跳过；`--require-sensors` 可恢复“所有已�
 起恢复 raw/设备状态/心跳写入，无需人工重启。同一类连接错误在一个失败周期内只
 告警一次，恢复时记录 INFO，避免日志刷屏。进程收到 SIGINT/SIGTERM 或达到
 `--duration` 后关闭 JSONL/DB 连接、恢复串口设置，并输出统计摘要。
+
+### DB 配置热加载
+
+运行中按 `--config-check-interval` 检查配置；未显式设置时跟随当前轮询间隔。
+每次检查只执行**一条 SQL**，分别读取 `collector_device`、`collector_sensor`、
+`collector_channel` 的 `MAX(update_time)` 与行数。空表或 `update_time` 全为空时，
+`MAX` 由 `COALESCE(..., TIMESTAMP 'epoch')` 兜底；行数用于识别同时间戳下的增删。
+设备表指纹单独比较，传感器/通道表指纹共同作为结构指纹：
+
+- 指纹不变：不重新查询完整配置，不重建 driver；
+- 仅设备表变化：重新加载上下文并更新轮询间隔、请求超时、重试次数，不重建
+  driver，也不修改串口；CLI 显式传入的 `--interval` / `--timeout` / `--retries`
+  始终覆盖 DB，因此这类显式覆盖项不会随 DB 热更新；
+- 传感器或通道变化：重新加载通道映射并重建启用传感器的 driver 列表。被禁用或
+  删除的传感器会移出轮询集合并记录中文日志，之后重新启用则自动加入；串口始终
+  复用同一个已打开实例，不执行 close/reopen。`--flags auto` 且 `rs485Flags` 改变时，
+  只在原串口实例上以严格模式重新设置 flags；显式 `--flags` 列表仍覆盖 DB；
+- 结构应用采用“DB 准备 → 串口/driver 应用 → DB 提交”两阶段流程。只有 flags ioctl
+  与结构回调全部成功后才提交新上下文和新指纹；任一环节失败都保留旧上下文、旧运行
+  参数、旧 driver 和旧指纹，不输出“已热加载”成功日志。首次失败后的下一轮立即重试；
+  若仍失败则按 2、4、8、16、32、60 秒指数退避，60 秒封顶，且实际等待不小于当前
+  轮询间隔。冷却期间继续用旧配置采集，成功应用一次后失败计数、冷却与日志去重状态
+  全部复位，后续变更恢复正常检查节奏。新增或重新启用传感器无应答只跳过该传感器，
+  不会回滚其他有效的通道配置；
+- 相同硬件错误只在首次出现、错误原因变化或退避档位提升时写 ERROR；60 秒封顶后的
+  重复失败不刷日志。以最小 100ms 轮询、忽略单次操作用时计算，持续失败 60 秒内最多
+  尝试 6 次：首次、下一轮立即重试，以及约 2/6/14/30 秒四次退避重试；下一次还需等待
+  32 秒，落在约 62 秒；
+- 启动时无应答且持续保持启用的传感器，在普通参数/通道/其他传感器结构变化时仍保持
+  跳过，不会被意外加回；只有新增、禁用后重新启用，或进程重启时才再次执行连通探测。
+  新传感器探测复用当前 flags 和原串口，不遍历候选，也不 close/reopen；
+- 读取指纹或完整配置失败：保留上一次有效的运行参数、driver 与通道映射继续采集，
+  记录告警并进入 DB 未就绪状态；重连只受 `--db-retry-interval` 节流，硬件重试标记
+  不会提前触发 DB 连接或指纹查询。DB 恢复后重新加载，无需重启；断库期间 raw 仍按
+  首期策略丢弃，不做本地 spool；
+- 运行中全部传感器被禁用时采集循环保持运行，以便之后重新启用；只有**启动时**
+  就全部禁用才沿用正常退出（exit 0）行为。
+
+变更日志会标明“运行参数”或“结构”，并输出间隔、超时、重试次数等变更前后值；
+结构变化还会输出轮询传感器、通道绑定数与 `rs485Flags` 的变化。
+
+> 指纹依赖 Web/后端正确维护 `update_time`。若直接改库但不更新该字段，且表行数也
+> 没变，则本次修改不会被指纹发现；通过正常后台接口修改无此限制。
 
 ## 输出
 
@@ -153,13 +199,16 @@ WARN，并在后续轮询中跳过；`--require-sensors` 可恢复“所有已�
 - `collector_channel.scale` / `value_offset`：落库与 JSONL 的工程值统一按
   `raw * scale + value_offset` 计算，解析器内置缩放只用于 JSONL 的 `fields` 对照；
 - `collector_channel.enabled` / `collector_sensor.enabled`：`enabled=0` 的传感器
-  与通道在启动解析时被过滤，不探测、不轮询、不输出/落库，日志记录跳过数量；
+  与通道在解析时被过滤，不探测、不轮询、不输出/落库，日志记录跳过数量；运行中
+  修改后由结构热加载自动应用；
 - `collector_channel.value_kind` / 量程 / 四档阈值 / 单档开关：当前采集进程只消费
   `scale`、`value_offset` 与 `enabled`，阈值供后续报警判断与 UI 编辑使用；
   枚举通道不参与阈值报警；
-- `collector_device.poll_interval_ms`：作为默认轮询间隔（CLI `--interval` 优先）；
+- `collector_device.poll_interval_ms` / `timeout_ms` / `retries`：分别作为默认轮询
+  间隔、请求超时（毫秒换算为秒）与失败重试次数，CLI `--interval` / `--timeout` /
+  `--retries` 显式值优先；`timeout_ms` 已从仅保存配置变为实际生效，三项均支持热加载；
 - `collector_sensor.connection_config.rs485Flags`：`--flags auto` 时作为首选候选，
-  显式逗号列表仍可覆盖；
+  显式逗号列表仍可覆盖；结构热加载时在原串口实例上应用新值；
 - `collector_retention_policy.partition_lead_days`：分区预创建使用该值（默认 3）。
 
 落库行为：
@@ -178,10 +227,10 @@ WARN，并在后续轮询中跳过；`--require-sensors` 可恢复“所有已�
   `last_error`；
 - `collector_heartbeat`：首轮及每 `--heartbeat-every` 轮写一行，`instance_id`
   为“主机名 + 进程启动时间”，`collector_version=0.1.0-prototype`；
-- DB 不可用时记录 WARN（同一错误只告警一次）并继续轮询，JSONL 的
-  `device_id`/`channel_id` 为 null；按 `--db-retry-interval` 自动重连、重新种子并
-  重新解析映射，恢复后无需重启即继续落库（首期接受断连期间丢数据，不做本地
-  spool）。
+- DB 不可用时记录 WARN（同一错误只告警一次）并继续轮询；若启动后尚未解析过有效
+  配置，JSONL 的 `device_id`/`channel_id` 为 null，若已有有效配置则保留上一次的
+  映射。按 `--db-retry-interval` 自动重连、重新种子并重新解析映射，恢复后无需重启
+  即继续落库（首期接受断连期间丢数据，不做本地 spool）。
 
 常用核对 SQL（板端）：
 
@@ -283,9 +332,14 @@ python -m unittest discover -s collector/tests -v
 无 `dc_change_pct` 错位行、未配置 Raw 字段被跳过）、状态应答 Length=0x05 与
 StatusByte/StatusCodeLo/Hi 三字节判定、重试逻辑、RS485 flags 探测（宽松/严格
 两种策略）、JSONL 输出与统计摘要、配置驱动（scale/value_offset、enabled=0 跳过、
-poll_interval 继承、rs485Flags 优先）、分区预创建（名称/边界/幂等/schema 限定/
-DDL 失败不中断轮询），以及 DB 首次不可用后恢复、映射解析失败后恢复、重连节流
-（不会每轮建连）、运行中写入失败自动重连。板端脚本另有
+poll_interval/timeout/retries 的 CLI > DB > 默认优先级、rs485Flags 优先）、
+单 SQL 配置指纹、无变化不重载、参数变化不重建 driver、结构变化重建 driver 且不重开
+串口、禁用传感器移出轮询、启动无应答状态保留与新增/重新启用探测、flags 严格失败传播、
+应用失败保留旧上下文/旧指纹、首次立即重试与后续指数退避、退避期间 DB 重连独立节流、
+相同错误日志去重及成功复位、`run_loop` 参数与结构热加载集成、
+热加载读取失败保留旧配置、分区预创建（名称/边界/幂等/
+schema 限定/DDL 失败不中断轮询），以及 DB 首次不可用后恢复、映射解析失败后恢复、
+重连节流（不会每轮建连）、运行中写入失败自动重连。板端脚本另有
 `deploy/tests/test_common.sh` 与 `deploy/tests/test_mock_gate.sh`。
 
 ## 约束与已知限制
@@ -296,14 +350,15 @@ DDL 失败不中断轮询），以及 DB 首次不可用后恢复、映射解析
   通信成功率、解析正确性、稳定落库；
 - 状态应答按 Length=0x05 校验，Data 三字节按 StatusByte/StatusCodeLo/StatusCodeHi
   全部参与判定（三字节全 0 才有效）；正式文档到位后需复核三字节具体语义；
-- `enabled=0` 的传感器/通道不参与采集；若所有传感器都被禁用，进程记录 WARN 后
-  以退出码 0 正常退出，避免 `Restart=on-failure` 触发重启风暴，启用传感器后需
-  手动重启 collector；
+- `enabled=0` 的传感器/通道不参与采集；若**启动时**所有传感器都被禁用，进程记录
+  WARN 后以退出码 0 正常退出，避免 `Restart=on-failure` 触发重启风暴，启用传感器后
+  需手动重启 collector；运行中全部禁用则保持循环，之后可通过热加载重新启用；
 - 首期不做本地 spool：DB 不可用期间的数据直接丢弃；
 - 配置版本快照、聚合、报警尚未接入，`config_version_id` 等字段留空；
-- 默认宽松启动：单颗传感器无应答不会阻止启动，但该传感器在本次进程内会被跳过
-  （不会自动恢复；需要传感器全量在线时使用 `--require-sensors`）。现场传感器
-  恢复应答后需重启 collector；
+- 默认宽松启动：单颗传感器无应答不会阻止启动，但该传感器会被跳过（需要传感器
+  全量在线时使用 `--require-sensors`）。普通结构重载不会重新尝试持续启用但无应答的
+  传感器；新增、禁用后重新启用或进程重启时才再次探测，避免无关配置修改造成意外轮询；
 - 分区预创建需要采集账号具备建表权限；权限不足时只告警，需运维手工创建，否则
   数据会落进 `collector_sample_raw_default`；
-- 默认 5 秒轮询只做了短跑验证，系统部署按 60 秒轮询运行。
+- 默认 5 秒轮询只做了短跑验证；systemd 不再传死轮询参数，系统部署由 DB 种子默认
+  `poll_interval_ms=60000`（60 秒）控制。

@@ -90,6 +90,9 @@ class DeviceContext:
     poll_interval_ms: int | None = None
     rs485_flags: int | None = None
     active_sensor_codes: tuple[str, ...] | None = None
+    # 新字段放在旧可选字段之后，保持已有位置参数调用的兼容性。
+    timeout_ms: int | None = None
+    retries: int | None = None
 
     def bindings_for(self, sensor_code: str) -> tuple[ChannelBinding, ...]:
         return tuple(b for b in self.bindings if b.sensor_code == sensor_code)
@@ -177,6 +180,8 @@ def context_from_rows(
     channel_rows: Iterable[tuple],
     *,
     poll_interval_ms: int | None = None,
+    timeout_ms: int | None = None,
+    retries: int | None = None,
     rs485_flags: int | None = None,
     active_sensor_codes: tuple[str, ...] | None = None,
 ) -> DeviceContext:
@@ -241,9 +246,69 @@ def context_from_rows(
         bindings=tuple(merged.values()),
         resolved=device_id is not None,
         poll_interval_ms=poll_interval_ms,
+        timeout_ms=timeout_ms,
+        retries=retries,
         rs485_flags=rs485_flags,
         active_sensor_codes=active_sensor_codes,
     )
+
+
+@dataclass(frozen=True)
+class ConfigFingerprint:
+    """三张配置表的轻量指纹；时间戳为空时由 SQL 使用 epoch 兜底。"""
+
+    device_updated: Any
+    device_count: int
+    sensor_updated: Any
+    sensor_count: int
+    channel_updated: Any
+    channel_count: int
+
+    @classmethod
+    def from_row(cls, row: tuple) -> "ConfigFingerprint":
+        return cls(
+            row[0],
+            int(row[1]),
+            row[2],
+            int(row[3]),
+            row[4],
+            int(row[5]),
+        )
+
+    @property
+    def structure(self) -> tuple:
+        return (
+            self.sensor_updated,
+            self.sensor_count,
+            self.channel_updated,
+            self.channel_count,
+        )
+
+
+def config_change_kind(
+    previous: ConfigFingerprint | None,
+    current: ConfigFingerprint,
+) -> str:
+    """区分无变化、仅设备运行参数变化与传感器/通道结构变化。"""
+
+    if previous is None:
+        return "structure"
+    if previous == current:
+        return "none"
+    if previous.structure != current.structure:
+        return "structure"
+    return "parameters"
+
+
+@dataclass
+class _PendingConfigChange:
+    """已通过 DB 校验、但尚未被串口/轮询层接受的配置变更。"""
+
+    previous_context: DeviceContext
+    previous_fingerprint: ConfigFingerprint | None
+    context: DeviceContext
+    fingerprint: ConfigFingerprint
+    kind: str
 
 
 MISSING = object()
@@ -460,6 +525,33 @@ def build_heartbeat_row(
     }
 
 
+_CONFIG_FINGERPRINT_SQL = """
+SELECT
+    (SELECT COALESCE(MAX(update_time), TIMESTAMP 'epoch')
+       FROM public.collector_device
+      WHERE device_code = %s AND deleted = 0),
+    (SELECT COUNT(*)
+       FROM public.collector_device
+      WHERE device_code = %s AND deleted = 0),
+    (SELECT COALESCE(MAX(s.update_time), TIMESTAMP 'epoch')
+       FROM public.collector_sensor s
+       JOIN public.collector_device d ON d.id = s.device_id
+      WHERE d.device_code = %s AND d.deleted = 0 AND s.deleted = 0),
+    (SELECT COUNT(*)
+       FROM public.collector_sensor s
+       JOIN public.collector_device d ON d.id = s.device_id
+      WHERE d.device_code = %s AND d.deleted = 0 AND s.deleted = 0),
+    (SELECT COALESCE(MAX(c.update_time), TIMESTAMP 'epoch')
+       FROM public.collector_channel c
+       JOIN public.collector_device d ON d.id = c.device_id
+      WHERE d.device_code = %s AND d.deleted = 0 AND c.deleted = 0),
+    (SELECT COUNT(*)
+       FROM public.collector_channel c
+       JOIN public.collector_device d ON d.id = c.device_id
+      WHERE d.device_code = %s AND d.deleted = 0 AND c.deleted = 0)
+"""
+
+
 _SAMPLE_INSERT_SQL = """
 INSERT INTO public.collector_sample_raw (
     channel_id, device_id, collect_time, value, raw_value, quality
@@ -555,14 +647,30 @@ class PgStorage:
             self._conn = None
 
     # ------------------------------------------------------------------ 启动解析
+    def load_config_fingerprint(self) -> ConfigFingerprint:
+        """用单条 SQL 读取设备、传感器、通道的更新时间与行数指纹。"""
+
+        self._ensure_conn()
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(_CONFIG_FINGERPRINT_SQL, (DEVICE_CODE,) * 6)
+                row = cur.fetchone()
+                if row is None:
+                    raise DatabaseUnavailableError("配置指纹查询没有返回结果")
+                return ConfigFingerprint.from_row(row)
+        except Exception:
+            self._reset_conn()
+            raise
+
     def load_context(self) -> DeviceContext:
-        """从 DB 解析设备/通道 id，并读取已存在的设备状态。"""
+        """从 DB 解析设备/通道 id、运行参数，并读取已存在的设备状态。"""
 
         self._ensure_conn()
         try:
             with self._conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id, poll_interval_ms FROM public.collector_device"
+                    "SELECT id, poll_interval_ms, timeout_ms, retries"
+                    " FROM public.collector_device"
                     " WHERE device_code = %s AND deleted = 0",
                     (DEVICE_CODE,),
                 )
@@ -571,6 +679,16 @@ class PgStorage:
                 poll_interval_ms = (
                     int(row[1])
                     if row and row[1] is not None and int(row[1]) > 0
+                    else None
+                )
+                timeout_ms = (
+                    int(row[2])
+                    if row and row[2] is not None and int(row[2]) > 0
+                    else None
+                )
+                retries = (
+                    int(row[3])
+                    if row and row[3] is not None and int(row[3]) >= 0
                     else None
                 )
                 if device_id is None:
@@ -629,6 +747,8 @@ class PgStorage:
                     device_id,
                     rows,
                     poll_interval_ms=poll_interval_ms,
+                    timeout_ms=timeout_ms,
+                    retries=retries,
                     rs485_flags=rs485_flags,
                     active_sensor_codes=enabled_sensor_codes,
                 )
@@ -879,6 +999,9 @@ class DatabaseManager:
         self._attempts = 0
         self._last_error: str | None = None
         self._last_partition_error: str | None = None
+        self._last_config_error: str | None = None
+        self._config_fingerprint: ConfigFingerprint | None = None
+        self._pending_config: _PendingConfigChange | None = None
 
     # ------------------------------------------------------------------ 状态
     def ensure_ready(self) -> bool:
@@ -950,6 +1073,8 @@ class DatabaseManager:
         try:
             storage.connect()
             context = storage.load_context()
+            fingerprint_loader = getattr(storage, "load_config_fingerprint", None)
+            fingerprint = fingerprint_loader() if fingerprint_loader is not None else None
         except Exception:
             self._safe_close(storage)
             raise
@@ -958,13 +1083,117 @@ class DatabaseManager:
             raise DatabaseUnavailableError("设备种子缺失，通道映射未能解析")
         self.storage = storage
         self.context = context
+        self._config_fingerprint = fingerprint
+        self._pending_config = None
+
+    @property
+    def pending_context(self) -> DeviceContext | None:
+        return self._pending_config.context if self._pending_config is not None else None
+
+    def config_snapshot(self) -> tuple[DeviceContext, ConfigFingerprint | None]:
+        """保存当前已提交配置，供外部硬件应用失败时恢复。"""
+
+        return self.context, self._config_fingerprint
+
+    def restore_config_snapshot(
+        self, snapshot: tuple[DeviceContext, ConfigFingerprint | None]
+    ) -> None:
+        """恢复旧上下文与旧指纹，并丢弃所有未提交变更。"""
+
+        self.context, self._config_fingerprint = snapshot
+        self._pending_config = None
+        if self.storage is not None:
+            self.storage.context = self.context
+
+    def prepare_config_change(self) -> str:
+        """读取并暂存配置变化，但绝不提前提交新上下文或新指纹。
+
+        返回 ``none`` / ``parameters`` / ``structure`` / ``error`` /
+        ``unavailable`` / ``unsupported``。变化类型为 parameters/structure 时，
+        新上下文通过 :attr:`pending_context` 暴露，调用方应用硬件配置成功后必须
+        调用 :meth:`commit_config_change`，失败则调用 :meth:`rollback_config_change`。
+        """
+
+        if not self.ready or self.storage is None:
+            return "unavailable"
+        fingerprint_loader = getattr(self.storage, "load_config_fingerprint", None)
+        if fingerprint_loader is None:
+            # 保留旧参考实现与测试替身的兼容性。
+            return "unsupported"
+        previous = self._config_fingerprint
+        previous_context = self.context
+        self._pending_config = None
+        try:
+            current = fingerprint_loader()
+            if previous is not None and current == previous:
+                self._last_config_error = None
+                return "none"
+            context = self.storage.load_context()
+            if context.device_id is None:
+                raise DatabaseUnavailableError("设备种子缺失，热加载配置无效")
+        except Exception as exc:
+            # load_context 在设备缺失时可能清空 storage.context，必须恢复旧值，
+            # 确保后续写入与 JSONL 仍使用最后一次有效配置。
+            self.storage.context = previous_context
+            self._last_config_error = f"{type(exc).__name__}: {exc}"
+            # PgStorage 读失败会关闭连接；必须同时让 manager 进入未就绪状态，
+            # 否则下一次硬件重试会在 PgStorage._ensure_conn 中绕过 DB 重连节流。
+            self._mark_unavailable(
+                exc,
+                reason="配置热加载读取失败，保留上一次有效配置继续采集",
+            )
+            return "error"
+
+        self._pending_config = _PendingConfigChange(
+            previous_context=previous_context,
+            previous_fingerprint=previous,
+            context=context,
+            fingerprint=current,
+            kind=config_change_kind(previous, current),
+        )
+        # load_context 会更新 storage.context；提交前必须继续让写入使用旧映射。
+        self.storage.context = previous_context
+        self._last_config_error = None
+        return self._pending_config.kind
+
+    def commit_config_change(self) -> None:
+        """外部硬件应用成功后，原子提交新上下文与新指纹。"""
+
+        pending = self._pending_config
+        if pending is None:
+            raise RuntimeError("没有待提交的配置变更")
+        self.context = pending.context
+        self._config_fingerprint = pending.fingerprint
+        if self.storage is not None:
+            self.storage.context = pending.context
+        self._pending_config = None
+
+    def rollback_config_change(self) -> None:
+        """外部硬件应用失败，保留旧上下文与旧指纹，下次可重试同一变化。"""
+
+        pending = self._pending_config
+        if pending is None:
+            return
+        self.restore_config_snapshot(
+            (pending.previous_context, pending.previous_fingerprint)
+        )
+
+    def reload_if_changed(self) -> str:
+        """兼容参考调用：无需外部硬件确认时，准备后立即提交。"""
+
+        kind = self.prepare_config_change()
+        if kind in ("parameters", "structure"):
+            self.commit_config_change()
+        return kind
 
     def _mark_unavailable(self, exc: Exception, reason: str = "PostgreSQL 暂不可用") -> None:
         if self.storage is not None:
             self._safe_close(self.storage)
         self.storage = None
-        self.context = unresolved_context()
+        # 运行中断线必须保留最后一次有效上下文与指纹，供 JSONL/重载失败回滚使用；
+        # 初次启动时 context 本来就是 unresolved_context，不会误报设备已解析。
         self.ready = False
+        self._pending_config = None
         # 运行中写入失败后同样按重连间隔节流，避免每个轮询周期反复建连。
         self._last_attempt = self._clock()
         error = f"{type(exc).__name__}: {exc}"
@@ -972,11 +1201,17 @@ class DatabaseManager:
             # 同一错误周期只告警一次，避免每分钟刷屏；恢复时再记录 INFO。
             return
         self._last_error = error
+        mapping_note = (
+            "channel_id 为空"
+            if self.context.device_id is None
+            else "保留最后一次有效通道映射"
+        )
         self.logger.warning(
-            "%s（DB 尝试 %d 次失败），本轮继续仅输出 JSONL（channel_id 为空），"
+            "%s（DB 尝试 %d 次失败），本轮继续仅输出 JSONL（%s），"
             "%.0f 秒后自动重试: %s",
             reason,
             self._attempts,
+            mapping_note,
             self.retry_interval_s,
             error,
         )

@@ -16,7 +16,8 @@ EnvironmentFile=/etc/yudao/env.remote
 SupplementaryGroups=dialout
 # 参数与 collector/main.py 的真实 CLI 一致：
 #   --port       RS485 串口（HSI 总线，需 TIOCSRS485）
-#   --interval   轮询间隔（秒），60 为 collector/README.md 建议值
+#   --interval/--timeout/--retries 不由 unit 固定，缺省读取 DB：
+#                collector_device.poll_interval_ms/timeout_ms/retries，并定期热加载
 #   --duration   0 表示一直运行（原型默认 600 秒后退出）
 #   --output     JSONL 输出，进程每次启动会覆盖该文件
 #   --log        原型日志，进程每次启动会覆盖该文件
@@ -25,10 +26,7 @@ SupplementaryGroups=dialout
 #   --db-retry-interval  DB 不可用时的重连/重新种子间隔（秒）
 ExecStart=/usr/bin/python3 /opt/yudao/collector/current/main.py \
     --port /dev/ttyS4 \
-    --interval 60 \
     --duration 0 \
-    --timeout 1.0 \
-    --retries 1 \
     --output /opt/yudao/logs/collector-data.jsonl \
     --log /opt/yudao/logs/collector.log \
     --flags auto \

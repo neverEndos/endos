@@ -12,8 +12,10 @@
 - PostgreSQL：raw 采样、设备状态与心跳（``YUDAO_DB_*`` 环境变量）。
 
 DB 不可用时进程不退出：按 ``--db-retry-interval``（默认 60 秒）周期性重连、重新
-执行幂等种子并重新解析通道映射；期间 JSONL 仍输出，``channel_id`` 为 null。
-DB 恢复后自动开始落库，无需人工重启。
+执行幂等种子并重新解析通道映射；期间 JSONL 仍输出，尚未取得有效配置时
+``channel_id`` 为 null，已有配置则保留最后一次有效映射。DB 恢复后自动开始落库。
+运行中按 ``--config-check-interval`` 检查三张配置表指纹，DB 修改轮询参数、传感器
+或通道后无需重启；热加载不会关闭或重开串口。
 
 串口部分只使用标准库；数据库写入使用板端已安装的 ``psycopg2``。
 """
@@ -40,6 +42,13 @@ from poll import (  # noqa: E402
     run_loop,
     summarize,
 )
+from runtime_config import (  # noqa: E402
+    ConfigReloader,
+    resolve_interval_s,
+    resolve_retries,
+    resolve_runtime_settings,
+    resolve_timeout_s,
+)
 from seed import SENSOR_CODE_BY_DRIVER  # noqa: E402
 from storage import DatabaseManager, unresolved_context  # noqa: E402
 
@@ -54,9 +63,10 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--port", default="/dev/ttyS4", help="串口设备")
+    parser.add_argument("--baud", type=int, default=9600, help="串口波特率（HSI 固定 9600）")
     parser.add_argument(
         "--interval",
-        type=float,
+        type=positive_float,
         default=None,
         help=(
             "轮询间隔（秒）。缺省时读取 DB collector_device.poll_interval_ms，"
@@ -69,9 +79,29 @@ def build_parser() -> argparse.ArgumentParser:
         default=600.0,
         help="运行时长（秒）；0 表示一直运行",
     )
-    parser.add_argument("--timeout", type=float, default=1.0, help="单次请求超时（秒）")
     parser.add_argument(
-        "--retries", type=int, default=1, help="单次采集失败后的重试次数"
+        "--timeout",
+        type=positive_float,
+        default=None,
+        help=(
+            "单次请求超时（秒）。缺省时读取 DB collector_device.timeout_ms，"
+            "读取不到才退回 1.0；显式传入时以本参数为准"
+        ),
+    )
+    parser.add_argument(
+        "--retries",
+        type=nonnegative_int,
+        default=None,
+        help=(
+            "单次采集失败后的重试次数。缺省时读取 DB collector_device.retries，"
+            "读取不到才退回 1；显式传入时以本参数为准"
+        ),
+    )
+    parser.add_argument(
+        "--config-check-interval",
+        type=positive_float,
+        default=None,
+        help="DB 配置指纹检查间隔（秒）；缺省跟随当前轮询间隔",
     )
     parser.add_argument("--output", default=DEFAULT_OUTPUT, help="JSONL 输出路径")
     parser.add_argument("--log", default=DEFAULT_LOG, help="日志路径")
@@ -127,23 +157,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def resolve_interval_s(
-    cli_interval: float | None,
-    poll_interval_ms: int | None,
-    default: float = 5.0,
-) -> tuple[float, str]:
-    """决定轮询间隔：CLI 显式值 > ``collector_device.poll_interval_ms`` > 默认。
-
-    返回 ``(间隔秒, 来源说明)``，便于日志与测试。
-    """
-
-    if cli_interval is not None:
-        return float(cli_interval), "命令行 --interval"
-    if poll_interval_ms and int(poll_interval_ms) > 0:
-        return int(poll_interval_ms) / 1000.0, "collector_device.poll_interval_ms"
-    return float(default), f"默认 {default}"
-
-
 def positive_float(value: str) -> float:
     try:
         parsed = float(value)
@@ -151,6 +164,16 @@ def positive_float(value: str) -> float:
         raise argparse.ArgumentTypeError(f"无法解析数值: {value}") from exc
     if parsed <= 0:
         raise argparse.ArgumentTypeError("必须大于 0")
+    return parsed
+
+
+def nonnegative_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"无法解析整数: {value}") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("不能为负数")
     return parsed
 
 
@@ -184,11 +207,48 @@ def parse_flags(value: str) -> tuple[int, ...]:
     return flags
 
 
+def partition_structure_drivers(
+    old_context,
+    new_context,
+    candidate_drivers,
+    responsive: set[str],
+) -> tuple[list, list, set[str]]:
+    """区分结构重载后可直接保留的 driver 与需要重新探测的新增 driver。
+
+    ``responsive`` 保存启动及历次热加载实际应答的传感器；仅通道变化不会把
+    启动时无应答的传感器加回。禁用后重新启用会出现在新旧启用集合差值中。
+    """
+
+    # 禁用/删除时同时清除历史应答状态，避免重新启用探测失败后被旧状态加回。
+    responsive.intersection_update(driver.name for driver in candidate_drivers)
+    all_sensor_codes = set(SENSOR_CODE_BY_DRIVER.values())
+    old_enabled = set(
+        all_sensor_codes
+        if old_context.active_sensor_codes is None
+        else old_context.active_sensor_codes
+    )
+    new_enabled = set(
+        all_sensor_codes
+        if new_context.active_sensor_codes is None
+        else new_context.active_sensor_codes
+    )
+    newly_enabled = new_enabled - old_enabled
+    retained = []
+    to_probe = []
+    for driver in candidate_drivers:
+        sensor_code = SENSOR_CODE_BY_DRIVER.get(driver.name, "")
+        if sensor_code in newly_enabled:
+            to_probe.append(driver)
+        elif driver.name in responsive:
+            retained.append(driver)
+    return retained, to_probe, newly_enabled
+
+
 def run(args: argparse.Namespace, logger: logging.Logger) -> int:
     # 仅在需要真实串口时导入 Linux 专用模块，--help 在任意平台可用。
     from transport import SerialRS485Transport
 
-    drivers = [cs1000.CS1000(), hlb1400.HLB1400()]
+    driver_types = (cs1000.CS1000, hlb1400.HLB1400)
     stop_requested = {"value": False}
     db_manager: DatabaseManager | None = None
     # 即使 DB 不可用，也用种子映射输出 device_id/channel_id（此时 id 为 null），
@@ -207,14 +267,13 @@ def run(args: argparse.Namespace, logger: logging.Logger) -> int:
     transport = None
     started = time.monotonic()
     try:
-        transport = SerialRS485Transport(args.port, logger=logger)
+        transport = SerialRS485Transport(args.port, baud=args.baud, logger=logger)
         transport.open()
         logger.info(
-            "串口已打开 port=%s baud=%d duration_s=%.1f timeout_s=%.2f",
+            "串口已打开 port=%s baud=%d duration_s=%.1f",
             args.port,
             transport.baud,
             args.duration,
-            args.timeout,
         )
         # 先关闭内核 RS485 模式，清除上一次进程可能遗留的卡死状态。
         # 内核不支持 TIOCSRS485 时 transport 会告警并继续（依赖板载自动方向）。
@@ -233,14 +292,38 @@ def run(args: argparse.Namespace, logger: logging.Logger) -> int:
             db_manager.ensure_ready()
             channel_context = db_manager.context
 
-        # enabled=0 的传感器不参与探测与轮询。
-        target_drivers = [
-            driver
-            for driver in drivers
-            if channel_context.sensor_enabled(
-                SENSOR_CODE_BY_DRIVER.get(driver.name, "")
-            )
-        ]
+        def target_drivers_for(context):
+            """结构变化时新建 driver；enabled=0 的传感器不参与探测与轮询。"""
+
+            enabled_drivers = []
+            for driver_type in driver_types:
+                driver = driver_type()
+                if context.sensor_enabled(SENSOR_CODE_BY_DRIVER.get(driver.name, "")):
+                    enabled_drivers.append(driver)
+            return enabled_drivers
+
+        target_drivers = target_drivers_for(channel_context)
+        settings = resolve_runtime_settings(
+            channel_context,
+            cli_interval=args.interval,
+            cli_timeout=args.timeout,
+            cli_retries=args.retries,
+        )
+        if settings.interval_s <= 0:
+            raise PollError(f"轮询间隔必须大于 0：{settings.interval_s}")
+        if settings.timeout_s <= 0:
+            raise PollError(f"请求超时必须大于 0：{settings.timeout_s}")
+        if settings.retries < 0:
+            raise PollError(f"重试次数不能为负数：{settings.retries}")
+        logger.info(
+            "运行参数 interval_s=%.3f（%s） timeout_s=%.3f（%s） retries=%d（%s）",
+            settings.interval_s,
+            settings.interval_source,
+            settings.timeout_s,
+            settings.timeout_source,
+            settings.retries,
+            settings.retries_source,
+        )
         if not target_drivers:
             # 不要以退出码 2 结束：systemd Restart=on-failure 会把它当成故障并
             # 反复重启。这里明确记录后正常退出（0），等待人工启用传感器后重启。
@@ -271,7 +354,7 @@ def run(args: argparse.Namespace, logger: logging.Logger) -> int:
             transport,
             target_drivers,
             candidates=candidates,
-            timeout=args.timeout,
+            timeout=settings.timeout_s,
             logger=logger,
             reopen=transport.reopen,
             require_all=args.require_sensors,
@@ -291,16 +374,86 @@ def run(args: argparse.Namespace, logger: logging.Logger) -> int:
             args.require_sensors,
         )
 
-        interval_s, interval_source = resolve_interval_s(
-            args.interval, channel_context.poll_interval_ms
-        )
-        if interval_s <= 0:
-            raise PollError(f"轮询间隔必须大于 0：{interval_s}")
         if args.partition_every < 0:
             raise PollError("--partition-every 不能为负数")
-        logger.info(
-            "轮询间隔 interval_s=%.3f（来源：%s）", interval_s, interval_source
-        )
+
+        def apply_structure_change(old_context, new_context, candidate_drivers):
+            """在原串口上应用结构配置，并只探测新增/重新启用的传感器。
+
+            启动时无应答且持续启用的传感器保持跳过；仅通道映射变化不会让它
+            意外回到轮询集合。传感器被禁用后再启用时则重新探测。
+            """
+
+            nonlocal flags
+            if (
+                auto_flags
+                and new_context.rs485_flags is not None
+                and old_context.rs485_flags != new_context.rs485_flags
+            ):
+                # strict=True：ioctl 失败必须抛出，由 ConfigReloader 回滚旧上下文
+                # 与旧指纹，不能靠 transport 内部告警后假定应用成功。
+                transport.set_rs485_flags(new_context.rs485_flags, strict=True)
+                flags = new_context.rs485_flags
+
+            retained, to_probe, newly_enabled = partition_structure_drivers(
+                old_context, new_context, candidate_drivers, responsive
+            )
+
+            applied = retained
+            for driver in to_probe:
+                newly_responsive: set[str] = set()
+                try:
+                    discover_rs485_flags(
+                        transport,
+                        [driver],
+                        candidates=(flags,),
+                        timeout=resolve_timeout_s(
+                            args.timeout, new_context.timeout_ms
+                        )[0],
+                        logger=logger,
+                        # 热加载绝不 close/reopen；仅使用当前已确认可用的 flags。
+                        reopen=None,
+                        require_all=True,
+                        responsive_out=newly_responsive,
+                    )
+                except PollError as exc:
+                    sensor_code = SENSOR_CODE_BY_DRIVER.get(driver.name, driver.name)
+                    logger.warning(
+                        "新增或重新启用传感器 %s 探测无应答，本轮仍跳过：%s",
+                        sensor_code,
+                        exc,
+                    )
+                    continue
+                responsive.update(newly_responsive)
+                applied.append(driver)
+
+            logger.info(
+                "结构配置已在原串口实例应用：保留应答传感器=%s，新增探测应答=%s，"
+                "rs485Flags=%s",
+                [driver.name for driver in retained],
+                [
+                    driver.name
+                    for driver in applied
+                    if SENSOR_CODE_BY_DRIVER.get(driver.name, "") in newly_enabled
+                ],
+                flags,
+            )
+            return applied
+
+        config_reloader = None
+        if db_manager is not None:
+            config_reloader = ConfigReloader(
+                db_manager=db_manager,
+                context=channel_context,
+                drivers=active_drivers,
+                driver_factory=target_drivers_for,
+                cli_interval=args.interval,
+                cli_timeout=args.timeout,
+                cli_retries=args.retries,
+                check_interval_s=args.config_check_interval,
+                logger=logger,
+                on_structure_change=apply_structure_change,
+            )
 
         writer = None if args.no_jsonl else JsonlWriter(output_path)
         duration = None if args.duration <= 0 else args.duration
@@ -308,14 +461,15 @@ def run(args: argparse.Namespace, logger: logging.Logger) -> int:
             transport,
             active_drivers,
             writer=writer,
-            interval_s=interval_s,
+            interval_s=settings.interval_s,
             duration_s=duration,
-            timeout=args.timeout,
-            retries=args.retries,
+            timeout=settings.timeout_s,
+            retries=settings.retries,
             logger=logger,
             should_stop=lambda: stop_requested["value"],
             db_manager=db_manager,
             channel_context=channel_context,
+            config_reloader=config_reloader,
             heartbeat_every=args.heartbeat_every,
             partition_every=args.partition_every,
         )
