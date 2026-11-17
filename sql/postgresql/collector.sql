@@ -13,8 +13,9 @@
     后续分区由维护任务按 collector_retention_policy.partition_lead_days 提前创建。
  4. 业务时间统一使用 timestamp(3) without time zone，语义为 Asia/Shanghai 本地墙钟时间。
  5. 本脚本支持重复执行：开头会删除并重建下述 19 张 collector 表与 13 个序列，
-    执行将清空采集器已有数据，请在确认后执行。已有库的阈值结构升级请使用
-    collector_threshold_migration.sql，不要直接重跑本脚本。
+    执行将清空采集器已有数据，请在确认后执行。已有库的结构升级请按需使用
+    collector_threshold_migration.sql（阈值模型）与 collector_alarm_migration.sql
+    （报警引擎），不要直接重跑本脚本。
  6. 数值有限性约束显式排除 NaN 与正负 Infinity（数值类型没有可用的内置有限性判断
     函数）；配置版本 snapshot 必须为 JSON 对象，checksum 必须为 64 位小写十六进制字符串。
 */
@@ -1112,15 +1113,16 @@ CREATE TABLE public.collector_alarm (
         ))
     ),
     CONSTRAINT chk_collector_alarm_level CHECK (level IN (1, 2, 3)),
-    CONSTRAINT chk_collector_alarm_event_type CHECK (event_type IN ('raised', 'upgraded', 'downgraded', 'cleared')),
+    CONSTRAINT chk_collector_alarm_event_type CHECK (event_type IN ('raised', 'upgraded', 'downgraded', 'changed', 'cleared')),
     CONSTRAINT chk_collector_alarm_status CHECK (status IN (0, 1, 2)),
     CONSTRAINT chk_collector_alarm_cleared CHECK ((status = 2) = (cleared_at IS NOT NULL)),
     CONSTRAINT chk_collector_alarm_count CHECK (occurrence_count >= 1)
 );
 
-CREATE UNIQUE INDEX uk_collector_alarm_active_dedupe
-    ON public.collector_alarm USING btree (dedupe_key)
-    WHERE (cleared_at IS NULL);
+-- 每个通道最多一条活动事件；历史事件追加写入，恢复由独立 cleared 事件表达。
+CREATE UNIQUE INDEX uk_collector_alarm_active_channel
+    ON public.collector_alarm USING btree (channel_id)
+    WHERE (cleared_at IS NULL AND channel_id > 0);
 
 CREATE INDEX idx_collector_alarm_device_time
     ON public.collector_alarm USING btree (device_id, triggered_at DESC);
@@ -1141,9 +1143,9 @@ COMMENT ON COLUMN public.collector_alarm.device_id IS '设备编号（所有级�
 COMMENT ON COLUMN public.collector_alarm.sensor_id IS '传感器编号；channel_id=0 时大于 0 表示传感器级，0 表示设备级';
 COMMENT ON COLUMN public.collector_alarm.channel_id IS '通道编号；大于 0 表示通道级，且 sensor_id 必须指向其所属传感器';
 COMMENT ON COLUMN public.collector_alarm.alarm_type IS '报警类型，如 threshold_low_error/threshold_low_warning/threshold_high_warning/threshold_high_error/comm_timeout/device_offline/quality_bad';
-COMMENT ON COLUMN public.collector_alarm.event_type IS '事件类型：raised 触发、upgraded 升级、downgraded 降级、cleared 恢复';
+COMMENT ON COLUMN public.collector_alarm.event_type IS '事件类型：raised 触发、upgraded 升级、downgraded 降级、changed 同级别阈值侧切换、cleared 恢复';
 COMMENT ON COLUMN public.collector_alarm.level IS '级别：1 提示、2 警告、3 严重';
-COMMENT ON COLUMN public.collector_alarm.dedupe_key IS '活动报警去重键（dev:{deviceId}:sensor:{sensorId}:ch:{channelId}:type:{alarmType}，包含 sensor 维度）';
+COMMENT ON COLUMN public.collector_alarm.dedupe_key IS '事件来源键（dev:{deviceId}:sensor:{sensorId}:ch:{channelId}:type:{alarmType}）；活动唯一性由 uk_collector_alarm_active_channel 按通道约束';
 COMMENT ON COLUMN public.collector_alarm.status IS '状态：0 活动、1 已确认、2 已清除';
 COMMENT ON COLUMN public.collector_alarm.message IS '报警描述';
 COMMENT ON COLUMN public.collector_alarm.trigger_value IS '触发时数值';
