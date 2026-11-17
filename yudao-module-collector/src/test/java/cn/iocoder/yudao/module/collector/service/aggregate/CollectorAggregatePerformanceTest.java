@@ -16,7 +16,8 @@ import static org.junit.Assert.assertEquals;
 
 /**
  * 手工运行的大数据量性能与对账测试。
- * 运行条件：COLLECTOR_TEST_PG_URL 等指定临时库，且 COLLECTOR_TEST_PERF=true。
+ * 运行条件：COLLECTOR_TEST_PG_URL 等指定 collector_aggregate_ 前缀临时库，
+ * COLLECTOR_TEST_PG_ALLOW_DESTRUCTIVE=true 且 COLLECTOR_TEST_PERF=true。
  */
 public class CollectorAggregatePerformanceTest extends CollectorAggregatePgTestSupport {
 

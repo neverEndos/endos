@@ -46,6 +46,7 @@ abstract class CollectorAggregatePgTestSupport {
     protected static final String URL = System.getenv("COLLECTOR_TEST_PG_URL");
     protected static final String USER = System.getenv("COLLECTOR_TEST_PG_USER");
     protected static final String PASSWORD = System.getenv("COLLECTOR_TEST_PG_PASSWORD");
+    private static final String ALLOW_DESTRUCTIVE = System.getenv("COLLECTOR_TEST_PG_ALLOW_DESTRUCTIVE");
     protected static final LocalDateTime BASE_TIME = LocalDateTime.of(2026, 1, 1, 0, 0);
 
     protected CollectorAggregateServiceImpl aggregateService;
@@ -58,6 +59,10 @@ abstract class CollectorAggregatePgTestSupport {
     public void setUpAggregatePg() throws Exception {
         Assume.assumeTrue("未设置 COLLECTOR_TEST_PG_URL，跳过临时 PostgreSQL 聚合测试",
                 URL != null && !URL.isBlank());
+        // 测试会 DROP 全部 collector 表，必须显式授权且库名限定为专用测试库。
+        Assume.assumeTrue("未设置 COLLECTOR_TEST_PG_ALLOW_DESTRUCTIVE=true，跳过会清表的聚合测试",
+                "true".equalsIgnoreCase(ALLOW_DESTRUCTIVE));
+        Assume.assumeTrue("数据库名必须以 collector_aggregate_ 开头，拒绝执行破坏性测试", safeTestDatabase(URL));
         Class.forName("org.postgresql.Driver");
         try (Connection connection = DriverManager.getConnection(URL, USER, PASSWORD);
              Statement statement = connection.createStatement()) {
@@ -82,10 +87,10 @@ abstract class CollectorAggregatePgTestSupport {
                     )
                     """);
             statement.execute("CREATE INDEX idx_test_raw_channel_time ON collector_sample_raw (channel_id, collect_time)");
-            createAggregateTable(statement, "collector_aggregate_second", "bucket_time");
-            createAggregateTable(statement, "collector_aggregate_minute", "bucket_time");
-            createAggregateTable(statement, "collector_aggregate_hour", "bucket_time");
-            createAggregateTable(statement, "collector_aggregate_day", "bucket_date");
+            createAggregateTable(statement, "collector_aggregate_second", "bucket_time", false);
+            createAggregateTable(statement, "collector_aggregate_minute", "bucket_time", false);
+            createAggregateTable(statement, "collector_aggregate_hour", "bucket_time", false);
+            createAggregateTable(statement, "collector_aggregate_day", "bucket_date", true);
             statement.execute("""
                     CREATE TABLE collector_aggregate_watermark (
                         agg_type varchar(8) NOT NULL, channel_id bigint NOT NULL,
@@ -115,19 +120,27 @@ abstract class CollectorAggregatePgTestSupport {
                 new DataSourceTransactionManager(dataSource));
     }
 
-    private void createAggregateTable(Statement statement, String table, String bucketColumn) throws SQLException {
+    private void createAggregateTable(Statement statement, String table, String bucketColumn,
+                                      boolean dateBucket) throws SQLException {
         statement.execute("""
                 CREATE TABLE %s (
                     channel_id bigint NOT NULL, device_id bigint NOT NULL,
-                    %s timestamp(3) NOT NULL,
+                    %s %s NOT NULL,
                     sample_count integer DEFAULT 0 NOT NULL,
-                    good_count integer DEFAULT 0 NOT NULL, bad_count integer DEFAULT 0 NOT NULL,
+                    good_count integer DEFAULT 0 NOT NULL, valid_count integer DEFAULT 0 NOT NULL,
+                    bad_count integer DEFAULT 0 NOT NULL,
                     value_avg double precision, value_min double precision, value_max double precision,
                     value_sum double precision, value_first double precision, value_last double precision,
                     update_time timestamp(3) DEFAULT CURRENT_TIMESTAMP NOT NULL,
                     PRIMARY KEY (channel_id, %s)
                 )
-                """.formatted(table, bucketColumn, bucketColumn));
+                """.formatted(table, bucketColumn, dateBucket ? "date" : "timestamp(3)", bucketColumn));
+    }
+
+    private static boolean safeTestDatabase(String jdbcUrl) {
+        String withoutParams = jdbcUrl.split("\\?", 2)[0];
+        int slash = withoutParams.lastIndexOf('/');
+        return slash >= 0 && withoutParams.substring(slash + 1).startsWith("collector_aggregate_");
     }
 
     protected void setChannels(CollectorChannelDO... channels) throws SQLException {
@@ -181,8 +194,8 @@ abstract class CollectorAggregatePgTestSupport {
         try (Connection connection = DriverManager.getConnection(URL, USER, PASSWORD);
              Statement statement = connection.createStatement();
              ResultSet rs = statement.executeQuery("""
-                     SELECT channel_id, device_id, %s AS bucket_time, sample_count, good_count, bad_count,
-                         value_avg, value_min, value_max, value_sum, value_first, value_last
+                     SELECT channel_id, device_id, %s AS bucket_time, sample_count, good_count, valid_count,
+                         bad_count, value_avg, value_min, value_max, value_sum, value_first, value_last
                      FROM %s ORDER BY channel_id, bucket_time
                      """.formatted(bucketColumn, table))) {
             while (rs.next()) {
@@ -204,9 +217,10 @@ abstract class CollectorAggregatePgTestSupport {
                      SELECT channel_id, device_id, date_trunc('%s', collect_time) AS bucket_time,
                          COUNT(*)::integer AS sample_count,
                          COUNT(*) FILTER (WHERE quality = 0)::integer AS good_count,
+                         COUNT(*) FILTER (WHERE quality = 0 AND value IS NOT NULL)::integer AS valid_count,
                          COUNT(*) FILTER (WHERE quality = 2)::integer AS bad_count,
                          SUM(value) FILTER (WHERE quality = 0 AND value IS NOT NULL)
-                             / NULLIF(COUNT(*) FILTER (WHERE quality = 0), 0) AS value_avg,
+                             / NULLIF(COUNT(*) FILTER (WHERE quality = 0 AND value IS NOT NULL), 0) AS value_avg,
                          MIN(value) FILTER (WHERE quality = 0 AND value IS NOT NULL) AS value_min,
                          MAX(value) FILTER (WHERE quality = 0 AND value IS NOT NULL) AS value_max,
                          SUM(value) FILTER (WHERE quality = 0 AND value IS NOT NULL) AS value_sum,
@@ -237,6 +251,7 @@ abstract class CollectorAggregatePgTestSupport {
         row.setBucketTime(rs.getObject("bucket_time", LocalDateTime.class));
         row.setSampleCount(rs.getInt("sample_count"));
         row.setGoodCount(rs.getInt("good_count"));
+        row.setValidCount(rs.getInt("valid_count"));
         row.setBadCount(rs.getInt("bad_count"));
         row.setValueAvg((Double) rs.getObject("value_avg"));
         row.setValueMin((Double) rs.getObject("value_min"));
@@ -260,6 +275,7 @@ abstract class CollectorAggregatePgTestSupport {
             assertEquals(position, e.getBucketTime(), a.getBucketTime());
             assertEquals(position, e.getSampleCount(), a.getSampleCount());
             assertEquals(position, e.getGoodCount(), a.getGoodCount());
+            assertEquals(position, e.getValidCount(), a.getValidCount());
             assertEquals(position, e.getBadCount(), a.getBadCount());
             assertDoubleEquals(position + " avg", e.getValueAvg(), a.getValueAvg());
             assertDoubleEquals(position + " min", e.getValueMin(), a.getValueMin());
@@ -276,6 +292,13 @@ abstract class CollectorAggregatePgTestSupport {
             return;
         }
         assertEquals(message, expected, actual, 1e-9);
+    }
+
+    protected void executeSql(String sql) throws SQLException {
+        try (Connection connection = DriverManager.getConnection(URL, USER, PASSWORD);
+             Statement statement = connection.createStatement()) {
+            statement.execute(sql);
+        }
     }
 
     protected int countRows(String table) throws SQLException {
