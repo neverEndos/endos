@@ -1,6 +1,8 @@
 package cn.iocoder.yudao.module.collector.dal.dataobject.alarm;
 
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
@@ -34,10 +36,12 @@ public class CollectorAlarmStateDO {
     /**
      * 当前命中的四档阈值类型
      */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private String thresholdType;
     /**
      * 当前级别开始时间
      */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private LocalDateTime since;
     /**
      * 最近参与判定的工程值
@@ -46,6 +50,7 @@ public class CollectorAlarmStateDO {
     /**
      * 最近判定使用的阈值
      */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private Double lastThreshold;
     /**
      * 最近参与判定的采样时间
