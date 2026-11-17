@@ -133,6 +133,7 @@ export function useFormSchema(): VbenFormSchema[] {
       fieldName: 'autoGenerateChannels',
       label: '自动生成通道',
       component: 'Switch',
+      componentProps: { class: '!w-auto' },
       rules: z.boolean().default(true),
       dependencies: {
         triggerFields: ['id'],

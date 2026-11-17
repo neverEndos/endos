@@ -317,49 +317,68 @@ export function useThresholdFormSchema(): VbenFormSchema[] {
       },
     },
     {
-      fieldName: 'thresholdLowErrorEnabled',
-      label: '低低限报警',
-      component: 'Switch',
-      dependencies: {
-        triggerFields: ['valueKind'],
-        disabled: (values) => values.valueKind === 'enum',
-      },
-    },
-    {
-      fieldName: 'thresholdLowWarningEnabled',
-      label: '低限报警',
-      component: 'Switch',
-      dependencies: {
-        triggerFields: ['valueKind'],
-        disabled: (values) => values.valueKind === 'enum',
-      },
-    },
-    {
-      fieldName: 'thresholdHighWarningEnabled',
-      label: '高限报警',
-      component: 'Switch',
-      dependencies: {
-        triggerFields: ['valueKind'],
-        disabled: (values) => values.valueKind === 'enum',
-      },
-    },
-    {
-      fieldName: 'thresholdHighErrorEnabled',
-      label: '高高限报警',
-      component: 'Switch',
-      dependencies: {
-        triggerFields: ['valueKind'],
-        disabled: (values) => values.valueKind === 'enum',
-      },
-    },
-    {
-      fieldName: 'alarmEnabled',
-      label: '启用报警',
-      component: 'Switch',
-      dependencies: {
-        triggerFields: ['valueKind'],
-        disabled: (values) => values.valueKind === 'enum',
-      },
+      name: 'alarmSwitches',
+      title: '报警开关',
+      type: 'group',
+      collapsible: false,
+      wrapperClass: 'grid-cols-2 gap-x-6',
+      children: [
+        {
+          fieldName: 'alarmEnabled',
+          label: '启用报警',
+          component: 'Switch',
+          componentProps: { class: '!w-auto' },
+          formItemClass: 'col-span-2',
+          dependencies: {
+            triggerFields: ['valueKind'],
+            disabled: (values) => values.valueKind === 'enum',
+          },
+        },
+        {
+          fieldName: 'thresholdLowErrorEnabled',
+          label: '低低限报警',
+          component: 'Switch',
+          componentProps: { class: '!w-auto' },
+          formItemClass: '!col-span-1',
+          dependencies: {
+            triggerFields: ['valueKind'],
+            disabled: (values) => values.valueKind === 'enum',
+          },
+        },
+        {
+          fieldName: 'thresholdLowWarningEnabled',
+          label: '低限报警',
+          component: 'Switch',
+          componentProps: { class: '!w-auto' },
+          formItemClass: '!col-span-1',
+          dependencies: {
+            triggerFields: ['valueKind'],
+            disabled: (values) => values.valueKind === 'enum',
+          },
+        },
+        {
+          fieldName: 'thresholdHighWarningEnabled',
+          label: '高限报警',
+          component: 'Switch',
+          componentProps: { class: '!w-auto' },
+          formItemClass: '!col-span-1',
+          dependencies: {
+            triggerFields: ['valueKind'],
+            disabled: (values) => values.valueKind === 'enum',
+          },
+        },
+        {
+          fieldName: 'thresholdHighErrorEnabled',
+          label: '高高限报警',
+          component: 'Switch',
+          componentProps: { class: '!w-auto' },
+          formItemClass: '!col-span-1',
+          dependencies: {
+            triggerFields: ['valueKind'],
+            disabled: (values) => values.valueKind === 'enum',
+          },
+        },
+      ],
     },
     {
       fieldName: 'deadband',
