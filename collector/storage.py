@@ -3,6 +3,7 @@
 落库目标是设计文档 §5.8/§5.13/§5.14 的三张表：
 
 - ``collector_sample_raw``：每通道一行，``(channel_id, collect_time)`` 冲突时忽略；
+- ``collector_channel_latest``：每通道一行最新值，与 raw 在同一事务 upsert；
 - ``collector_device_status``：每个轮询周期更新在线/失败计数与最近一次耗时；
 - ``collector_heartbeat``：每 N 轮写一次运行心跳。
 
@@ -74,6 +75,7 @@ class ChannelBinding:
     value_offset: float = 0.0
     unit: str | None = None
     enabled: bool = True
+    value_kind: str = "number"
 
     @property
     def key(self) -> tuple[str, str]:
@@ -188,13 +190,15 @@ def context_from_rows(
     """把 DB 查询结果合并到种子绑定。
 
     ``channel_rows`` 每项为 ``(sensor_code, channel_code, sensor_id, channel_id,
-    device_id, channel_config, scale, value_offset, unit, enabled)``；也兼容旧的
-    6 元组（此时 scale/unit 沿用种子值）。``enabled=0`` 的通道会被移除，不参与
+    device_id, channel_config, scale, value_offset, unit, enabled[, value_kind])``；
+    也兼容旧的 6/10 元组（此时 scale/unit 沿用种子值、value_kind 按 number）。
+    ``enabled=0`` 的通道会被移除，不参与
     采集。只更新种子中存在的通道；DB 中多出来的通道不会被采集器写入。
     """
 
     merged = {binding.key: binding for binding in seed_bindings()}
     for row in channel_rows:
+        value_kind = str(row[10]) if len(row) >= 11 and row[10] else "number"
         if len(row) >= 10:
             (
                 sensor_code,
@@ -240,6 +244,7 @@ def context_from_rows(
             ),
             unit=unit if unit is not None else current.unit,
             enabled=True,
+            value_kind=value_kind,
         )
     return DeviceContext(
         device_id=device_id,
@@ -438,6 +443,41 @@ def build_sample_rows(
     return rows
 
 
+def build_latest_rows(
+    bindings: Iterable[ChannelBinding],
+    sample_rows: Iterable[tuple[int, int, datetime, Any, int, int]],
+) -> list[tuple[int, int, int, Any, str | None, int, datetime]]:
+    """由本轮 raw 行生成最新值行，未产生 raw 的通道不会更新。
+
+    数值通道只写 ``value_num``，枚举通道只写 ``value_text``；文本值保留协议
+    原始枚举码，避免把工程缩放应用到枚举。两行共享采样时间与质量标识。
+    """
+
+    binding_by_id = {
+        binding.channel_id: binding
+        for binding in bindings
+        if binding.channel_id is not None
+    }
+    latest_rows = []
+    for channel_id, device_id, sample_time, value, raw, quality in sample_rows:
+        binding = binding_by_id.get(channel_id)
+        if binding is None or binding.sensor_id is None:
+            continue
+        is_enum = binding.value_kind == "enum"
+        latest_rows.append(
+            (
+                channel_id,
+                device_id,
+                int(binding.sensor_id),
+                None if is_enum else value,
+                str(raw) if is_enum else None,
+                quality,
+                sample_time,
+            )
+        )
+    return latest_rows
+
+
 @dataclass(frozen=True)
 class DeviceState:
     """一个轮询周期后的设备状态（纯计算结果）。"""
@@ -557,6 +597,21 @@ INSERT INTO public.collector_sample_raw (
     channel_id, device_id, collect_time, value, raw_value, quality
 ) VALUES (%s, %s, %s, %s, %s, %s)
 ON CONFLICT (channel_id, collect_time) DO NOTHING
+"""
+
+_LATEST_UPSERT_SQL = """
+INSERT INTO public.collector_channel_latest (
+    channel_id, device_id, sensor_id, value_num, value_text, quality, sample_time
+) VALUES (%s, %s, %s, %s, %s, %s, %s)
+ON CONFLICT (channel_id) DO UPDATE SET
+    device_id = EXCLUDED.device_id,
+    sensor_id = EXCLUDED.sensor_id,
+    value_num = EXCLUDED.value_num,
+    value_text = EXCLUDED.value_text,
+    quality = EXCLUDED.quality,
+    sample_time = EXCLUDED.sample_time,
+    updated_time = CURRENT_TIMESTAMP
+WHERE EXCLUDED.sample_time >= collector_channel_latest.sample_time
 """
 
 _STATUS_SUCCESS_SQL = """
@@ -733,7 +788,7 @@ class PgStorage:
                     """
                     SELECT s.sensor_code, c.channel_code, s.id, c.id,
                            c.device_id, c.channel_config,
-                           c.scale, c.value_offset, c.unit, c.enabled
+                           c.scale, c.value_offset, c.unit, c.enabled, c.value_kind
                     FROM public.collector_channel c
                     JOIN public.collector_sensor s ON s.id = c.sensor_id
                     WHERE c.deleted = 0 AND s.deleted = 0 AND c.device_id = %s
@@ -825,6 +880,7 @@ class PgStorage:
             logger=self.logger,
             warned_fields=self._warned_fields,
         )
+        latest_rows = build_latest_rows(self.context.bindings, rows)
         success, latency_ms, error = cycle_outcome(results)
         state = next_device_state(
             self._online,
@@ -865,6 +921,8 @@ class PgStorage:
                         )
                     if rows:
                         cur.executemany(_SAMPLE_INSERT_SQL, rows)
+                    if latest_rows:
+                        cur.executemany(_LATEST_UPSERT_SQL, latest_rows)
         except Exception:
             self._reset_conn()
             raise
@@ -873,9 +931,10 @@ class PgStorage:
         self._failures = state.consecutive_failures
         self._last_write_lag_ms = int((time.monotonic() - started) * 1000)
         self.logger.info(
-            "DB 写入完成 cycle=%s raw_rows=%d success=%s online=%d failures=%d lag_ms=%d",
+            "DB 写入完成 cycle=%s raw_rows=%d latest_rows=%d success=%s online=%d failures=%d lag_ms=%d",
             cycle,
             len(rows),
+            len(latest_rows),
             success,
             state.online,
             state.consecutive_failures,
@@ -883,6 +942,7 @@ class PgStorage:
         )
         return {
             "written": len(rows),
+            "latest_written": len(latest_rows),
             "success": success,
             "online": state.online,
             "consecutive_failures": state.consecutive_failures,
