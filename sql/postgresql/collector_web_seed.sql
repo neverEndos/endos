@@ -2,10 +2,10 @@
 --
 -- 幂等与冲突说明：
 -- 1. HSI 协议按 protocol_code 判重，已存在则跳过；不会覆盖已有 Schema。
--- 2. 菜单固定使用编号 780~801。写入前逐 ID 预检（包含 deleted=1 的历史行）：
+-- 2. 菜单固定使用编号 780~802。写入前逐 ID 预检（包含 deleted=1 的历史行）：
 --    已占用行必须与本种子的 name/permission/type 完全一致，否则立即报错并整体回滚。
 -- 3. super_admin 只授权本次种子中 name/permission/type 精确匹配的 collector 菜单，
---    不再按 780~801 区间盲授权；角色菜单按 (role_id, menu_id) 判重。
+--    不再按 780~802 区间盲授权；角色菜单按 (role_id, menu_id) 判重。
 -- 4. 本脚本只负责协议注册行、菜单与 super_admin 授权，演示设备/传感器/通道
 --    由 collector/seed.py 幂等写入，避免 SQL 与 Python 两套演示数据互相覆盖。
 -- 5. 菜单写入后需重启后端或清理权限缓存，管理员新权限才会生效。
@@ -43,7 +43,7 @@ WHERE NOT EXISTS (
     SELECT 1 FROM public.collector_protocol WHERE protocol_code = 'hsi_rs485' AND deleted = 0
 );
 
--- ========== 本次菜单种子（目录 + 7 个页面 + 14 个按钮） ==========
+-- ========== 本次菜单种子（目录 + 8 个页面 + 14 个按钮） ==========
 CREATE TEMP TABLE collector_menu_seed (
     id bigint PRIMARY KEY,
     parent_id bigint NOT NULL,
@@ -61,6 +61,7 @@ INSERT INTO collector_menu_seed (
     id, parent_id, name, permission, type, sort, path, icon, component, component_name
 ) VALUES
     (780, 0, '采集器', '', 1, 90, 'collector', 'ep:cpu', '', ''),
+    (802, 780, '最新值看板', 'collector:dashboard:query', 2, 0, 'dashboard', 'ep:odometer', 'collector/dashboard/index', 'CollectorDashboard'),
     (781, 780, '采集设备', 'collector:device:query', 2, 1, 'device', 'ep:monitor', 'collector/device/index', 'CollectorDevice'),
     (782, 780, '采集传感器', 'collector:sensor:query', 2, 2, 'sensor', 'ep:connection', 'collector/sensor/index', 'CollectorSensor'),
     (783, 780, '采集通道', 'collector:channel:query', 2, 3, 'channel', 'ep:data-line', 'collector/channel/index', 'CollectorChannel'),

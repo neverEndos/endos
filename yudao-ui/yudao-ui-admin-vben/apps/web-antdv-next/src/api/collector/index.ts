@@ -240,6 +240,56 @@ export namespace CollectorApi {
     sensors: ThresholdMatrixSensor[];
   }
 
+  /** 最新值看板设备状态 */
+  export interface DashboardDevice {
+    id: number;
+    name: string;
+    online: boolean;
+    lastPollAt?: null | string;
+    lastWriteLagMs?: null | number;
+    consecutiveFailures: number;
+    pollIntervalMs: number;
+    staleOffline: boolean;
+  }
+
+  /** 最新值看板通道 */
+  export interface DashboardChannel {
+    id: number;
+    name: string;
+    unit?: null | string;
+    valueKind: string;
+    valueNum?: null | number;
+    valueText?: null | string;
+    quality?: null | number;
+    sampleTime?: null | string;
+  }
+
+  /** 最新值看板传感器分组 */
+  export interface DashboardSensor {
+    id: number;
+    name: string;
+    model?: null | string;
+    channels: DashboardChannel[];
+  }
+
+  /** 最新值看板聚合结果 */
+  export interface DashboardLatest {
+    device: DashboardDevice;
+    sensors: DashboardSensor[];
+    serverTime: string;
+    versionToken: string;
+  }
+
+  /** 保留 HTTP 状态以处理真实 304 条件响应 */
+  export interface DashboardLatestHttpResponse {
+    status: number;
+    data: {
+      code: number;
+      data: DashboardLatest;
+      msg: string;
+    };
+  }
+
   /** 通道阈值批量更新项 */
   export interface ChannelThresholdBatchItem {
     channelId: number;
@@ -659,5 +709,23 @@ export function getAlarmStateList(params?: { deviceId?: number }) {
   return requestClient.get<CollectorApi.AlarmState[]>(
     '/collector/alarm/state/list',
     { params },
+  );
+}
+
+// ==================== 最新值看板 ====================
+
+/** 查询设备最新值；携带版本令牌时由后端决定返回 200 全量或 304 空响应 */
+export function getDashboardLatest(deviceId: number, versionToken?: string) {
+  return requestClient.get<CollectorApi.DashboardLatestHttpResponse>(
+    '/collector/dashboard/latest',
+    {
+      params: { deviceId },
+      headers: versionToken
+        ? { 'If-None-Match': `"${versionToken}"` }
+        : undefined,
+      responseReturn: 'raw',
+      validateStatus: (status: number) =>
+        (status >= 200 && status < 300) || status === 304,
+    },
   );
 }
