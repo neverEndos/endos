@@ -19,14 +19,30 @@ public class CollectorAlarmEvaluator {
     public static final String THRESHOLD_HIGH_ERROR = "threshold_high_error";
 
     /**
+     * 判断通道是否已被关闭报警能力；关闭时应将活动报警自动恢复，而不是静默跳过。
+     *
+     * @return null 表示通道可正常判定；否则返回需要写入恢复事件的原因
+     */
+    public String suppressionReason(CollectorChannelDO channel) {
+        if (channel == null) {
+            return "通道不存在或已逻辑删除";
+        }
+        if (!"number".equals(channel.getValueKind())) {
+            return "通道已改为非数值类型";
+        }
+        if (!Objects.equals(channel.getAlarmEnabled(), 1)) {
+            return "报警总开关已关闭";
+        }
+        return null;
+    }
+
+    /**
      * 判定目标状态。
      *
      * @return null 表示该样本跳过判定；否则返回目标级别及阈值
      */
     public Decision evaluate(CollectorChannelDO channel, Double value, CollectorAlarmStateDO previousState) {
-        if (channel == null || value == null || !Double.isFinite(value)
-                || !"number".equals(channel.getValueKind())
-                || !Objects.equals(channel.getAlarmEnabled(), 1)) {
+        if (value == null || !Double.isFinite(value) || suppressionReason(channel) != null) {
             return null;
         }
 

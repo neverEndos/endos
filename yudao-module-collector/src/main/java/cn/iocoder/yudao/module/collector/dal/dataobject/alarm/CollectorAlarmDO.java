@@ -25,7 +25,7 @@ public class CollectorAlarmDO {
     private Long channelId;
     /** 四档阈值类型 */
     private String alarmType;
-    /** 事件类型：raised/upgraded/downgraded/cleared */
+    /** 事件类型：raised/upgraded/downgraded/changed/cleared */
     private String eventType;
     /** 级别：2 预警、3 异常 */
     private Integer level;

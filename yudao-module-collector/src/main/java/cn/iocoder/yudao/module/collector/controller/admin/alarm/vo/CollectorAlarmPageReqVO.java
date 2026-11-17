@@ -23,7 +23,7 @@ public class CollectorAlarmPageReqVO extends PageParam {
     private Long channelId;
     @Schema(description = "级别：2 预警、3 异常", example = "3")
     private Integer level;
-    @Schema(description = "事件类型：raised/upgraded/downgraded/cleared", example = "raised")
+    @Schema(description = "事件类型：raised/upgraded/downgraded/changed/cleared", example = "raised")
     private String eventType;
     @Schema(description = "触发时间范围", example = "[2026-11-17 00:00:00, 2026-11-17 23:59:59]")
     @DateTimeFormat(pattern = FORMAT_YEAR_MONTH_DAY_HOUR_MINUTE_SECOND)

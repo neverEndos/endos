@@ -29,6 +29,7 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -163,35 +164,78 @@ public class CollectorAlarmServiceImpl implements CollectorAlarmService {
         for (CollectorSampleRawDO sample : samples) {
             CollectorChannelDO channel = channelMap.get(sample.getChannelId());
             CollectorAlarmStateDO state = stateMap.get(sample.getChannelId());
+            CollectorAlarmDO activeAlarm = activeAlarmMap.get(sample.getChannelId());
+
+            // 总开关关闭、enum 或通道已删除：自动恢复并写入独立 cleared 事件，而不是静默跳过。
+            String suppressionReason = evaluator.suppressionReason(channel);
+            if (suppressionReason != null) {
+                int previousLevel = previousLevel(state, activeAlarm);
+                boolean insertState = state == null;
+                if (insertState) {
+                    if (channel == null && activeAlarm == null) {
+                        // 通道和历史状态都不存在，没有可恢复或可落库的对象。
+                        continue;
+                    }
+                    state = newState(channel, activeAlarm, sample);
+                }
+                if (previousLevel > 0 || activeAlarm != null) {
+                    if (activeAlarm != null) {
+                        closeActiveAlarm(activeAlarm, sample.getCollectTime(), suppressionReason);
+                        activeAlarmMap.remove(sample.getChannelId());
+                    }
+                    CollectorAlarmDO cleared = createClearedAlarm(
+                            channel, state, activeAlarm, sample, previousLevel, suppressionReason);
+                    alarmMapper.insert(cleared);
+                    transitionCount++;
+                }
+                updateSuppressedState(state, sample, updatedTime);
+                saveState(state, insertState);
+                stateMap.put(sample.getChannelId(), state);
+                continue;
+            }
+
             CollectorAlarmEvaluator.Decision decision = evaluator.evaluate(channel, sample.getValue(), state);
             if (decision == null) {
                 continue;
             }
             boolean insertState = state == null;
             if (insertState) {
-                state = newState(channel);
+                state = newState(channel, null, sample);
             }
-            int previousLevel = state.getLevel() == null ? 0 : state.getLevel();
-            if (previousLevel != decision.level()) {
-                CollectorAlarmDO activeAlarm = activeAlarmMap.get(channel.getId());
-                if (previousLevel > 0 && activeAlarm != null) {
-                    clearActiveAlarm(activeAlarm, sample.getCollectTime(), decision.level(), previousLevel);
-                    activeAlarmMap.remove(channel.getId());
+            int previousLevel = previousLevel(state, activeAlarm);
+            String previousThresholdType = state.getThresholdType();
+            boolean thresholdChanged = decision.level() > 0 && decision.level() == previousLevel
+                    && !Objects.equals(previousThresholdType, decision.thresholdType());
+            if (previousLevel != decision.level() || thresholdChanged) {
+                if (activeAlarm != null) {
+                    String eventType = transitionEventType(previousLevel, decision.level(), thresholdChanged);
+                    closeActiveAlarm(activeAlarm, sample.getCollectTime(), String.format(
+                            "被后续 %s 事件接替（级别 %d→%d，阈值 %s→%s）", eventType, previousLevel,
+                            decision.level(), previousThresholdType, decision.thresholdType()));
+                    activeAlarmMap.remove(sample.getChannelId());
                 }
                 if (decision.level() > 0) {
-                    CollectorAlarmDO alarm = createAlarm(channel, sample, decision, previousLevel);
+                    CollectorAlarmDO alarm = createActiveAlarm(channel, sample, decision, previousLevel,
+                            previousThresholdType, thresholdChanged);
                     alarmMapper.insert(alarm);
-                    activeAlarmMap.put(channel.getId(), alarm);
+                    activeAlarmMap.put(sample.getChannelId(), alarm);
+                } else {
+                    String clearReason = "数值恢复正常";
+                    CollectorAlarmDO cleared = createClearedAlarm(
+                            channel, state, activeAlarm, sample, previousLevel, clearReason);
+                    alarmMapper.insert(cleared);
                 }
                 transitionCount++;
+            } else if (decision.level() > 0 && activeAlarm != null) {
+                // 同一级别且同一阈值持续命中：只刷新活动事件，不追加事件行。
+                activeAlarm.setLastSeenAt(sample.getCollectTime());
+                activeAlarm.setOccurrenceCount(activeAlarm.getOccurrenceCount() == null
+                        ? 2 : activeAlarm.getOccurrenceCount() + 1);
+                alarmMapper.updateById(activeAlarm);
             }
-            updateState(state, sample, decision, previousLevel, updatedTime);
-            if (insertState) {
-                stateMapper.insert(state);
-            } else {
-                stateMapper.updateById(state);
-            }
-            stateMap.put(channel.getId(), state);
+            updateState(state, sample, decision, previousLevel, previousThresholdType, updatedTime);
+            saveState(state, insertState);
+            stateMap.put(sample.getChannelId(), state);
         }
 
         CollectorSampleRawDO lastSample = samples.get(samples.size() - 1);
@@ -209,29 +253,39 @@ public class CollectorAlarmServiceImpl implements CollectorAlarmService {
         cursor.setLastSampleTime(latest == null ? EPOCH : latest.getCollectTime());
         cursor.setLastSampleId(latest == null ? 0L : latest.getSampleId());
         cursor.setUpdatedTime(LocalDateTime.now());
-        cursorMapper.insert(cursor);
-        log.info("[initializeCursor][报警游标已初始化到最新采样，历史采样不回放，lastSampleTime={}, lastSampleId={}]",
+        // 唯一约束 + ON CONFLICT DO NOTHING，避免并发实例重复初始化游标。
+        boolean inserted = cursorMapper.insertIgnore(cursor) > 0;
+        log.info("[initializeCursor][报警游标初始化{}，历史采样不回放，lastSampleTime={}, lastSampleId={}]",
+                inserted ? "成功" : "已被并发实例完成",
                 cursor.getLastSampleTime(), cursor.getLastSampleId());
         return true;
     }
 
-    private CollectorAlarmStateDO newState(CollectorChannelDO channel) {
+    private CollectorAlarmStateDO newState(CollectorChannelDO channel, CollectorAlarmDO activeAlarm,
+                                           CollectorSampleRawDO sample) {
         CollectorAlarmStateDO state = new CollectorAlarmStateDO();
-        state.setChannelId(channel.getId());
-        state.setDeviceId(channel.getDeviceId());
-        state.setSensorId(channel.getSensorId());
+        state.setChannelId(sample.getChannelId());
+        state.setDeviceId(channel != null ? channel.getDeviceId() : activeAlarm.getDeviceId());
+        state.setSensorId(channel != null ? channel.getSensorId() : activeAlarm.getSensorId());
         state.setLevel(0);
         return state;
     }
 
+    private int previousLevel(CollectorAlarmStateDO state, CollectorAlarmDO activeAlarm) {
+        int stateLevel = state == null || state.getLevel() == null ? 0 : state.getLevel();
+        int alarmLevel = activeAlarm == null || activeAlarm.getLevel() == null ? 0 : activeAlarm.getLevel();
+        return Math.max(stateLevel, alarmLevel);
+    }
+
     private void updateState(CollectorAlarmStateDO state, CollectorSampleRawDO sample,
                              CollectorAlarmEvaluator.Decision decision, int previousLevel,
-                             LocalDateTime updatedTime) {
+                             String previousThresholdType, LocalDateTime updatedTime) {
+        boolean thresholdChanged = !Objects.equals(previousThresholdType, decision.thresholdType());
         state.setLevel(decision.level());
         state.setThresholdType(decision.thresholdType());
         if (decision.level() == 0) {
             state.setSince(null);
-        } else if (previousLevel != decision.level() || state.getSince() == null) {
+        } else if (previousLevel != decision.level() || thresholdChanged || state.getSince() == null) {
             state.setSince(sample.getCollectTime());
         }
         state.setLastValue(sample.getValue());
@@ -241,18 +295,40 @@ public class CollectorAlarmServiceImpl implements CollectorAlarmService {
         state.setUpdatedTime(updatedTime);
     }
 
-    private CollectorAlarmDO createAlarm(CollectorChannelDO channel, CollectorSampleRawDO sample,
-                                         CollectorAlarmEvaluator.Decision decision, int previousLevel) {
+    private void updateSuppressedState(CollectorAlarmStateDO state, CollectorSampleRawDO sample,
+                                       LocalDateTime updatedTime) {
+        state.setLevel(0);
+        state.setThresholdType(null);
+        state.setSince(null);
+        state.setLastValue(sample.getValue());
+        state.setLastThreshold(null);
+        state.setLastSampleTime(sample.getCollectTime());
+        state.setLastSampleId(sample.getSampleId());
+        state.setUpdatedTime(updatedTime);
+    }
+
+    private void saveState(CollectorAlarmStateDO state, boolean insert) {
+        if (insert) {
+            stateMapper.insert(state);
+        } else {
+            stateMapper.updateById(state);
+        }
+    }
+
+    private CollectorAlarmDO createActiveAlarm(CollectorChannelDO channel, CollectorSampleRawDO sample,
+                                               CollectorAlarmEvaluator.Decision decision, int previousLevel,
+                                               String previousThresholdType, boolean thresholdChanged) {
+        String eventType = transitionEventType(previousLevel, decision.level(), thresholdChanged);
         CollectorAlarmDO alarm = new CollectorAlarmDO();
         alarm.setDeviceId(channel.getDeviceId());
         alarm.setSensorId(channel.getSensorId());
         alarm.setChannelId(channel.getId());
         alarm.setAlarmType(decision.thresholdType());
-        alarm.setEventType(previousLevel == 0 ? "raised" : decision.level() > previousLevel ? "upgraded" : "downgraded");
+        alarm.setEventType(eventType);
         alarm.setLevel(decision.level());
         alarm.setDedupeKey(buildDedupeKey(channel, decision.thresholdType()));
         alarm.setStatus(STATUS_ACTIVE);
-        alarm.setMessage(String.format("通道值 %.6g 命中%s", sample.getValue(), thresholdName(decision.thresholdType())));
+        alarm.setMessage(buildActiveMessage(sample, decision, previousLevel, previousThresholdType));
         alarm.setTriggerValue(sample.getValue());
         alarm.setThresholdValue(decision.thresholdValue());
         alarm.setTriggeredAt(sample.getCollectTime());
@@ -261,20 +337,103 @@ public class CollectorAlarmServiceImpl implements CollectorAlarmService {
         return alarm;
     }
 
-    private void clearActiveAlarm(CollectorAlarmDO alarm, LocalDateTime clearedAt,
-                                  int targetLevel, int previousLevel) {
+    private CollectorAlarmDO createClearedAlarm(CollectorChannelDO channel, CollectorAlarmStateDO state,
+                                                CollectorAlarmDO activeAlarm, CollectorSampleRawDO sample,
+                                                int previousLevel, String clearReason) {
+        String thresholdType = clearThresholdType(state, activeAlarm);
+        // alarm_type 为非空列；极端脏数据下使用 unknown，避免恢复事件写入失败。
+        thresholdType = thresholdType == null ? "unknown" : thresholdType;
+        Double thresholdValue = state != null && state.getLastThreshold() != null
+                ? state.getLastThreshold() : activeAlarm == null ? null : activeAlarm.getThresholdValue();
+        Long deviceId = resolveDeviceId(channel, state, activeAlarm);
+        Long sensorId = resolveSensorId(channel, state, activeAlarm);
+        CollectorAlarmDO alarm = new CollectorAlarmDO();
+        alarm.setDeviceId(deviceId);
+        alarm.setSensorId(sensorId);
+        alarm.setChannelId(sample.getChannelId());
+        alarm.setAlarmType(thresholdType);
+        alarm.setEventType("cleared");
+        alarm.setLevel(previousLevel);
+        alarm.setDedupeKey(buildDedupeKey(deviceId, sensorId, sample.getChannelId(), thresholdType));
+        alarm.setStatus(STATUS_CLEARED);
+        alarm.setMessage(String.format("通道值 %.6g 已恢复（%s）", sample.getValue(), clearReason));
+        alarm.setTriggerValue(sample.getValue());
+        alarm.setThresholdValue(thresholdValue);
+        alarm.setTriggeredAt(sample.getCollectTime());
+        alarm.setLastSeenAt(sample.getCollectTime());
+        alarm.setOccurrenceCount(1);
+        alarm.setClearedAt(sample.getCollectTime());
+        alarm.setClearReason(clearReason);
+        return alarm;
+    }
+
+    /**
+     * 关闭上一活动事件：只标记结束，绝不改写其 event_type，历史事件保持原始语义。
+     */
+    private void closeActiveAlarm(CollectorAlarmDO alarm, LocalDateTime clearedAt, String reason) {
         alarm.setStatus(STATUS_CLEARED);
         alarm.setClearedAt(clearedAt);
-        alarm.setClearReason(targetLevel == 0 ? "数值恢复正常" : String.format("报警等级由 %d 跃迁为 %d", previousLevel, targetLevel));
-        if (targetLevel == 0) {
-            alarm.setEventType("cleared");
-        }
+        alarm.setClearReason(reason);
         alarmMapper.updateById(alarm);
     }
 
+    private String transitionEventType(int previousLevel, int targetLevel, boolean thresholdChanged) {
+        if (previousLevel == 0) {
+            return "raised";
+        }
+        if (targetLevel > previousLevel) {
+            return "upgraded";
+        }
+        if (targetLevel < previousLevel) {
+            return "downgraded";
+        }
+        return thresholdChanged ? "changed" : "raised";
+    }
+
+    private String buildActiveMessage(CollectorSampleRawDO sample, CollectorAlarmEvaluator.Decision decision,
+                                      int previousLevel, String previousThresholdType) {
+        if (previousLevel > 0 && previousLevel == decision.level()
+                && !Objects.equals(previousThresholdType, decision.thresholdType())) {
+            return String.format("通道值 %.6g 阈值侧切换：%s → %s", sample.getValue(),
+                    thresholdName(previousThresholdType), thresholdName(decision.thresholdType()));
+        }
+        return String.format("通道值 %.6g 命中%s", sample.getValue(), thresholdName(decision.thresholdType()));
+    }
+
+    private String clearThresholdType(CollectorAlarmStateDO state, CollectorAlarmDO activeAlarm) {
+        if (state != null && state.getLevel() != null && state.getLevel() > 0) {
+            return state.getThresholdType();
+        }
+        return activeAlarm == null ? null : activeAlarm.getAlarmType();
+    }
+
+    private Long resolveDeviceId(CollectorChannelDO channel, CollectorAlarmStateDO state, CollectorAlarmDO alarm) {
+        if (channel != null) {
+            return channel.getDeviceId();
+        }
+        if (state != null && state.getDeviceId() != null) {
+            return state.getDeviceId();
+        }
+        return alarm == null ? null : alarm.getDeviceId();
+    }
+
+    private Long resolveSensorId(CollectorChannelDO channel, CollectorAlarmStateDO state, CollectorAlarmDO alarm) {
+        if (channel != null) {
+            return channel.getSensorId();
+        }
+        if (state != null && state.getSensorId() != null) {
+            return state.getSensorId();
+        }
+        return alarm == null ? null : alarm.getSensorId();
+    }
+
+    private String buildDedupeKey(Long deviceId, Long sensorId, Long channelId, String thresholdType) {
+        return String.format("dev:%s:sensor:%s:ch:%s:type:%s",
+                deviceId, sensorId, channelId, thresholdType);
+    }
+
     private String buildDedupeKey(CollectorChannelDO channel, String thresholdType) {
-        return String.format("dev:%d:sensor:%d:ch:%d:type:%s",
-                channel.getDeviceId(), channel.getSensorId(), channel.getId(), thresholdType);
+        return buildDedupeKey(channel.getDeviceId(), channel.getSensorId(), channel.getId(), thresholdType);
     }
 
     private String thresholdName(String thresholdType) {
