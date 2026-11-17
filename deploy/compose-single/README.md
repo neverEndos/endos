@@ -135,11 +135,13 @@ ssh cat@192.168.0.101 \
    需先把本文件复制到板端 `/opt/yudao/sql/postgresql/` 并手工执行）；
 6. `init/05-file-config.sh`（MinIO master 文件配置）。
 
-后端启动后还需调用一次定时任务同步，报警判定作业才会进入 Quartz：
+后端启动后还需同步一次定时任务，报警判定作业才会进入 Quartz。推荐使用管理后台
+“定时任务 → 同步”；该操作要求管理员账号具有 `infra:job:create` 权限。若使用命令行，
+`POST /admin-api/infra/job/sync` 必须携带管理员访问令牌：
 
 ```bash
-curl -X POST -H 'tenant-id: 1' http://192.168.0.101/admin-api/infra/job/sync
-# 或在管理后台“定时任务”页面点击“同步”
+curl -X POST -H 'tenant-id: 1' -H 'Authorization: Bearer <管理员Token>' \
+  http://192.168.0.101/admin-api/infra/job/sync
 ```
 
 确认 `采集报警判定` 任务存在、状态为开启，并在“调度日志”中看到至少一次执行记录；
@@ -174,8 +176,9 @@ MinIO bucket 由 `minio-init` 自动创建。最后一条命令可幂等重跑 b
 2. **结构迁移**：`collector_alarm_migration.sql`（幂等，可重复执行）。
 3. **两个种子**：`collector_web_seed.sql`（报警菜单）与 `collector_alarm_seed.sql`
    （定时任务记录），均幂等。
-4. **同步 Quartz**：调用一次 `POST /admin-api/infra/job/sync`（或在管理后台
-   “定时任务”页面点击“同步”）。种子只写 `infra_job`，不同步则作业不会执行。
+4. **同步 Quartz**：在管理后台“定时任务 → 同步”（需要 `infra:job:create`），或携带
+   管理员 Token 调用一次 `POST /admin-api/infra/job/sync`。种子只写 `infra_job`，
+   不同步则作业不会执行。
 5. **验收检查**：确认“采集报警判定”任务存在且开启；在“调度日志”中看到至少一次
    执行记录；打开报警记录页确认能查询。部署验收清单应包含“查看一次作业执行日志”。
 
@@ -191,7 +194,8 @@ sudo docker compose exec -T postgres psql -U yudao -d ruoyi-vue-pro \
   < /opt/yudao/sql/postgresql/collector_web_seed.sql
 sudo docker compose exec -T postgres psql -U yudao -d ruoyi-vue-pro \
   < /opt/yudao/sql/postgresql/collector_alarm_seed.sql
-curl -X POST -H 'tenant-id: 1' http://192.168.0.101/admin-api/infra/job/sync
+curl -X POST -H 'tenant-id: 1' -H 'Authorization: Bearer <管理员Token>' \
+  http://192.168.0.101/admin-api/infra/job/sync
 ```
 
 报警事件时间统一使用服务器本地墙钟时间（`Asia/Shanghai`），报警页面的时间范围查询

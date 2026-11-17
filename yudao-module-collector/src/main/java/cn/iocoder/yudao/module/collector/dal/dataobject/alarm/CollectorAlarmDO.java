@@ -31,7 +31,7 @@ public class CollectorAlarmDO {
     private Integer level;
     /** 活动报警去重键 */
     private String dedupeKey;
-    /** 状态：0 活动、1 已确认、2 已恢复 */
+    /** 状态：0 活动、1 已确认、2 已清除/已结束 */
     private Integer status;
     /** 报警描述 */
     private String message;

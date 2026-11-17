@@ -29,7 +29,7 @@ public class CollectorAlarmRespVO {
     private String eventType;
     @Schema(description = "级别：2 预警、3 异常", example = "3")
     private Integer level;
-    @Schema(description = "状态：0 活动、1 已确认、2 已恢复", example = "0")
+    @Schema(description = "状态：0 活动、1 已确认、2 已清除/已结束", example = "0")
     private Integer status;
     @Schema(description = "报警描述")
     private String message;
