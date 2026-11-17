@@ -1,0 +1,152 @@
+-- 采集数据多级聚合迁移（PostgreSQL）
+--
+-- 1. 为通道增加 normal/fast 数据画像，新增秒、分钟聚合表，扩展聚合水位类型。
+-- 2. 幂等、单事务；只增列、增表、增索引和必要约束，不删除或清理任何数据。
+-- 3. 执行方式（密码从环境变量读取，不要写入仓库）：
+--    PGPASSWORD=... psql -h <host> -U <user> -d <database> -f sql/postgresql/collector_aggregate_migration.sql
+
+\set ON_ERROR_STOP on
+SET client_encoding = 'UTF8';
+BEGIN;
+
+ALTER TABLE public.collector_channel
+    ADD COLUMN IF NOT EXISTS data_profile character varying(16) DEFAULT 'normal'::character varying NOT NULL;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'public.collector_channel'::regclass
+          AND conname = 'chk_collector_channel_data_profile'
+    ) THEN
+        ALTER TABLE public.collector_channel
+            ADD CONSTRAINT chk_collector_channel_data_profile CHECK (data_profile IN ('normal', 'fast'));
+    END IF;
+END $$;
+
+COMMENT ON COLUMN public.collector_channel.data_profile IS '数据画像：normal 常规（不写秒聚合）、fast 高频（写秒聚合）';
+
+CREATE TABLE IF NOT EXISTS public.collector_aggregate_second (
+    channel_id bigint NOT NULL,
+    device_id bigint NOT NULL,
+    bucket_time timestamp(3) without time zone NOT NULL,
+    sample_count integer DEFAULT 0 NOT NULL,
+    good_count integer DEFAULT 0 NOT NULL,
+    bad_count integer DEFAULT 0 NOT NULL,
+    value_avg double precision,
+    value_min double precision,
+    value_max double precision,
+    value_sum double precision,
+    value_first double precision,
+    value_last double precision,
+    update_time timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT pk_collector_aggregate_second PRIMARY KEY (channel_id, bucket_time),
+    CONSTRAINT chk_collector_aggregate_second_count CHECK (
+        sample_count >= 0 AND good_count >= 0 AND bad_count >= 0
+    ),
+    CONSTRAINT chk_collector_aggregate_second_finite CHECK (
+        (value_avg IS NULL OR (value_avg <> 'Infinity'::float8 AND value_avg <> '-Infinity'::float8 AND value_avg <> 'NaN'::float8))
+        AND (value_min IS NULL OR (value_min <> 'Infinity'::float8 AND value_min <> '-Infinity'::float8 AND value_min <> 'NaN'::float8))
+        AND (value_max IS NULL OR (value_max <> 'Infinity'::float8 AND value_max <> '-Infinity'::float8 AND value_max <> 'NaN'::float8))
+        AND (value_sum IS NULL OR (value_sum <> 'Infinity'::float8 AND value_sum <> '-Infinity'::float8 AND value_sum <> 'NaN'::float8))
+        AND (value_first IS NULL OR (value_first <> 'Infinity'::float8 AND value_first <> '-Infinity'::float8 AND value_first <> 'NaN'::float8))
+        AND (value_last IS NULL OR (value_last <> 'Infinity'::float8 AND value_last <> '-Infinity'::float8 AND value_last <> 'NaN'::float8))
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_collector_aggregate_second_device_time
+    ON public.collector_aggregate_second USING btree (device_id, bucket_time);
+CREATE INDEX IF NOT EXISTS idx_collector_aggregate_second_bucket
+    ON public.collector_aggregate_second USING btree (bucket_time);
+
+COMMENT ON TABLE public.collector_aggregate_second IS '秒聚合数据表（仅 fast 通道；统计值仅用 quality=0 且 value 非 NULL 的 raw 行）';
+COMMENT ON COLUMN public.collector_aggregate_second.channel_id IS '通道编号';
+COMMENT ON COLUMN public.collector_aggregate_second.device_id IS '设备编号（冗余）';
+COMMENT ON COLUMN public.collector_aggregate_second.bucket_time IS '秒桶起始时间';
+COMMENT ON COLUMN public.collector_aggregate_second.sample_count IS '该桶全部 raw 行数（含 good/uncertain/bad）';
+COMMENT ON COLUMN public.collector_aggregate_second.good_count IS 'quality=0 的 raw 行数（含 value 为 NULL 的行）';
+COMMENT ON COLUMN public.collector_aggregate_second.bad_count IS 'quality=2 的 raw 行数';
+COMMENT ON COLUMN public.collector_aggregate_second.value_avg IS 'value_sum / good_count；无有效统计值时为 NULL';
+COMMENT ON COLUMN public.collector_aggregate_second.value_min IS '有效统计值最小值';
+COMMENT ON COLUMN public.collector_aggregate_second.value_max IS '有效统计值最大值';
+COMMENT ON COLUMN public.collector_aggregate_second.value_sum IS '有效统计值求和';
+COMMENT ON COLUMN public.collector_aggregate_second.value_first IS '桶内首个有效统计值';
+COMMENT ON COLUMN public.collector_aggregate_second.value_last IS '桶内最后有效统计值';
+COMMENT ON COLUMN public.collector_aggregate_second.update_time IS '最后重算时间';
+
+CREATE TABLE IF NOT EXISTS public.collector_aggregate_minute (
+    channel_id bigint NOT NULL,
+    device_id bigint NOT NULL,
+    bucket_time timestamp(3) without time zone NOT NULL,
+    sample_count integer DEFAULT 0 NOT NULL,
+    good_count integer DEFAULT 0 NOT NULL,
+    bad_count integer DEFAULT 0 NOT NULL,
+    value_avg double precision,
+    value_min double precision,
+    value_max double precision,
+    value_sum double precision,
+    value_first double precision,
+    value_last double precision,
+    update_time timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT pk_collector_aggregate_minute PRIMARY KEY (channel_id, bucket_time),
+    CONSTRAINT chk_collector_aggregate_minute_count CHECK (
+        sample_count >= 0 AND good_count >= 0 AND bad_count >= 0
+    ),
+    CONSTRAINT chk_collector_aggregate_minute_finite CHECK (
+        (value_avg IS NULL OR (value_avg <> 'Infinity'::float8 AND value_avg <> '-Infinity'::float8 AND value_avg <> 'NaN'::float8))
+        AND (value_min IS NULL OR (value_min <> 'Infinity'::float8 AND value_min <> '-Infinity'::float8 AND value_min <> 'NaN'::float8))
+        AND (value_max IS NULL OR (value_max <> 'Infinity'::float8 AND value_max <> '-Infinity'::float8 AND value_max <> 'NaN'::float8))
+        AND (value_sum IS NULL OR (value_sum <> 'Infinity'::float8 AND value_sum <> '-Infinity'::float8 AND value_sum <> 'NaN'::float8))
+        AND (value_first IS NULL OR (value_first <> 'Infinity'::float8 AND value_first <> '-Infinity'::float8 AND value_first <> 'NaN'::float8))
+        AND (value_last IS NULL OR (value_last <> 'Infinity'::float8 AND value_last <> '-Infinity'::float8 AND value_last <> 'NaN'::float8))
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_collector_aggregate_minute_device_time
+    ON public.collector_aggregate_minute USING btree (device_id, bucket_time);
+CREATE INDEX IF NOT EXISTS idx_collector_aggregate_minute_bucket
+    ON public.collector_aggregate_minute USING btree (bucket_time);
+
+COMMENT ON TABLE public.collector_aggregate_minute IS '分钟聚合数据表（fast 从秒表上卷、normal 从 raw 直算；可用 fromRaw 全量审计重算）';
+COMMENT ON COLUMN public.collector_aggregate_minute.channel_id IS '通道编号';
+COMMENT ON COLUMN public.collector_aggregate_minute.device_id IS '设备编号（冗余）';
+COMMENT ON COLUMN public.collector_aggregate_minute.bucket_time IS '分钟桶起始时间';
+COMMENT ON COLUMN public.collector_aggregate_minute.sample_count IS '该桶全部 raw 行数（含 good/uncertain/bad）';
+COMMENT ON COLUMN public.collector_aggregate_minute.good_count IS 'quality=0 的 raw 行数（含 value 为 NULL 的行）';
+COMMENT ON COLUMN public.collector_aggregate_minute.bad_count IS 'quality=2 的 raw 行数';
+COMMENT ON COLUMN public.collector_aggregate_minute.value_avg IS 'value_sum / good_count；无有效统计值时为 NULL';
+COMMENT ON COLUMN public.collector_aggregate_minute.value_min IS '有效统计值最小值';
+COMMENT ON COLUMN public.collector_aggregate_minute.value_max IS '有效统计值最大值';
+COMMENT ON COLUMN public.collector_aggregate_minute.value_sum IS '有效统计值求和';
+COMMENT ON COLUMN public.collector_aggregate_minute.value_first IS '桶内首个有效统计值';
+COMMENT ON COLUMN public.collector_aggregate_minute.value_last IS '桶内最后有效统计值';
+COMMENT ON COLUMN public.collector_aggregate_minute.update_time IS '最后重算时间';
+
+DO $$
+DECLARE
+    constraint_definition text;
+BEGIN
+    SELECT pg_get_constraintdef(oid) INTO constraint_definition
+    FROM pg_constraint
+    WHERE conrelid = 'public.collector_aggregate_watermark'::regclass
+      AND conname = 'chk_collector_aggregate_watermark_type';
+
+    IF constraint_definition IS NOT NULL
+            AND (constraint_definition NOT LIKE '%second%' OR constraint_definition NOT LIKE '%minute%') THEN
+        ALTER TABLE public.collector_aggregate_watermark
+            DROP CONSTRAINT chk_collector_aggregate_watermark_type;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'public.collector_aggregate_watermark'::regclass
+          AND conname = 'chk_collector_aggregate_watermark_type'
+    ) THEN
+        ALTER TABLE public.collector_aggregate_watermark
+            ADD CONSTRAINT chk_collector_aggregate_watermark_type
+            CHECK (agg_type IN ('second', 'minute', 'hour', 'day'));
+    END IF;
+END $$;
+
+COMMENT ON COLUMN public.collector_aggregate_watermark.agg_type IS '聚合类型：second / minute / hour / day';
+
+COMMIT;

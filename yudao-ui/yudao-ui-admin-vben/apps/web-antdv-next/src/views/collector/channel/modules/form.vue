@@ -50,6 +50,7 @@ const [Drawer, drawerApi] = useVbenDrawer({
       id: channel.value!.id!,
       channelName: values.channelName.trim(),
       enabled: values.enabled,
+      dataProfile: values.dataProfile,
       scale: values.scale,
       valueOffset: values.valueOffset,
       unit: values.unit,

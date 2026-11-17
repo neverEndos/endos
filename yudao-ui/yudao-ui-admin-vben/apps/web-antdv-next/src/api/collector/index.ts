@@ -146,6 +146,8 @@ export namespace CollectorApi {
     enabled?: number;
     valueType?: string;
     valueKind?: string;
+    /** 数据画像：normal 常规、fast 高频 */
+    dataProfile?: string;
     channelConfig?: Record<string, any>;
     scale?: number;
     valueOffset?: number;
@@ -176,6 +178,7 @@ export namespace CollectorApi {
     id: number;
     channelName?: string;
     enabled?: number;
+    dataProfile?: string;
     channelConfig?: Record<string, any>;
     scale?: number;
     valueOffset?: number;

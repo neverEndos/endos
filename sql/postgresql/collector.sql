@@ -1,8 +1,8 @@
 /*
  采集器采集数据表初始化脚本（PostgreSQL 17）
 
- 适用范围：collector 20 张表（协议注册表、设备、传感器类型、参数模板、传感器、
- 通道、分时段轮询、配置版本、原始采样、通道最新值、小时/天聚合、聚合水位、报警、
+ 适用范围：collector 22 张表（协议注册表、设备、传感器类型、参数模板、传感器、
+ 通道、分时段轮询、配置版本、原始采样、通道最新值、秒/分/小时/天聚合、聚合水位、报警、
  报警状态、报警游标、设备状态、心跳、命令、保留策略）。
 
  说明：
@@ -13,7 +13,7 @@
  3. collector_sample_raw 按天 RANGE 分区，本脚本创建示例日分区与 DEFAULT 分区；
     后续分区由维护任务按 collector_retention_policy.partition_lead_days 提前创建。
  4. 业务时间统一使用 timestamp(3) without time zone，语义为 Asia/Shanghai 本地墙钟时间。
- 5. 本脚本支持重复执行：开头会删除并重建下述 20 张 collector 表与 13 个序列，
+ 5. 本脚本支持重复执行：开头会删除并重建下述 22 张 collector 表与 13 个序列，
     执行将清空采集器已有数据，请在确认后执行。已有库的结构升级请按需使用
     collector_threshold_migration.sql（阈值模型）、collector_alarm_migration.sql
     （报警引擎）与 collector_latest_migration.sql（最新值看板），不要直接重跑本脚本。
@@ -42,6 +42,8 @@ DROP TABLE IF EXISTS public.collector_channel;
 DROP TABLE IF EXISTS public.collector_poll_schedule;
 DROP TABLE IF EXISTS public.collector_config_version;
 DROP TABLE IF EXISTS public.collector_sample_raw;
+DROP TABLE IF EXISTS public.collector_aggregate_second;
+DROP TABLE IF EXISTS public.collector_aggregate_minute;
 DROP TABLE IF EXISTS public.collector_aggregate_hour;
 DROP TABLE IF EXISTS public.collector_aggregate_day;
 DROP TABLE IF EXISTS public.collector_aggregate_watermark;
@@ -531,6 +533,7 @@ CREATE TABLE public.collector_channel (
     enabled smallint DEFAULT 1 NOT NULL,
     value_type character varying(16) NOT NULL,
     value_kind character varying(16) DEFAULT 'number'::character varying NOT NULL,
+    data_profile character varying(16) DEFAULT 'normal'::character varying NOT NULL,
     channel_config jsonb DEFAULT '{}'::jsonb NOT NULL,
     scale double precision DEFAULT 1 NOT NULL,
     value_offset double precision DEFAULT 0 NOT NULL,
@@ -563,6 +566,7 @@ CREATE TABLE public.collector_channel (
     CONSTRAINT chk_collector_channel_enabled CHECK (enabled IN (0, 1)),
     CONSTRAINT chk_collector_channel_value_type CHECK (value_type = 'number'),
     CONSTRAINT chk_collector_channel_value_kind CHECK (value_kind IN ('number', 'enum')),
+    CONSTRAINT chk_collector_channel_data_profile CHECK (data_profile IN ('normal', 'fast')),
     CONSTRAINT chk_collector_channel_scale CHECK (
         scale <> 'Infinity'::float8
         AND scale <> '-Infinity'::float8
@@ -665,6 +669,7 @@ COMMENT ON COLUMN public.collector_channel.channel_name IS '通道名称（列�
 COMMENT ON COLUMN public.collector_channel.enabled IS '是否启用：0 否、1 是';
 COMMENT ON COLUMN public.collector_channel.value_type IS '通用值类型：首期仅 number；bit 等协议值由驱动转换为数值 0/1';
 COMMENT ON COLUMN public.collector_channel.value_kind IS '值类别：number 数值、enum 枚举；枚举不产生阈值报警';
+COMMENT ON COLUMN public.collector_channel.data_profile IS '数据画像：normal 常规（不写秒聚合）、fast 高频（写秒聚合）';
 COMMENT ON COLUMN public.collector_channel.channel_config IS '协议专用寻址/解析参数 JSON，由所属传感器的 protocol.channel_schema 校验';
 COMMENT ON COLUMN public.collector_channel.scale IS '数值缩放系数（仅 value_type=number）';
 COMMENT ON COLUMN public.collector_channel.value_offset IS '工程值偏移量（仅 value_type=number）';
@@ -877,7 +882,113 @@ COMMENT ON COLUMN public.collector_sample_raw.quality IS '质量码：0 good、1
 
 
 -- =============================================================================
--- 11. 小时聚合
+-- 11. 秒聚合（仅 fast 通道）
+-- =============================================================================
+
+CREATE TABLE public.collector_aggregate_second (
+    channel_id bigint NOT NULL,
+    device_id bigint NOT NULL,
+    bucket_time timestamp(3) without time zone NOT NULL,
+    sample_count integer DEFAULT 0 NOT NULL,
+    good_count integer DEFAULT 0 NOT NULL,
+    bad_count integer DEFAULT 0 NOT NULL,
+    value_avg double precision,
+    value_min double precision,
+    value_max double precision,
+    value_sum double precision,
+    value_first double precision,
+    value_last double precision,
+    update_time timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT pk_collector_aggregate_second PRIMARY KEY (channel_id, bucket_time),
+    CONSTRAINT chk_collector_aggregate_second_count CHECK (
+        sample_count >= 0 AND good_count >= 0 AND bad_count >= 0
+    ),
+    CONSTRAINT chk_collector_aggregate_second_finite CHECK (
+        (value_avg IS NULL OR (value_avg <> 'Infinity'::float8 AND value_avg <> '-Infinity'::float8 AND value_avg <> 'NaN'::float8))
+        AND (value_min IS NULL OR (value_min <> 'Infinity'::float8 AND value_min <> '-Infinity'::float8 AND value_min <> 'NaN'::float8))
+        AND (value_max IS NULL OR (value_max <> 'Infinity'::float8 AND value_max <> '-Infinity'::float8 AND value_max <> 'NaN'::float8))
+        AND (value_sum IS NULL OR (value_sum <> 'Infinity'::float8 AND value_sum <> '-Infinity'::float8 AND value_sum <> 'NaN'::float8))
+        AND (value_first IS NULL OR (value_first <> 'Infinity'::float8 AND value_first <> '-Infinity'::float8 AND value_first <> 'NaN'::float8))
+        AND (value_last IS NULL OR (value_last <> 'Infinity'::float8 AND value_last <> '-Infinity'::float8 AND value_last <> 'NaN'::float8))
+    )
+);
+
+CREATE INDEX idx_collector_aggregate_second_device_time
+    ON public.collector_aggregate_second USING btree (device_id, bucket_time);
+CREATE INDEX idx_collector_aggregate_second_bucket
+    ON public.collector_aggregate_second USING btree (bucket_time);
+
+COMMENT ON TABLE public.collector_aggregate_second IS '秒聚合数据表（仅 fast 通道；统计值仅用 quality=0 且 value 非 NULL 的 raw 行）';
+COMMENT ON COLUMN public.collector_aggregate_second.channel_id IS '通道编号';
+COMMENT ON COLUMN public.collector_aggregate_second.device_id IS '设备编号（冗余）';
+COMMENT ON COLUMN public.collector_aggregate_second.bucket_time IS '秒桶起始时间';
+COMMENT ON COLUMN public.collector_aggregate_second.sample_count IS '该桶全部 raw 行数（含 good/uncertain/bad）';
+COMMENT ON COLUMN public.collector_aggregate_second.good_count IS 'quality=0 的 raw 行数（含 value 为 NULL 的行）';
+COMMENT ON COLUMN public.collector_aggregate_second.bad_count IS 'quality=2 的 raw 行数';
+COMMENT ON COLUMN public.collector_aggregate_second.value_avg IS 'value_sum / good_count；无有效统计值时为 NULL';
+COMMENT ON COLUMN public.collector_aggregate_second.value_min IS '有效统计值最小值';
+COMMENT ON COLUMN public.collector_aggregate_second.value_max IS '有效统计值最大值';
+COMMENT ON COLUMN public.collector_aggregate_second.value_sum IS '有效统计值求和';
+COMMENT ON COLUMN public.collector_aggregate_second.value_first IS '桶内首个有效统计值';
+COMMENT ON COLUMN public.collector_aggregate_second.value_last IS '桶内最后有效统计值';
+COMMENT ON COLUMN public.collector_aggregate_second.update_time IS '最后重算时间';
+
+
+-- =============================================================================
+-- 12. 分钟聚合
+-- =============================================================================
+
+CREATE TABLE public.collector_aggregate_minute (
+    channel_id bigint NOT NULL,
+    device_id bigint NOT NULL,
+    bucket_time timestamp(3) without time zone NOT NULL,
+    sample_count integer DEFAULT 0 NOT NULL,
+    good_count integer DEFAULT 0 NOT NULL,
+    bad_count integer DEFAULT 0 NOT NULL,
+    value_avg double precision,
+    value_min double precision,
+    value_max double precision,
+    value_sum double precision,
+    value_first double precision,
+    value_last double precision,
+    update_time timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT pk_collector_aggregate_minute PRIMARY KEY (channel_id, bucket_time),
+    CONSTRAINT chk_collector_aggregate_minute_count CHECK (
+        sample_count >= 0 AND good_count >= 0 AND bad_count >= 0
+    ),
+    CONSTRAINT chk_collector_aggregate_minute_finite CHECK (
+        (value_avg IS NULL OR (value_avg <> 'Infinity'::float8 AND value_avg <> '-Infinity'::float8 AND value_avg <> 'NaN'::float8))
+        AND (value_min IS NULL OR (value_min <> 'Infinity'::float8 AND value_min <> '-Infinity'::float8 AND value_min <> 'NaN'::float8))
+        AND (value_max IS NULL OR (value_max <> 'Infinity'::float8 AND value_max <> '-Infinity'::float8 AND value_max <> 'NaN'::float8))
+        AND (value_sum IS NULL OR (value_sum <> 'Infinity'::float8 AND value_sum <> '-Infinity'::float8 AND value_sum <> 'NaN'::float8))
+        AND (value_first IS NULL OR (value_first <> 'Infinity'::float8 AND value_first <> '-Infinity'::float8 AND value_first <> 'NaN'::float8))
+        AND (value_last IS NULL OR (value_last <> 'Infinity'::float8 AND value_last <> '-Infinity'::float8 AND value_last <> 'NaN'::float8))
+    )
+);
+
+CREATE INDEX idx_collector_aggregate_minute_device_time
+    ON public.collector_aggregate_minute USING btree (device_id, bucket_time);
+CREATE INDEX idx_collector_aggregate_minute_bucket
+    ON public.collector_aggregate_minute USING btree (bucket_time);
+
+COMMENT ON TABLE public.collector_aggregate_minute IS '分钟聚合数据表（fast 从秒表上卷、normal 从 raw 直算；可用 fromRaw 全量审计重算）';
+COMMENT ON COLUMN public.collector_aggregate_minute.channel_id IS '通道编号';
+COMMENT ON COLUMN public.collector_aggregate_minute.device_id IS '设备编号（冗余）';
+COMMENT ON COLUMN public.collector_aggregate_minute.bucket_time IS '分钟桶起始时间';
+COMMENT ON COLUMN public.collector_aggregate_minute.sample_count IS '该桶全部 raw 行数（含 good/uncertain/bad）';
+COMMENT ON COLUMN public.collector_aggregate_minute.good_count IS 'quality=0 的 raw 行数（含 value 为 NULL 的行）';
+COMMENT ON COLUMN public.collector_aggregate_minute.bad_count IS 'quality=2 的 raw 行数';
+COMMENT ON COLUMN public.collector_aggregate_minute.value_avg IS 'value_sum / good_count；无有效统计值时为 NULL';
+COMMENT ON COLUMN public.collector_aggregate_minute.value_min IS '有效统计值最小值';
+COMMENT ON COLUMN public.collector_aggregate_minute.value_max IS '有效统计值最大值';
+COMMENT ON COLUMN public.collector_aggregate_minute.value_sum IS '有效统计值求和';
+COMMENT ON COLUMN public.collector_aggregate_minute.value_first IS '桶内首个有效统计值';
+COMMENT ON COLUMN public.collector_aggregate_minute.value_last IS '桶内最后有效统计值';
+COMMENT ON COLUMN public.collector_aggregate_minute.update_time IS '最后重算时间';
+
+
+-- =============================================================================
+-- 13. 小时聚合
 -- =============================================================================
 
 CREATE TABLE public.collector_aggregate_hour (
@@ -955,7 +1066,7 @@ COMMENT ON COLUMN public.collector_aggregate_hour.update_time IS '最后重算�
 
 
 -- =============================================================================
--- 12. 天聚合
+-- 14. 天聚合
 -- =============================================================================
 
 CREATE TABLE public.collector_aggregate_day (
@@ -1033,7 +1144,7 @@ COMMENT ON COLUMN public.collector_aggregate_day.update_time IS '最后重算时
 
 
 -- =============================================================================
--- 13. 聚合水位与补跑状态
+-- 15. 聚合水位与补跑状态
 -- =============================================================================
 
 CREATE TABLE public.collector_aggregate_watermark (
@@ -1050,7 +1161,7 @@ CREATE TABLE public.collector_aggregate_watermark (
     last_success_time timestamp(3) without time zone,
     update_time timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT pk_collector_aggregate_watermark PRIMARY KEY (agg_type, channel_id),
-    CONSTRAINT chk_collector_aggregate_watermark_type CHECK (agg_type IN ('hour', 'day')),
+    CONSTRAINT chk_collector_aggregate_watermark_type CHECK (agg_type IN ('second', 'minute', 'hour', 'day')),
     CONSTRAINT chk_collector_aggregate_watermark_status CHECK (status IN (0, 1, 2)),
     CONSTRAINT chk_collector_aggregate_watermark_retry CHECK (retry_count >= 0)
 );
@@ -1062,7 +1173,7 @@ CREATE INDEX idx_collector_aggregate_watermark_device
     ON public.collector_aggregate_watermark USING btree (device_id);
 
 COMMENT ON TABLE public.collector_aggregate_watermark IS '聚合水位与补跑状态表';
-COMMENT ON COLUMN public.collector_aggregate_watermark.agg_type IS '聚合类型：hour / day';
+COMMENT ON COLUMN public.collector_aggregate_watermark.agg_type IS '聚合类型：second / minute / hour / day';
 COMMENT ON COLUMN public.collector_aggregate_watermark.channel_id IS '通道编号';
 COMMENT ON COLUMN public.collector_aggregate_watermark.device_id IS '设备编号（冗余）';
 COMMENT ON COLUMN public.collector_aggregate_watermark.watermark_time IS '最新已成功提交桶的结束时间（exclusive）；NULL 表示从未成功';
@@ -1077,7 +1188,7 @@ COMMENT ON COLUMN public.collector_aggregate_watermark.update_time IS '更新时
 
 
 -- =============================================================================
--- 14. 报警事件
+-- 16. 报警事件
 -- =============================================================================
 
 CREATE TABLE public.collector_alarm (
@@ -1163,7 +1274,7 @@ COMMENT ON COLUMN public.collector_alarm.clear_reason IS '清除原因';
 
 
 -- =============================================================================
--- 15. 设备当前状态
+-- 17. 设备当前状态
 -- =============================================================================
 
 CREATE TABLE public.collector_device_status (
@@ -1196,7 +1307,7 @@ COMMENT ON COLUMN public.collector_device_status.update_time IS '更新时间';
 
 
 -- =============================================================================
--- 16. 采集器心跳
+-- 18. 采集器心跳
 -- =============================================================================
 
 CREATE TABLE public.collector_heartbeat (
@@ -1269,7 +1380,7 @@ COMMENT ON COLUMN public.collector_heartbeat.message IS '附加状态信息';
 
 
 -- =============================================================================
--- 17. 命令下发与结果
+-- 19. 命令下发与结果
 -- =============================================================================
 
 CREATE TABLE public.collector_command (
@@ -1326,7 +1437,7 @@ COMMENT ON COLUMN public.collector_command.error_message IS '失败原因';
 
 
 -- =============================================================================
--- 18. 保留策略
+-- 20. 保留策略
 -- =============================================================================
 
 CREATE TABLE public.collector_retention_policy (
@@ -1379,7 +1490,7 @@ COMMENT ON COLUMN public.collector_retention_policy.deleted IS '是否删除：0
 
 
 -- =============================================================================
--- 19. 首期种子数据
+-- 21. 首期种子数据
 -- =============================================================================
 
 -- 19.1 协议注册表：仅首期支持的 Modbus RTU / Modbus TCP。
@@ -1738,7 +1849,7 @@ INSERT INTO public.collector_retention_policy (
 
 
 -- =============================================================================
--- 20. 报警引擎状态与游标
+-- 22. 报警引擎状态与游标
 -- =============================================================================
 
 CREATE TABLE public.collector_alarm_state (
@@ -1812,7 +1923,7 @@ COMMENT ON COLUMN public.collector_alarm_cursor.last_sample_id IS '同一 collec
 COMMENT ON COLUMN public.collector_alarm_cursor.updated_time IS '游标更新时间';
 
 -- =============================================================================
--- 21. 采集通道最新值（看板）
+-- 23. 采集通道最新值（看板）
 -- =============================================================================
 
 CREATE TABLE public.collector_channel_latest (
