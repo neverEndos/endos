@@ -263,6 +263,9 @@ yudao:
 --- #################### 芋道相关配置 ####################
 
 yudao:
+  collector:
+    aggregate:
+      grace-seconds: 5 # 聚合桶闭合宽限秒数，只计算桶结束时间早于 now-grace 的桶
   info:
     version: 1.0.0
     base-package: cn.iocoder.yudao
