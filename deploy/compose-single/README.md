@@ -150,6 +150,20 @@ curl -X POST -H 'tenant-id: 1' -H 'Authorization: Bearer <管理员Token>' \
 **不要在已有数据的库上手工重跑基线 SQL**，其中包含 DROP/重建语句。清空数据目录或
 `down` 后重新 `up` 不等于安全升级；数据库结构升级必须另行备份与评估。
 
+**既有库升级到最新值看板**：在发布新版 collector 之前，先在板端备份数据库，再执行
+幂等迁移（不要重跑 `collector.sql`）：
+
+```bash
+cd /opt/yudao/compose-single
+sudo docker compose exec -T postgres \
+  psql -U yudao -d ruoyi-vue-pro -v ON_ERROR_STOP=1 \
+  < /opt/yudao/sql/postgresql/collector_latest_migration.sql
+```
+
+迁移脚本由 `bootstrap-board.sh` 一并安装到 `/opt/yudao/sql/postgresql`。新版 collector
+启动时会检查 `collector_channel_latest`；缺表时记录中文错误、提示先执行
+`collector_latest_migration.sql` 并以退出码 2 失败，避免只写 raw 静默丢最新值。
+
 检查：
 
 ```bash
@@ -285,8 +299,9 @@ unit 不写死轮询间隔、超时和重试次数；它们分别读取 `collect
 成功应用后才提交新指纹；flags ioctl 等应用失败会保留旧配置，首次在下一轮立即重试，
 连续失败进入 2 秒起步、60 秒封顶的指数退避，DB 重连仍由 `--db-retry-interval` 独立节流。
 启动时无应答的传感器不会被无关结构变化重新加入，仅新增、禁用后重新启用或进程重启时
-再次探测。部署脚本保留按实际 `SERVICE_USER` / `SERVICE_GROUP` 渲染 unit 的
-`User` / `Group` 机制。
+再次探测。采集器启动要求 `collector_channel_latest` 已存在（既有库先执行
+`collector_latest_migration.sql`），否则会提示迁移并退出，不能只写 raw。部署脚本
+保留按实际 `SERVICE_USER` / `SERVICE_GROUP` 渲染 unit 的 `User` / `Group` 机制。
 
 ```bash
 bash deploy/compose-single/scripts/release-collector.sh --run

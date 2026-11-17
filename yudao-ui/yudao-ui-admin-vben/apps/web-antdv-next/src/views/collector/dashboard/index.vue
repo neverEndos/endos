@@ -55,8 +55,6 @@ let clockTimer: ReturnType<typeof setInterval> | undefined;
 let inFlight = false;
 let destroyed = false;
 let generation = 0;
-let versionToken = '';
-let versionDeviceId: number | undefined;
 
 const deviceOptions = computed(() =>
   devices.value.map((device) => ({
@@ -90,7 +88,7 @@ const retryText = computed(() => {
     : '正在准备重试';
 });
 
-function formatDateTime(value?: null | number | string) {
+function formatDateTime(value?: null | number) {
   return value ? dayjs(value).format('YYYY-MM-DD HH:mm:ss') : '--';
 }
 
@@ -104,22 +102,25 @@ function formatValue(channel: CollectorApi.DashboardChannel) {
   return channel.valueNum ?? '--';
 }
 
-/** 请求失败时也按采样时间继续老化，不能把最后一次成功值长期伪装成实时值。 */
-function displayedQuality(channel: CollectorApi.DashboardChannel) {
-  if (!channel.sampleTime) return null;
+/** 接口返回的 stale 是请求时刻的判定；两次请求之间按本地时间继续老化。 */
+function isChannelStale(channel: CollectorApi.DashboardChannel) {
+  if (channel.stale) return true;
+  if (!channel.sampleTime) return false;
   const interval = dashboard.value?.device.pollIntervalMs ?? 60000;
   const age = clockNow.value - dayjs(channel.sampleTime).valueOf();
-  if (Number.isFinite(age) && age > interval * 3) return 2;
-  return channel.quality ?? 0;
+  return Number.isFinite(age) && age > interval * 3;
 }
 
+/** quality 保留存储语义：2 是坏质量，不再与“陈旧”复用同一个码。 */
 function qualityText(quality?: null | number) {
   if (quality === null || quality === undefined) return '暂无数据';
-  return quality === 2 ? '陈旧' : quality === 1 ? '异常' : '正常';
+  if (quality === 2) return '异常(坏质量)';
+  return quality === 1 ? '异常' : '正常';
 }
 
 function qualityColor(quality?: null | number) {
-  if (quality === 2 || quality === 1) return 'warning';
+  if (quality === 2) return 'error';
+  if (quality === 1) return 'warning';
   if (quality === 0) return 'success';
   return 'default';
 }
@@ -142,6 +143,7 @@ function mergeChannels(
     updateField(target, 'valueNum', next.valueNum);
     updateField(target, 'valueText', next.valueText);
     updateField(target, 'quality', next.quality);
+    updateField(target, 'stale', next.stale);
     updateField(target, 'sampleTime', next.sampleTime);
     return target;
   });
@@ -170,7 +172,6 @@ function applyDashboard(next: CollectorApi.DashboardLatest) {
   }
   dashboard.value.device = next.device;
   dashboard.value.serverTime = next.serverTime;
-  dashboard.value.versionToken = next.versionToken;
   mergeSensors(dashboard.value.sensors, next.sensors);
 }
 
@@ -210,20 +211,12 @@ async function refresh(manual: boolean) {
   if (manual) manualLoading.value = true;
   if (!hasDashboard.value) initialLoading.value = true;
   try {
-    const response = await getDashboardLatest(
-      deviceId,
-      versionDeviceId === deviceId ? versionToken : undefined,
-    );
+    const body = await getDashboardLatest(deviceId);
     if (destroyed || currentGeneration !== generation) return;
-    if (response.status !== 304) {
-      const body = response.data;
-      if (!body || body.code !== 0 || !body.data) {
-        throw new Error(body?.msg || '最新值接口返回格式错误');
-      }
-      applyDashboard(body.data);
-      versionToken = body.data.versionToken;
-      versionDeviceId = deviceId;
+    if (!body) {
+      throw new Error('最新值接口返回为空');
     }
+    applyDashboard(body);
     requestFailures.value = 0;
     connectionError.value = false;
     nextRetryDelayMs.value = undefined;
@@ -260,12 +253,13 @@ function handleDeviceChange(value: number) {
   inFlight = false;
   selectedDeviceId.value = value;
   dashboard.value = undefined;
-  versionToken = '';
-  versionDeviceId = undefined;
   requestFailures.value = 0;
   connectionError.value = false;
   lastSuccessAt.value = undefined;
-  void refresh(false);
+  // 关闭自动刷新时，切换设备也不自动请求；用户需点击手动刷新。
+  if (pollInterval.value !== 0) {
+    void refresh(false);
+  }
 }
 
 function handleVisibilityChange() {
@@ -274,8 +268,10 @@ function handleVisibilityChange() {
     clearPollTimer();
     return;
   }
-  // 回到前台立即刷新一次，成功后恢复用户选择的周期。
-  void refresh(false);
+  // 回到前台立即刷新一次；关闭自动刷新时保持静默，仅手动刷新。
+  if (pollInterval.value !== 0) {
+    void refresh(false);
+  }
 }
 
 async function loadDevices() {
@@ -365,9 +361,8 @@ onBeforeUnmount(() => {
         show-icon
       >
         <template #message>
-          连接中断，保留最后一次成功数据；最后更新于 {{ lastSuccessText }}。{{
-            retryText
-          }}。
+          连接中断，保留最后一次成功数据；最后成功请求于
+          {{ lastSuccessText }}。{{ retryText }}。
         </template>
       </Alert>
       <Alert
@@ -387,15 +382,23 @@ onBeforeUnmount(() => {
                   {{ dashboard.device.name }}
                 </span>
                 <Tag :color="dashboard.device.online ? 'success' : 'error'">
-                  <span aria-hidden="true">●</span>
+                  <template #icon>
+                    <span aria-hidden="true">●</span>
+                  </template>
                   {{ dashboard.device.online ? '在线' : '离线' }}
                 </Tag>
                 <Tag v-if="dashboard.device.staleOffline" color="warning">
-                  <WarningOutlined /> 采样超时
+                  <template #icon>
+                    <WarningOutlined />
+                  </template>
+                  采样超时
                 </Tag>
               </div>
-              <div class="mt-1 text-xs opacity-60">
-                最后成功更新：{{ lastSuccessText }}
+              <div
+                class="mt-1 text-xs opacity-60"
+                data-testid="last-success-time"
+              >
+                最后成功请求：{{ lastSuccessText }}
               </div>
             </div>
             <div class="text-xs opacity-60">
@@ -406,7 +409,7 @@ onBeforeUnmount(() => {
             class="mt-5 grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5"
           >
             <div>
-              <div class="text-xs opacity-60">最后采样时间</div>
+              <div class="text-xs opacity-60">最后数据更新</div>
               <div class="mt-1 font-medium" data-testid="last-sample-time">
                 {{ formatDateTime(latestSampleTime) }}
               </div>
@@ -418,7 +421,7 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <div>
-              <div class="text-xs opacity-60">写入延迟</div>
+              <div class="text-xs opacity-60">采集器写入延迟（进程级）</div>
               <div class="mt-1 font-medium">
                 {{ dashboard.device.lastWriteLagMs ?? '--' }} ms
               </div>
@@ -504,16 +507,33 @@ onBeforeUnmount(() => {
                     <td class="sample-time">
                       {{ formatDateTime(channel.sampleTime) }}
                     </td>
-                    <td :data-quality="displayedQuality(channel) ?? 'none'">
-                      <Tag :color="qualityColor(displayedQuality(channel))">
-                        <template #icon>
-                          <WarningOutlined
-                            v-if="displayedQuality(channel) !== 0"
-                          />
-                          <span v-else aria-hidden="true">●</span>
-                        </template>
-                        {{ qualityText(displayedQuality(channel)) }}
-                      </Tag>
+                    <td
+                      :data-quality="channel.quality ?? 'none'"
+                      :data-stale="isChannelStale(channel)"
+                    >
+                      <div class="flex flex-wrap items-center gap-1">
+                        <Tag
+                          v-if="isChannelStale(channel)"
+                          color="warning"
+                          data-testid="channel-stale"
+                        >
+                          <template #icon>
+                            <WarningOutlined />
+                          </template>
+                          陈旧
+                        </Tag>
+                        <Tag
+                          v-if="channel.sampleTime"
+                          :color="qualityColor(channel.quality)"
+                        >
+                          <template #icon>
+                            <WarningOutlined v-if="channel.quality !== 0" />
+                            <span v-else aria-hidden="true">●</span>
+                          </template>
+                          {{ qualityText(channel.quality) }}
+                        </Tag>
+                        <span v-else class="text-xs opacity-60">暂无数据</span>
+                      </div>
                       <div
                         v-if="connectionError"
                         class="mt-1 text-xs opacity-60"

@@ -12,9 +12,9 @@ public class CollectorDashboardDeviceRow {
     private String name;
     private Integer online;
     private LocalDateTime lastPollAt;
+    /** 采集器进程写入延迟，不是设备级指标。 */
     private Integer lastWriteLagMs;
     private Integer consecutiveFailures;
     private Integer pollIntervalMs;
-    private LocalDateTime statusUpdateTime;
 
 }

@@ -14,6 +14,8 @@
 DB 不可用时进程不退出：按 ``--db-retry-interval``（默认 60 秒）周期性重连、重新
 执行幂等种子并重新解析通道映射；期间 JSONL 仍输出，尚未取得有效配置时
 ``channel_id`` 为 null，已有配置则保留最后一次有效映射。DB 恢复后自动开始落库。
+启动自检要求 ``collector_channel_latest`` 已存在；缺少该表时提示先执行
+``sql/postgresql/collector_latest_migration.sql`` 并退出，避免只写 raw 静默丢最新值。
 运行中按 ``--config-check-interval`` 检查三张配置表指纹，DB 修改轮询参数、传感器
 或通道后无需重启；热加载不会关闭或重开串口。
 
@@ -290,6 +292,10 @@ def run(args: argparse.Namespace, logger: logging.Logger) -> int:
                 logger=logger,
             )
             db_manager.ensure_ready()
+            if db_manager.fatal_error is not None:
+                # 缺最新值表时不能静默只写 raw：显式提示迁移并以失败码退出。
+                logger.error("采集器启动失败：%s", db_manager.fatal_error)
+                return 2
             channel_context = db_manager.context
 
         def target_drivers_for(context):

@@ -17,7 +17,6 @@ public interface CollectorDashboardMapper {
             SELECT d.id, d.device_name AS name, d.poll_interval_ms,
                    COALESCE(s.online, 0) AS online,
                    COALESCE(s.update_time, d.update_time) AS last_poll_at,
-                   s.update_time AS status_update_time,
                    COALESCE(s.consecutive_failures, 0) AS consecutive_failures,
                    h.write_lag_ms AS last_write_lag_ms
             FROM collector_device d
@@ -44,10 +43,11 @@ public interface CollectorDashboardMapper {
 
     @Select("""
             SELECT c.id, c.sensor_id, c.channel_name AS name, c.unit, c.value_kind,
+                   c.poll_interval_ms,
                    l.value_num, l.value_text, l.quality, l.sample_time
             FROM collector_channel c
             LEFT JOIN collector_channel_latest l ON l.channel_id = c.id
-            WHERE c.device_id = #{deviceId} AND c.deleted = 0
+            WHERE c.device_id = #{deviceId} AND c.deleted = 0 AND c.enabled = 1
             ORDER BY c.sensor_id, c.sort, c.id
             """)
     List<CollectorDashboardChannelRow> selectChannelLatest(@Param("deviceId") Long deviceId);

@@ -8,7 +8,8 @@
 - ``collector_heartbeat``：每 N 轮写一次运行心跳。
 
 通道 id 不硬编码：启动时按 ``sensor_code + channel_code`` 从 DB 解析（种子由
-``seed.py`` 保证存在）。DB 不可用时不 spool、不退出，由调用方记录错误后继续轮询。
+``seed.py`` 保证存在）。DB 连接故障时不 spool、不退出，由调用方记录错误后继续轮询；
+但既有库缺少 ``collector_channel_latest`` 属于结构错误，启动时显式失败并要求先执行迁移。
 """
 
 import json
@@ -33,6 +34,18 @@ from seed import (
 LOGGER_NAME = "hsi"
 DEFAULT_DB_RETRY_INTERVAL_S = 60.0
 SHANGHAI = timezone(timedelta(hours=8), name="Asia/Shanghai")
+LATEST_TABLE_MISSING_HINT = (
+    "缺少 collector_channel_latest 表，无法在更新 raw 的同时写入最新值；"
+    "请先执行 sql/postgresql/collector_latest_migration.sql 后重启采集器"
+)
+
+
+class DatabaseUnavailableError(RuntimeError):
+    """一次 DB 初始化尝试未成功（连不上、种子缺失或映射无法解析）。"""
+
+
+class LatestTableMissingError(DatabaseUnavailableError):
+    """既有库未执行最新值迁移；启动时必须显式失败，不能静默丢 raw。"""
 DEVICE_TOTAL = 1
 DEVICE_FAILURE_THRESHOLD = 3
 DRIVER_SENSOR_CODE = SENSOR_CODE_BY_DRIVER
@@ -688,6 +701,22 @@ class PgStorage:
             finally:
                 self._conn = None
 
+    def check_latest_table(self) -> None:
+        """启动自检：缺少最新值表时显式失败，避免 raw 写入后最新值静默缺失。"""
+
+        self._ensure_conn()
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute("SELECT to_regclass('public.collector_channel_latest')")
+                row = cur.fetchone()
+                if row is None or row[0] is None:
+                    raise LatestTableMissingError(LATEST_TABLE_MISSING_HINT)
+        except LatestTableMissingError:
+            raise
+        except Exception:
+            self._reset_conn()
+            raise
+
     def _ensure_conn(self) -> None:
         if self._conn is None or getattr(self._conn, "closed", 0):
             self.connect()
@@ -1006,10 +1035,6 @@ class PgStorage:
         return heartbeat_id
 
 
-class DatabaseUnavailableError(RuntimeError):
-    """一次 DB 初始化尝试未成功（连不上、种子缺失或映射无法解析）。"""
-
-
 class DatabaseManager:
     """DB 初始化与重连闸门。
 
@@ -1058,6 +1083,7 @@ class DatabaseManager:
         self._last_attempt: float | None = None
         self._attempts = 0
         self._last_error: str | None = None
+        self._fatal_error: Exception | None = None
         self._last_partition_error: str | None = None
         self._last_config_error: str | None = None
         self._config_fingerprint: ConfigFingerprint | None = None
@@ -1082,6 +1108,9 @@ class DatabaseManager:
         try:
             self._initialize()
         except Exception as exc:
+            if isinstance(exc, LatestTableMissingError):
+                # 结构缺失属于不可重试的启动错误；由入口显式退出并给出迁移提示。
+                self._fatal_error = exc
             self._mark_unavailable(exc)
             return False
         if self._last_error is not None:
@@ -1102,6 +1131,12 @@ class DatabaseManager:
             self._attempts,
         )
         return True
+
+    @property
+    def fatal_error(self) -> Exception | None:
+        """不可重试的启动错误（当前为缺少 collector_channel_latest 表）。"""
+
+        return self._fatal_error
 
     def status(self) -> dict[str, Any]:
         """摘要用状态（不包含密码等敏感信息）。"""
@@ -1132,6 +1167,10 @@ class DatabaseManager:
         storage = self._storage_factory()
         try:
             storage.connect()
+            # 既有库升级必须先执行 latest 迁移；缺表时直接失败，不能只写 raw。
+            checker = getattr(storage, "check_latest_table", None)
+            if checker is not None:
+                checker()
             context = storage.load_context()
             fingerprint_loader = getattr(storage, "load_config_fingerprint", None)
             fingerprint = fingerprint_loader() if fingerprint_loader is not None else None

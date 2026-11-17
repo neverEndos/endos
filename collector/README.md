@@ -76,13 +76,16 @@ python3 main.py --interval 60 --duration 600
 RS485，每个 flags 要求**能应答的**传感器各连续 2 次 msg=1 状态应答，失败则重开
 串口再试下一候选（本现场会回退到 0）。默认宽松策略：探测中无应答的传感器只
 WARN，并在后续轮询中跳过；`--require-sensors` 可恢复“所有已启用传感器都必须
-应答”的严格校验。`enabled=0` 的传感器/通道不参与探测、轮询与输出。DB 初始化
+应答”的严格校验。`enabled=0` 的传感器/通道不参与探测、轮询与输出。DB 连接
 失败不会退出进程：按
 `--db-retry-interval`（默认 60 秒）周期性重连，期间继续轮询并输出 `channel_id`
 为 null 的 JSONL；DB 恢复后自动重新执行幂等种子、重新解析通道映射，并从下一轮
 起恢复 raw/设备状态/心跳写入，无需人工重启。同一类连接错误在一个失败周期内只
-告警一次，恢复时记录 INFO，避免日志刷屏。进程收到 SIGINT/SIGTERM 或达到
-`--duration` 后关闭 JSONL/DB 连接、恢复串口设置，并输出统计摘要。
+告警一次，恢复时记录 INFO，避免日志刷屏。**例外**：启动自检发现缺少
+`collector_channel_latest` 时不会进入重试，而是提示执行
+`sql/postgresql/collector_latest_migration.sql` 并以退出码 2 结束。进程收到
+SIGINT/SIGTERM 或达到 `--duration` 后关闭 JSONL/DB 连接、恢复串口设置，并输出
+统计摘要。
 
 ### DB 配置热加载
 
@@ -194,6 +197,12 @@ WARN，并在后续轮询中跳过；`--require-sensors` 可恢复“所有已�
 `sql/postgresql/collector.sql` 即可。种子可重复执行，不会重复创建类型、模板、
 设备、传感器或通道。
 
+**既有库升级到最新值看板**：先执行一次幂等的
+`sql/postgresql/collector_latest_migration.sql`，再启动新版采集器。采集器启动时会
+检查 `public.collector_channel_latest`；缺表时记录中文错误并提示“请先执行
+collector_latest_migration.sql”，随后以退出码 2 失败，不会只写 raw 而静默丢失
+最新值。全新库由 `collector.sql` 一并建表，无需单独迁移。
+
 配置消费（不再“只写不读”）：
 
 - `collector_channel.scale` / `value_offset`：落库与 JSONL 的工程值统一按
@@ -216,6 +225,10 @@ WARN，并在后续轮询中跳过；`--require-sensors` 可恢复“所有已�
 - `collector_sample_raw`：每通道一行，`collect_time` 为 Asia/Shanghai 本地
   `timestamp(3)`，`value` 按通道配置计算、`raw_value` 为按字段名关联的 int16
   原始值；每批一个事务，`ON CONFLICT (channel_id, collect_time) DO NOTHING`；
+- `collector_channel_latest`：每通道一行最新值，与 raw 在**同一事务、同一 cursor**
+  内写入；数值通道写 `value_num`，枚举通道写 `value_text`，本轮未产生 raw 的通道
+  不更新。UPSERT 仅接受不早于现有 `sample_time` 的采样，重复重放不会倒退。任一
+  latest 写入失败会连同 raw 一起回滚；两表共享 Asia/Shanghai `timestamp(3)` 墙钟；
 - 分区维护：启动（或 DB 恢复）时以及每 `--partition-every` 轮（默认 60 轮），
   读取 `collector_retention_policy.data_class='sample_raw'` 的
   `partition_lead_days`（默认 3），为今天起该天数内缺失的日分区执行幂等
@@ -243,6 +256,33 @@ PGPASSWORD=123456 psql -h 192.168.0.23 -U root -d yudao_board \
   -c "select child.relname from pg_inherits join pg_class parent on parent.oid=inhparent join pg_class child on child.oid=inhrelid where parent.relname='collector_sample_raw' order by 1" \
   -c "select count(*) from collector_sample_raw_default"
 ```
+
+## 最新值看板接口
+
+`GET /admin-api/collector/dashboard/latest?deviceId=<id>`，权限
+`collector:dashboard:query`；返回设备状态、按传感器分组的启用通道最新值。页面
+同时调用 `/admin-api/collector/device/simple-list`，因此看板角色还需要
+`collector:device:query`；`collector_web_seed.sql` 会给已获得看板菜单（802）的角色
+幂等补齐采集设备菜单（781）。
+
+- **不做 ETag/304**：响应只由采样与设备状态生成时看似可缓存，但
+  `online/staleOffline/stale/serverTime` 会随服务器时间变化；若用采样时间做版本
+  令牌，采集器停采后令牌冻结，页面会永远显示在线。本版每次返回完整响应（16 通道
+  约 2 KB，10 秒轮询可忽略），后续如需带宽优化再设计包含派生状态的版本令牌。
+- **陈旧与离线**：通道采样超过 `3 × poll_interval_ms` 时 `stale=true`；设备最大
+  采样时间超过 `10 ×` 时 `staleOffline=true` 且强制 `online=false`。两者都由接口按
+  当前 `serverTime` 实时派生，不写回数据库；前端在两次请求之间也按本地时间继续
+  老化显示。v1 使用设备级 `poll_interval_ms`，通道级轮询尚未落地，查询已预留
+  `collector_channel.poll_interval_ms` 但暂不参与判定。
+- **质量码**：latest/raw 的 `quality` 保留存储语义（0 正常、1 不确定、2 坏质量）；
+  “陈旧”是独立的派生标记，不再复用 `quality=2`。
+- **写入延迟**：`lastWriteLagMs` 来自 `collector_heartbeat`，是采集器**进程级**
+  数据库写入延迟，不是设备级指标；页面显示为“采集器写入延迟”。
+- **通道过滤**：`collector_channel.enabled=0` 的通道不出现在看板中。
+- **时间**：采集器、DDL 与后端统一使用 `Asia/Shanghai` 墙钟；接口中的
+  `serverTime/lastPollAt/sampleTime` 序列化为 epoch millis（前端按 `null | number`
+  处理）。页面分别显示“最后成功请求”（浏览器请求时间）与“最后数据更新”
+  （看板中最大采样时间），断连时保留最后一次成功数据。
 
 ## HSI 协议要点
 
@@ -339,7 +379,9 @@ poll_interval/timeout/retries 的 CLI > DB > 默认优先级、rs485Flags 优先
 相同错误日志去重及成功复位、`run_loop` 参数与结构热加载集成、
 热加载读取失败保留旧配置、分区预创建（名称/边界/幂等/
 schema 限定/DDL 失败不中断轮询），以及 DB 首次不可用后恢复、映射解析失败后恢复、
-重连节流（不会每轮建连）、运行中写入失败自动重连。板端脚本另有
+重连节流（不会每轮建连）、运行中写入失败自动重连、latest 与 raw 同事务更新
+（枚举/数值列、失败整轮回滚、无当前值不 upsert）、启动缺少 latest 表时报告不可
+重试错误。板端脚本另有
 `deploy/tests/test_common.sh` 与 `deploy/tests/test_mock_gate.sh`。
 
 ## 约束与已知限制

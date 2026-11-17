@@ -463,6 +463,9 @@ class ReloadStorage:
         self.closed = False
         return None
 
+    def check_latest_table(self):
+        return None
+
     def load_config_fingerprint(self):
         self.fingerprint_calls += 1
         if self.fingerprint_error is not None:

@@ -26,10 +26,12 @@ def resolved_context():
 class FakeStorage:
     """替代 PgStorage：可控连接/映射/写入结果。"""
 
-    def __init__(self, connect_error=None, context=None, write_error=None):
+    def __init__(self, connect_error=None, context=None, write_error=None,
+                 latest_table_missing=False):
         self.connect_error = connect_error
         self.context = context if context is not None else resolved_context()
         self.write_error = write_error
+        self.latest_table_missing = latest_table_missing
         self.connect_calls = 0
         self.write_calls = 0
         self.heartbeat_calls = 0
@@ -39,6 +41,11 @@ class FakeStorage:
         self.connect_calls += 1
         if self.connect_error is not None:
             raise self.connect_error
+
+    def check_latest_table(self):
+        if self.latest_table_missing:
+            raise storage.LatestTableMissingError(storage.LATEST_TABLE_MISSING_HINT)
+        return None
 
     def load_context(self):
         return self.context
@@ -100,6 +107,21 @@ def make_manager(*, clock, queue, retry_interval_s=60.0, seed_enabled=False, see
 
 
 class DatabaseManagerTest(unittest.TestCase):
+    def test_missing_latest_table_is_reported_as_fatal_at_startup(self):
+        clock = FakeClock()
+        queue = StorageQueue([{"latest_table_missing": True}])
+        manager = make_manager(clock=clock, queue=queue)
+
+        with self.assertLogs("test-db-retry", level="WARNING") as captured:
+            self.assertFalse(manager.ensure_ready())
+
+        self.assertIsNone(manager.storage)
+        self.assertFalse(manager.ready)
+        self.assertIsInstance(manager.fatal_error, storage.LatestTableMissingError)
+        self.assertIn("collector_latest_migration.sql", str(manager.fatal_error))
+        self.assertTrue(queue.created[0].closed)
+        self.assertTrue(any("collector_channel_latest" in line for line in captured.output))
+
     def test_first_attempt_fails_then_recovers_after_interval(self):
         clock = FakeClock()
         queue = StorageQueue([{"connect_error": ConnectionError("db down")}])

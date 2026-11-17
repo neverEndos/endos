@@ -17,11 +17,9 @@ public class CollectorDashboardLatestRespVO {
     @Schema(description = "按传感器分组的通道最新值", requiredMode = Schema.RequiredMode.REQUIRED)
     private List<Sensor> sensors;
 
-    @Schema(description = "后端服务器时间", requiredMode = Schema.RequiredMode.REQUIRED)
+    @Schema(description = "后端服务器时间（Asia/Shanghai，序列化为 epoch millis）",
+            requiredMode = Schema.RequiredMode.REQUIRED)
     private LocalDateTime serverTime;
-
-    @Schema(description = "数据版本令牌，可用于 If-None-Match 条件请求", requiredMode = Schema.RequiredMode.REQUIRED)
-    private String versionToken;
 
     @Data
     public static class Device {
@@ -35,10 +33,10 @@ public class CollectorDashboardLatestRespVO {
         @Schema(description = "是否在线；采样超过十倍轮询周期时强制离线", requiredMode = Schema.RequiredMode.REQUIRED)
         private Boolean online;
 
-        @Schema(description = "最近一次轮询状态更新时间")
+        @Schema(description = "最近一次轮询状态更新时间（epoch millis）")
         private LocalDateTime lastPollAt;
 
-        @Schema(description = "最近一次心跳报告的数据库写入延迟（毫秒）")
+        @Schema(description = "采集器进程最近一次数据库写入延迟（毫秒，非设备级）")
         private Integer lastWriteLagMs;
 
         @Schema(description = "连续失败次数", requiredMode = Schema.RequiredMode.REQUIRED)
@@ -90,10 +88,14 @@ public class CollectorDashboardLatestRespVO {
         @Schema(description = "枚举通道最新值")
         private String valueText;
 
-        @Schema(description = "数据质量：0 正常、1 异常、2 陈旧；无数据时为空")
+        @Schema(description = "存储的数据质量：0 正常、1 不确定、2 坏质量；无数据时为空")
         private Integer quality;
 
-        @Schema(description = "采样时间")
+        @Schema(description = "是否陈旧：采样时间超过三倍设备轮询周期；由接口按服务器时间派生",
+                requiredMode = Schema.RequiredMode.REQUIRED)
+        private Boolean stale;
+
+        @Schema(description = "采样时间（epoch millis）")
         private LocalDateTime sampleTime;
 
     }

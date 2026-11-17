@@ -10,11 +10,13 @@ import jakarta.annotation.Resource;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.DEVICE_NOT_EXISTS;
@@ -25,10 +27,21 @@ public class CollectorDashboardServiceImpl implements CollectorDashboardService 
     @Resource
     private CollectorDashboardMapper dashboardMapper;
 
+    /** 看板统一使用 Asia/Shanghai 墙钟；单测可注入固定时钟验证派生状态随时间变化。 */
+    private Clock clock = Clock.system(CollectorDashboardUtils.SHANGHAI_ZONE);
+
     @Override
     @Transactional(readOnly = true)
     public CollectorDashboardLatestRespVO getLatest(Long deviceId) {
-        // 固定三次查询：设备状态/心跳、传感器/型号、全部通道/最新值。
+        return getLatest(deviceId, LocalDateTime.now(clock));
+    }
+
+    /**
+     * 固定 serverTime 的入口，供单测在不同时间点复用同一份采样数据。
+     * 接口每次返回完整响应，因此 online/staleOffline/stale 会随 serverTime 变化。
+     */
+    CollectorDashboardLatestRespVO getLatest(Long deviceId, LocalDateTime serverTime) {
+        // 固定三次查询：设备状态/心跳、传感器/型号、全部启用通道/最新值。
         CollectorDashboardDeviceRow deviceRow = dashboardMapper.selectDeviceState(deviceId);
         if (deviceRow == null) {
             throw exception(DEVICE_NOT_EXISTS);
@@ -36,12 +49,12 @@ public class CollectorDashboardServiceImpl implements CollectorDashboardService 
         List<CollectorDashboardSensorRow> sensorRows = dashboardMapper.selectSensors(deviceId);
         List<CollectorDashboardChannelRow> channelRows = dashboardMapper.selectChannelLatest(deviceId);
 
-        LocalDateTime serverTime = LocalDateTime.now();
         LocalDateTime maxSampleTime = channelRows.stream()
                 .map(CollectorDashboardChannelRow::getSampleTime)
-                .filter(java.util.Objects::nonNull)
+                .filter(Objects::nonNull)
                 .max(LocalDateTime::compareTo)
                 .orElse(null);
+        // v1 以设备级 poll_interval_ms 判定陈旧；通道级轮询尚未落地。
         int pollIntervalMs = deviceRow.getPollIntervalMs() != null && deviceRow.getPollIntervalMs() > 0
                 ? deviceRow.getPollIntervalMs() : CollectorDashboardUtils.DEFAULT_POLL_INTERVAL_MS;
         boolean staleOffline = CollectorDashboardUtils.isStaleOffline(
@@ -51,8 +64,6 @@ public class CollectorDashboardServiceImpl implements CollectorDashboardService 
         respVO.setDevice(buildDevice(deviceRow, pollIntervalMs, staleOffline));
         respVO.setSensors(buildSensors(sensorRows, channelRows, serverTime, pollIntervalMs));
         respVO.setServerTime(serverTime);
-        respVO.setVersionToken(CollectorDashboardUtils.createVersionToken(
-                maxSampleTime, deviceRow.getStatusUpdateTime()));
         return respVO;
     }
 
@@ -64,6 +75,7 @@ public class CollectorDashboardServiceImpl implements CollectorDashboardService 
         device.setName(row.getName());
         device.setOnline(Integer.valueOf(1).equals(row.getOnline()) && !staleOffline);
         device.setLastPollAt(row.getLastPollAt());
+        // 心跳是采集器进程级记录，不是设备级；字段名保留以兼容契约。
         device.setLastWriteLagMs(row.getLastWriteLagMs());
         device.setConsecutiveFailures(row.getConsecutiveFailures());
         device.setPollIntervalMs(pollIntervalMs);
@@ -96,8 +108,10 @@ public class CollectorDashboardServiceImpl implements CollectorDashboardService 
             channel.setValueKind(row.getValueKind());
             channel.setValueNum(row.getValueNum());
             channel.setValueText(row.getValueText());
-            channel.setQuality(CollectorDashboardUtils.effectiveQuality(
-                    row.getQuality(), row.getSampleTime(), serverTime, pollIntervalMs));
+            channel.setQuality(CollectorDashboardUtils.storedQuality(
+                    row.getQuality(), row.getSampleTime()));
+            channel.setStale(CollectorDashboardUtils.isStale(
+                    row.getSampleTime(), serverTime, pollIntervalMs));
             channel.setSampleTime(row.getSampleTime());
             sensor.getChannels().add(channel);
         }

@@ -245,7 +245,9 @@ export namespace CollectorApi {
     id: number;
     name: string;
     online: boolean;
-    lastPollAt?: null | string;
+    /** 后端序列化为 epoch millis */
+    lastPollAt?: null | number;
+    /** 采集器进程级数据库写入延迟，不是设备级指标 */
     lastWriteLagMs?: null | number;
     consecutiveFailures: number;
     pollIntervalMs: number;
@@ -260,8 +262,12 @@ export namespace CollectorApi {
     valueKind: string;
     valueNum?: null | number;
     valueText?: null | string;
+    /** 存储质量：0 正常、1 不确定、2 坏质量；无数据为空 */
     quality?: null | number;
-    sampleTime?: null | string;
+    /** 采样超过三倍设备轮询周期时由接口派生 */
+    stale: boolean;
+    /** 后端序列化为 epoch millis */
+    sampleTime?: null | number;
   }
 
   /** 最新值看板传感器分组 */
@@ -272,22 +278,12 @@ export namespace CollectorApi {
     channels: DashboardChannel[];
   }
 
-  /** 最新值看板聚合结果 */
+  /** 最新值看板聚合结果；每次请求返回完整数据，不使用 304 */
   export interface DashboardLatest {
     device: DashboardDevice;
     sensors: DashboardSensor[];
-    serverTime: string;
-    versionToken: string;
-  }
-
-  /** 保留 HTTP 状态以处理真实 304 条件响应 */
-  export interface DashboardLatestHttpResponse {
-    status: number;
-    data: {
-      code: number;
-      data: DashboardLatest;
-      msg: string;
-    };
+    /** 后端序列化为 epoch millis */
+    serverTime: number;
   }
 
   /** 通道阈值批量更新项 */
@@ -714,18 +710,10 @@ export function getAlarmStateList(params?: { deviceId?: number }) {
 
 // ==================== 最新值看板 ====================
 
-/** 查询设备最新值；携带版本令牌时由后端决定返回 200 全量或 304 空响应 */
-export function getDashboardLatest(deviceId: number, versionToken?: string) {
-  return requestClient.get<CollectorApi.DashboardLatestHttpResponse>(
+/** 查询设备最新值；每次返回完整看板，在线/陈旧状态由后端按当前时间重新派生 */
+export function getDashboardLatest(deviceId: number) {
+  return requestClient.get<CollectorApi.DashboardLatest>(
     '/collector/dashboard/latest',
-    {
-      params: { deviceId },
-      headers: versionToken
-        ? { 'If-None-Match': `"${versionToken}"` }
-        : undefined,
-      responseReturn: 'raw',
-      validateStatus: (status: number) =>
-        (status >= 200 && status < 300) || status === 304,
-    },
+    { params: { deviceId } },
   );
 }

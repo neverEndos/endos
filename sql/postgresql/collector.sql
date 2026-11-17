@@ -1839,6 +1839,6 @@ COMMENT ON COLUMN public.collector_channel_latest.device_id IS '所属设备编�
 COMMENT ON COLUMN public.collector_channel_latest.sensor_id IS '所属传感器编号（冗余，用于看板分组）';
 COMMENT ON COLUMN public.collector_channel_latest.value_num IS '数值通道最新工程值';
 COMMENT ON COLUMN public.collector_channel_latest.value_text IS '枚举通道最新值';
-COMMENT ON COLUMN public.collector_channel_latest.quality IS '数据质量：0 正常、1 超时/异常、2 陈旧（由后端按时间判定）';
-COMMENT ON COLUMN public.collector_channel_latest.sample_time IS '最近一次有效采样时间';
+COMMENT ON COLUMN public.collector_channel_latest.quality IS '数据质量：0 正常、1 不确定、2 坏质量；陈旧由后端按采样时间派生，不写回质量码';
+COMMENT ON COLUMN public.collector_channel_latest.sample_time IS '最近一次有效采样时间（Asia/Shanghai 墙钟）';
 COMMENT ON COLUMN public.collector_channel_latest.updated_time IS '最近一次落库时间';
