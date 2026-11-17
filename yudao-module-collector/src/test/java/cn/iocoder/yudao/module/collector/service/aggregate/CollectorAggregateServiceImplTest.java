@@ -2,9 +2,11 @@ package cn.iocoder.yudao.module.collector.service.aggregate;
 
 import cn.iocoder.yudao.framework.common.exception.ServiceException;
 import cn.iocoder.yudao.module.collector.dal.dataobject.aggregate.CollectorAggregateBucketDO;
+import cn.iocoder.yudao.module.collector.dal.dataobject.channel.CollectorChannelDO;
 import cn.iocoder.yudao.module.collector.enums.CollectorAggregateType;
 import org.junit.Test;
 
+import java.lang.reflect.Field;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
@@ -15,6 +17,7 @@ import java.util.List;
 
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.AGGREGATE_BACKFILL_INVALID;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
@@ -291,7 +294,7 @@ public class CollectorAggregateServiceImplTest extends CollectorAggregatePgTestS
     }
 
     @Test
-    public void backfill_rejectsInvalidRangeAndPerTypeLimits() throws Exception {
+    public void backfill_rejectsExpiredRawRangeAndPerTypeLimits() throws Exception {
         setChannels(channel(1, 7, "fast"));
 
         ServiceException nullFrom = assertThrows(ServiceException.class, () -> aggregateService.backfill(
@@ -301,23 +304,109 @@ public class CollectorAggregateServiceImplTest extends CollectorAggregatePgTestS
                 CollectorAggregateType.MINUTE, BASE_TIME, null, null, false));
         assertEquals(AGGREGATE_BACKFILL_INVALID.getCode(), nullTo.getCode());
 
-        // second：最长 1 天、最多 10 通道。
+        // second：最长 6 小时、最多 5 通道；错误信息必须给出现行上限且不暴露格式化占位符。
+        ServiceException durationLimit = assertThrows(ServiceException.class, () -> aggregateService.backfill(
+                CollectorAggregateType.SECOND, BASE_TIME, BASE_TIME.plusHours(7), null, false));
+        assertEquals(AGGREGATE_BACKFILL_INVALID.getCode(), durationLimit.getCode());
+        assertTrue(durationLimit.getMessage().contains("6 小时"));
+        assertFalse(durationLimit.getMessage().contains("%s"));
+        assertFalse(durationLimit.getMessage().contains("%d"));
         assertBackfillInvalid(() -> aggregateService.backfill(
-                CollectorAggregateType.SECOND, BASE_TIME, BASE_TIME.plusHours(25), null, false));
-        assertBackfillInvalid(() -> aggregateService.backfill(
-                CollectorAggregateType.SECOND, BASE_TIME, BASE_TIME.plusMinutes(2), ids(1, 11), false));
+                CollectorAggregateType.SECOND, BASE_TIME, BASE_TIME.plusMinutes(2), ids(1, 6), false));
 
-        // minute：最长 7 天、最多 50 通道。
+        // minute：最长 2 天、最多 20 通道。
         assertBackfillInvalid(() -> aggregateService.backfill(
-                CollectorAggregateType.MINUTE, BASE_TIME, BASE_TIME.plusDays(8), null, false));
+                CollectorAggregateType.MINUTE, BASE_TIME, BASE_TIME.plusDays(3), null, false));
         assertBackfillInvalid(() -> aggregateService.backfill(
-                CollectorAggregateType.MINUTE, BASE_TIME, BASE_TIME.plusMinutes(2), ids(1, 51), false));
+                CollectorAggregateType.MINUTE, BASE_TIME, BASE_TIME.plusMinutes(2), ids(1, 21), false));
 
-        // hour / day：最长 90 天、最多 50 通道。
+        // hour / day：最长 30 天、最多 50 通道。
         assertBackfillInvalid(() -> aggregateService.backfill(
-                CollectorAggregateType.HOUR, BASE_TIME, BASE_TIME.plusDays(91), null, false));
+                CollectorAggregateType.HOUR, BASE_TIME, BASE_TIME.plusDays(31), null, false));
         assertBackfillInvalid(() -> aggregateService.backfill(
-                CollectorAggregateType.DAY, BASE_TIME, BASE_TIME.plusDays(91), null, false));
+                CollectorAggregateType.DAY, BASE_TIME, BASE_TIME.plusDays(31), null, false));
+
+        // 缩短 raw 保留期后，fromRaw 的 2 天范围虽满足 minute 上限，仍必须因 raw 过期被拒绝。
+        setRawRetentionDays(1);
+        ServiceException rawExpired = assertThrows(ServiceException.class, () -> aggregateService.backfill(
+                CollectorAggregateType.MINUTE, BASE_TIME, BASE_TIME.plusDays(2), null, true, false));
+        assertEquals(AGGREGATE_BACKFILL_INVALID.getCode(), rawExpired.getCode());
+        assertTrue(rawExpired.getMessage().contains("raw 已过期"));
+        assertFalse(rawExpired.getMessage().contains("%s"));
+        assertFalse(rawExpired.getMessage().contains("%d"));
+    }
+
+    @Test
+    public void backfill_skipsEmptySourceUnlessForceClean() throws Exception {
+        setChannels(channel(1, 7, "fast"));
+        executeSql("""
+                INSERT INTO collector_sample_raw (channel_id, device_id, collect_time, value, quality)
+                SELECT 1, 7, TIMESTAMP '2026-01-01 00:00:00' + (i * interval '1 second'),
+                    (i + 1)::double precision, 0
+                FROM generate_series(0, 59) i
+                """);
+        LocalDateTime to = BASE_TIME.plusMinutes(2);
+        List<Long> ids = List.of(1L);
+
+        CollectorAggregateService.AggregateResult seeded = aggregateService.backfill(
+                CollectorAggregateType.SECOND, BASE_TIME, to, ids, false, false);
+        assertEquals(60, seeded.bucketCount());
+        assertEquals(0, seeded.skippedEmptyBatches());
+        assertEquals(60, countRows("collector_aggregate_second"));
+
+        executeSql("DELETE FROM collector_sample_raw WHERE channel_id = 1");
+        CollectorAggregateService.AggregateResult skipped = aggregateService.backfill(
+                CollectorAggregateType.SECOND, BASE_TIME, to, ids, true, false, false);
+        assertEquals("源为空时不得写入空批次", 0, skipped.bucketCount());
+        assertEquals("跳过的批次数必须返回", 1, skipped.skippedEmptyBatches());
+        assertEquals("源为空时必须保留旧聚合", 60, countRows("collector_aggregate_second"));
+
+        CollectorAggregateService.AggregateResult cleaned = aggregateService.backfill(
+                CollectorAggregateType.SECOND, BASE_TIME, to, ids, true, false, true);
+        assertEquals("forceClean 不计入跳过批次", 0, cleaned.skippedEmptyBatches());
+        assertEquals("forceClean 才允许以空结果清空目标区间", 0, countRows("collector_aggregate_second"));
+    }
+
+    @Test
+    public void backfill_upperLayerKeepsOldRowsWhenSourceGap() throws Exception {
+        setChannels(channel(1, 7, "normal"));
+        executeSql("""
+                INSERT INTO collector_aggregate_hour
+                    (channel_id, device_id, bucket_time, sample_count, good_count, valid_count,
+                     bad_count, value_avg, value_min, value_max, value_sum, value_first, value_last)
+                VALUES (1, 7, TIMESTAMP '2026-01-01 00:00:00', 999, 999, 999, 0, 999, 999, 999, 999999, 999, 999)
+                """);
+
+        LocalDateTime to = BASE_TIME.plusHours(1);
+        CollectorAggregateService.AggregateResult result = aggregateService.backfill(
+                CollectorAggregateType.HOUR, BASE_TIME, to, List.of(1L), false, false, false);
+        assertEquals("小时层无分钟源且 raw 也为空，必须跳过该批", 1, result.skippedEmptyBatches());
+        assertEquals("旧小时聚合不能因下层缺口被删除", 1, countRows("collector_aggregate_hour"));
+        assertEquals(Integer.valueOf(999), selectBuckets("collector_aggregate_hour", false)
+                .get(0).getSampleCount());
+    }
+
+    @Test
+    public void cascade_preValidatesAllLevelChannelsBeforeWriting() throws Exception {
+        List<CollectorChannelDO> channels = new ArrayList<>();
+        for (long id = 1; id <= 5; id++) {
+            channels.add(channel(id, 7, "fast"));
+        }
+        for (long id = 6; id <= 55; id++) {
+            channels.add(channel(id, 7, "normal"));
+        }
+        setChannels(channels.toArray(CollectorChannelDO[]::new));
+        insertRaw(1, 7, BASE_TIME, 1D, 0);
+
+        // second 根层只有 5 个 fast 通道，满足上限；minute 级联层会选中 55 个通道，必须预校验失败。
+        ServiceException exception = assertThrows(ServiceException.class, () -> aggregateService.backfill(
+                CollectorAggregateType.SECOND, BASE_TIME, BASE_TIME.plusMinutes(1), null, false, true));
+        assertEquals(AGGREGATE_BACKFILL_INVALID.getCode(), exception.getCode());
+        assertTrue(exception.getMessage().contains("minute"));
+        assertTrue(exception.getMessage().contains("20"));
+        assertFalse(exception.getMessage().contains("%d"));
+        assertEquals("级联预校验失败前不能写入根层", 0, countRows("collector_aggregate_second"));
+        assertEquals(0, countRows("collector_aggregate_minute"));
     }
 
     private void insertStaleBucket(String table, boolean day) throws Exception {
@@ -332,6 +421,12 @@ public class CollectorAggregateServiceImplTest extends CollectorAggregatePgTestS
     private void assertBackfillInvalid(org.junit.function.ThrowingRunnable runnable) {
         ServiceException exception = assertThrows(ServiceException.class, runnable);
         assertEquals(AGGREGATE_BACKFILL_INVALID.getCode(), exception.getCode());
+    }
+
+    private void setRawRetentionDays(long days) throws Exception {
+        Field field = CollectorAggregateServiceImpl.class.getDeclaredField("rawRetentionDays");
+        field.setAccessible(true);
+        field.setLong(aggregateService, days);
     }
 
     private List<Long> ids(long from, long to) {

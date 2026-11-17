@@ -1186,17 +1186,17 @@ CREATE INDEX idx_collector_aggregate_watermark_status
 CREATE INDEX idx_collector_aggregate_watermark_device
     ON public.collector_aggregate_watermark USING btree (device_id);
 
-COMMENT ON TABLE public.collector_aggregate_watermark IS '聚合水位与补跑状态表';
+COMMENT ON TABLE public.collector_aggregate_watermark IS '聚合水位与最近执行审计表；运行态/锁字段预留，当前未实现';
 COMMENT ON COLUMN public.collector_aggregate_watermark.agg_type IS '聚合类型：second / minute / hour / day';
 COMMENT ON COLUMN public.collector_aggregate_watermark.channel_id IS '通道编号';
 COMMENT ON COLUMN public.collector_aggregate_watermark.device_id IS '设备编号（冗余）';
 COMMENT ON COLUMN public.collector_aggregate_watermark.watermark_time IS '最新已成功提交桶的结束时间（exclusive）；NULL 表示从未成功';
 COMMENT ON COLUMN public.collector_aggregate_watermark.backfill_from IS '最近一次执行区间起始时间（审计，含）；不表示待补跑范围';
 COMMENT ON COLUMN public.collector_aggregate_watermark.backfill_to IS '最近一次执行区间结束时间（审计，不含）；不表示待补跑范围';
-COMMENT ON COLUMN public.collector_aggregate_watermark.status IS '状态：0 空闲、1 运行中、2 失败';
-COMMENT ON COLUMN public.collector_aggregate_watermark.retry_count IS '连续失败次数';
-COMMENT ON COLUMN public.collector_aggregate_watermark.last_error IS '最近一次错误信息';
-COMMENT ON COLUMN public.collector_aggregate_watermark.locked_until IS '任务锁到期时间，防止并发重复聚合';
+COMMENT ON COLUMN public.collector_aggregate_watermark.status IS '状态：0 空闲；1 运行中、2 失败为预留，当前聚合流程未写入';
+COMMENT ON COLUMN public.collector_aggregate_watermark.retry_count IS '连续失败次数（预留，当前恒为 0）';
+COMMENT ON COLUMN public.collector_aggregate_watermark.last_error IS '最近一次错误信息（预留，当前未写入）';
+COMMENT ON COLUMN public.collector_aggregate_watermark.locked_until IS '任务锁到期时间（预留，当前未实现）';
 COMMENT ON COLUMN public.collector_aggregate_watermark.last_success_time IS '最近一次成功时间';
 COMMENT ON COLUMN public.collector_aggregate_watermark.update_time IS '更新时间';
 

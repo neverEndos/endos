@@ -27,15 +27,17 @@ public class CollectorAggregateController {
 
     @PostMapping("/backfill")
     @Operation(summary = "同步回填聚合数据",
-            description = "先清空目标区间再重建；second 限 1 天/10 通道，minute 限 7 天/50 通道，"
-                    + "hour、day 限 90 天/50 通道；大范围请分批或分层调用，同步请求可能超时")
+            description = "目标有源数据时先清空目标区间再重建；second 限 6 小时/5 通道（满额约 37 秒），"
+                    + "minute 限 2 天/20 通道（满额约 16 秒），hour、day 限 30 天/50 通道（满额约 1–2 分钟）；"
+                    + "大范围请分批或分层回填，同步请求可能超时；fromRaw 超过 raw 保留期会被拒绝；"
+                    + "forceClean=true 才会在源为空时清空目标区间")
     @PreAuthorize("@ss.hasPermission('collector:aggregate:rebuild')")
     public CommonResult<CollectorAggregateBackfillRespVO> backfill(
             @Valid @RequestBody CollectorAggregateBackfillReqVO reqVO) {
         return success(CollectorAggregateBackfillRespVO.of(aggregateService.backfill(
                 CollectorAggregateType.fromCode(reqVO.getAggType()), reqVO.getFrom(), reqVO.getTo(),
                 reqVO.getChannelIds(), Boolean.TRUE.equals(reqVO.getFromRaw()),
-                Boolean.TRUE.equals(reqVO.getCascade()))));
+                Boolean.TRUE.equals(reqVO.getCascade()), Boolean.TRUE.equals(reqVO.getForceClean()))));
     }
 
 }

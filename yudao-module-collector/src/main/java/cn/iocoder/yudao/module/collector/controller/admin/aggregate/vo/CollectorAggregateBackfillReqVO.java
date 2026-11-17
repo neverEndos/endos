@@ -29,14 +29,18 @@ public class CollectorAggregateBackfillReqVO {
     @NotNull(message = "结束时间不能为空")
     private LocalDateTime to;
 
-    @Schema(description = "通道编号列表；缺省或空数组表示全部，最多 50 个")
+    @Schema(description = "通道编号列表；缺省或空数组表示全部，最多 50 个；各聚合粒度有更小的实际上限")
     @Size(max = 50, message = "单次回填通道数不能超过 50")
     private List<Long> channelIds;
 
-    @Schema(description = "是否绕过下层聚合直接从 raw 重算，默认 false", example = "false")
+    @Schema(description = "是否绕过下层聚合直接从 raw 重算，默认 false；范围不能超过 raw 保留期", example = "false")
     private Boolean fromRaw = false;
 
     @Schema(description = "是否按 second→minute→hour→day 级联重建上层，默认 false", example = "false")
     private Boolean cascade = false;
+
+    @Schema(description = "源为空时是否仍清空目标区间，默认 false；true 会删除旧聚合，属于高风险操作",
+            example = "false")
+    private Boolean forceClean = false;
 
 }

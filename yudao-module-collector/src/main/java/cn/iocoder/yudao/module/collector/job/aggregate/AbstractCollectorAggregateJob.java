@@ -9,8 +9,9 @@ import lombok.extern.slf4j.Slf4j;
 abstract class AbstractCollectorAggregateJob implements JobHandler {
 
     protected String logResult(AggregateResult result) {
-        String message = String.format("agg_type=%s，通道数=%d，桶数=%d，源行数=%d，耗时=%d ms",
-                result.aggType(), result.channelCount(), result.bucketCount(), result.rowCount(), result.durationMillis());
+        String message = String.format("agg_type=%s，通道数=%d，桶数=%d，源行数=%d，跳过空批次=%d，耗时=%d ms",
+                result.aggType(), result.channelCount(), result.bucketCount(), result.rowCount(),
+                result.skippedEmptyBatches(), result.durationMillis());
         log.info("[execute][{}]", message);
         return message;
     }
