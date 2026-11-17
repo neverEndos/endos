@@ -66,7 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--baud", type=int, default=9600, help="串口波特率（HSI 固定 9600）")
     parser.add_argument(
         "--interval",
-        type=float,
+        type=positive_float,
         default=None,
         help=(
             "轮询间隔（秒）。缺省时读取 DB collector_device.poll_interval_ms，"
@@ -81,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--timeout",
-        type=float,
+        type=positive_float,
         default=None,
         help=(
             "单次请求超时（秒）。缺省时读取 DB collector_device.timeout_ms，"
@@ -90,7 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--retries",
-        type=int,
+        type=nonnegative_int,
         default=None,
         help=(
             "单次采集失败后的重试次数。缺省时读取 DB collector_device.retries，"
@@ -167,6 +167,16 @@ def positive_float(value: str) -> float:
     return parsed
 
 
+def nonnegative_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"无法解析整数: {value}") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("不能为负数")
+    return parsed
+
+
 def configure_logging(path: str) -> logging.Logger:
     path = os.path.expanduser(path)
     parent = os.path.dirname(path)
@@ -195,6 +205,43 @@ def parse_flags(value: str) -> tuple[int, ...]:
     if not flags:
         raise argparse.ArgumentTypeError("flags 列表不能为空")
     return flags
+
+
+def partition_structure_drivers(
+    old_context,
+    new_context,
+    candidate_drivers,
+    responsive: set[str],
+) -> tuple[list, list, set[str]]:
+    """区分结构重载后可直接保留的 driver 与需要重新探测的新增 driver。
+
+    ``responsive`` 保存启动及历次热加载实际应答的传感器；仅通道变化不会把
+    启动时无应答的传感器加回。禁用后重新启用会出现在新旧启用集合差值中。
+    """
+
+    # 禁用/删除时同时清除历史应答状态，避免重新启用探测失败后被旧状态加回。
+    responsive.intersection_update(driver.name for driver in candidate_drivers)
+    all_sensor_codes = set(SENSOR_CODE_BY_DRIVER.values())
+    old_enabled = set(
+        all_sensor_codes
+        if old_context.active_sensor_codes is None
+        else old_context.active_sensor_codes
+    )
+    new_enabled = set(
+        all_sensor_codes
+        if new_context.active_sensor_codes is None
+        else new_context.active_sensor_codes
+    )
+    newly_enabled = new_enabled - old_enabled
+    retained = []
+    to_probe = []
+    for driver in candidate_drivers:
+        sensor_code = SENSOR_CODE_BY_DRIVER.get(driver.name, "")
+        if sensor_code in newly_enabled:
+            to_probe.append(driver)
+        elif driver.name in responsive:
+            retained.append(driver)
+    return retained, to_probe, newly_enabled
 
 
 def run(args: argparse.Namespace, logger: logging.Logger) -> int:
@@ -330,14 +377,68 @@ def run(args: argparse.Namespace, logger: logging.Logger) -> int:
         if args.partition_every < 0:
             raise PollError("--partition-every 不能为负数")
 
-        def apply_structure_change(old_context, new_context) -> None:
-            # 热加载只修改已打开串口的 RS485 flags，绝不 close/reopen。
-            if not auto_flags or new_context.rs485_flags is None:
-                return
-            if old_context.rs485_flags == new_context.rs485_flags:
-                return
-            transport.set_rs485_flags(new_context.rs485_flags)
-            logger.info("已在原串口实例应用新的 rs485Flags=%d", new_context.rs485_flags)
+        def apply_structure_change(old_context, new_context, candidate_drivers):
+            """在原串口上应用结构配置，并只探测新增/重新启用的传感器。
+
+            启动时无应答且持续启用的传感器保持跳过；仅通道映射变化不会让它
+            意外回到轮询集合。传感器被禁用后再启用时则重新探测。
+            """
+
+            nonlocal flags
+            if (
+                auto_flags
+                and new_context.rs485_flags is not None
+                and old_context.rs485_flags != new_context.rs485_flags
+            ):
+                # strict=True：ioctl 失败必须抛出，由 ConfigReloader 回滚旧上下文
+                # 与旧指纹，不能靠 transport 内部告警后假定应用成功。
+                transport.set_rs485_flags(new_context.rs485_flags, strict=True)
+                flags = new_context.rs485_flags
+
+            retained, to_probe, newly_enabled = partition_structure_drivers(
+                old_context, new_context, candidate_drivers, responsive
+            )
+
+            applied = retained
+            for driver in to_probe:
+                newly_responsive: set[str] = set()
+                try:
+                    discover_rs485_flags(
+                        transport,
+                        [driver],
+                        candidates=(flags,),
+                        timeout=resolve_timeout_s(
+                            args.timeout, new_context.timeout_ms
+                        )[0],
+                        logger=logger,
+                        # 热加载绝不 close/reopen；仅使用当前已确认可用的 flags。
+                        reopen=None,
+                        require_all=True,
+                        responsive_out=newly_responsive,
+                    )
+                except PollError as exc:
+                    sensor_code = SENSOR_CODE_BY_DRIVER.get(driver.name, driver.name)
+                    logger.warning(
+                        "新增或重新启用传感器 %s 探测无应答，本轮仍跳过：%s",
+                        sensor_code,
+                        exc,
+                    )
+                    continue
+                responsive.update(newly_responsive)
+                applied.append(driver)
+
+            logger.info(
+                "结构配置已在原串口实例应用：保留应答传感器=%s，新增探测应答=%s，"
+                "rs485Flags=%s",
+                [driver.name for driver in retained],
+                [
+                    driver.name
+                    for driver in applied
+                    if SENSOR_CODE_BY_DRIVER.get(driver.name, "") in newly_enabled
+                ],
+                flags,
+            )
+            return applied
 
         config_reloader = None
         if db_manager is not None:

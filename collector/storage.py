@@ -300,6 +300,17 @@ def config_change_kind(
     return "parameters"
 
 
+@dataclass
+class _PendingConfigChange:
+    """已通过 DB 校验、但尚未被串口/轮询层接受的配置变更。"""
+
+    previous_context: DeviceContext
+    previous_fingerprint: ConfigFingerprint | None
+    context: DeviceContext
+    fingerprint: ConfigFingerprint
+    kind: str
+
+
 MISSING = object()
 
 
@@ -990,6 +1001,7 @@ class DatabaseManager:
         self._last_partition_error: str | None = None
         self._last_config_error: str | None = None
         self._config_fingerprint: ConfigFingerprint | None = None
+        self._pending_config: _PendingConfigChange | None = None
 
     # ------------------------------------------------------------------ 状态
     def ensure_ready(self) -> bool:
@@ -1072,12 +1084,34 @@ class DatabaseManager:
         self.storage = storage
         self.context = context
         self._config_fingerprint = fingerprint
+        self._pending_config = None
 
-    def reload_if_changed(self) -> str:
-        """检查配置指纹，必要时重载；失败时保留上一次有效上下文。
+    @property
+    def pending_context(self) -> DeviceContext | None:
+        return self._pending_config.context if self._pending_config is not None else None
+
+    def config_snapshot(self) -> tuple[DeviceContext, ConfigFingerprint | None]:
+        """保存当前已提交配置，供外部硬件应用失败时恢复。"""
+
+        return self.context, self._config_fingerprint
+
+    def restore_config_snapshot(
+        self, snapshot: tuple[DeviceContext, ConfigFingerprint | None]
+    ) -> None:
+        """恢复旧上下文与旧指纹，并丢弃所有未提交变更。"""
+
+        self.context, self._config_fingerprint = snapshot
+        self._pending_config = None
+        if self.storage is not None:
+            self.storage.context = self.context
+
+    def prepare_config_change(self) -> str:
+        """读取并暂存配置变化，但绝不提前提交新上下文或新指纹。
 
         返回 ``none`` / ``parameters`` / ``structure`` / ``error`` /
-        ``unavailable`` / ``unsupported``，由轮询层决定如何应用变化。
+        ``unavailable`` / ``unsupported``。变化类型为 parameters/structure 时，
+        新上下文通过 :attr:`pending_context` 暴露，调用方应用硬件配置成功后必须
+        调用 :meth:`commit_config_change`，失败则调用 :meth:`rollback_config_change`。
         """
 
         if not self.ready or self.storage is None:
@@ -1088,6 +1122,7 @@ class DatabaseManager:
             return "unsupported"
         previous = self._config_fingerprint
         previous_context = self.context
+        self._pending_config = None
         try:
             current = fingerprint_loader()
             if previous is not None and current == previous:
@@ -1110,18 +1145,56 @@ class DatabaseManager:
             self._last_config_error = error
             return "error"
 
-        self.context = context
-        self._config_fingerprint = current
+        self._pending_config = _PendingConfigChange(
+            previous_context=previous_context,
+            previous_fingerprint=previous,
+            context=context,
+            fingerprint=current,
+            kind=config_change_kind(previous, current),
+        )
+        # load_context 会更新 storage.context；提交前必须继续让写入使用旧映射。
+        self.storage.context = previous_context
         self._last_config_error = None
-        return config_change_kind(previous, current)
+        return self._pending_config.kind
+
+    def commit_config_change(self) -> None:
+        """外部硬件应用成功后，原子提交新上下文与新指纹。"""
+
+        pending = self._pending_config
+        if pending is None:
+            raise RuntimeError("没有待提交的配置变更")
+        self.context = pending.context
+        self._config_fingerprint = pending.fingerprint
+        if self.storage is not None:
+            self.storage.context = pending.context
+        self._pending_config = None
+
+    def rollback_config_change(self) -> None:
+        """外部硬件应用失败，保留旧上下文与旧指纹，下次可重试同一变化。"""
+
+        pending = self._pending_config
+        if pending is None:
+            return
+        self.restore_config_snapshot(
+            (pending.previous_context, pending.previous_fingerprint)
+        )
+
+    def reload_if_changed(self) -> str:
+        """兼容参考调用：无需外部硬件确认时，准备后立即提交。"""
+
+        kind = self.prepare_config_change()
+        if kind in ("parameters", "structure"):
+            self.commit_config_change()
+        return kind
 
     def _mark_unavailable(self, exc: Exception, reason: str = "PostgreSQL 暂不可用") -> None:
         if self.storage is not None:
             self._safe_close(self.storage)
         self.storage = None
-        self.context = unresolved_context()
+        # 运行中断线必须保留最后一次有效上下文与指纹，供 JSONL/重载失败回滚使用；
+        # 初次启动时 context 本来就是 unresolved_context，不会误报设备已解析。
         self.ready = False
-        self._config_fingerprint = None
+        self._pending_config = None
         # 运行中写入失败后同样按重连间隔节流，避免每个轮询周期反复建连。
         self._last_attempt = self._clock()
         error = f"{type(exc).__name__}: {exc}"
@@ -1129,11 +1202,17 @@ class DatabaseManager:
             # 同一错误周期只告警一次，避免每分钟刷屏；恢复时再记录 INFO。
             return
         self._last_error = error
+        mapping_note = (
+            "channel_id 为空"
+            if self.context.device_id is None
+            else "保留最后一次有效通道映射"
+        )
         self.logger.warning(
-            "%s（DB 尝试 %d 次失败），本轮继续仅输出 JSONL（channel_id 为空），"
+            "%s（DB 尝试 %d 次失败），本轮继续仅输出 JSONL（%s），"
             "%.0f 秒后自动重试: %s",
             reason,
             self._attempts,
+            mapping_note,
             self.retry_interval_s,
             error,
         )

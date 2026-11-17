@@ -107,7 +107,8 @@ class ConfigReloader:
         check_interval_s: float | None = None,
         logger: logging.Logger | None = None,
         clock: Callable[[], float] = time.monotonic,
-        on_structure_change: Callable[[Any, Any], None] | None = None,
+        on_structure_change: Callable[[Any, Any, list[Any]], list[Any] | None]
+        | None = None,
     ) -> None:
         if check_interval_s is not None and check_interval_s <= 0:
             raise ValueError("check_interval_s 必须大于 0")
@@ -129,6 +130,7 @@ class ConfigReloader:
         self.logger = logger or logging.getLogger(LOGGER_NAME)
         self._clock = clock
         self._last_check = clock()
+        self._retry_pending = False
 
     def _effective_check_interval_s(self) -> float:
         if self._check_interval_s is not None:
@@ -138,12 +140,14 @@ class ConfigReloader:
     def before_cycle(self, *, force: bool = False) -> str:
         """在下一轮采集前同步配置，返回本次应用的变化类型。
 
-        DB 恢复时无条件采用重新解析的上下文；正常运行时按配置检查间隔读取
-        指纹。DB 不可用或热加载失败均不清空本地保存的旧上下文和 driver。
+        正常热加载采用“DB 准备 → 硬件应用 → DB 提交”两阶段流程。硬件应用失败
+        时恢复旧上下文/旧指纹，并在下一轮忽略检查间隔立即重试同一变化。
         """
 
         if self.db_manager is None:
             return "unsupported"
+        snapshot_loader = getattr(self.db_manager, "config_snapshot", None)
+        snapshot = snapshot_loader() if snapshot_loader is not None else None
         # 写入发生在上一轮 before_cycle 之后，可能已把 manager.ready 置为 False；
         # 必须读取调用前的实时状态，否则“本次调用内恢复”会被漏判。
         was_ready = bool(self.db_manager.ready)
@@ -154,33 +158,94 @@ class ConfigReloader:
             return "unavailable"
         if not was_ready:
             self._last_check = now
-            return self._adopt("structure", self.db_manager.context, recovered=True)
-        if not force and now - self._last_check < self._effective_check_interval_s():
+            result = self._adopt(
+                "structure", self.db_manager.context, recovered=True
+            )
+            if result == "error":
+                self._retry_pending = True
+                self._restore_snapshot(snapshot)
+            else:
+                self._retry_pending = False
+            return result
+        if (
+            not force
+            and not self._retry_pending
+            and now - self._last_check < self._effective_check_interval_s()
+        ):
             return "none"
         self._last_check = now
-        kind = self.db_manager.reload_if_changed()
-        if kind in ("parameters", "structure"):
-            return self._adopt(kind, self.db_manager.context)
-        return kind
+
+        prepare = getattr(self.db_manager, "prepare_config_change", None)
+        if prepare is None:
+            # 兼容旧参考 DB 管理器；真实 PgStorage 路径始终走两阶段提交。
+            kind = self.db_manager.reload_if_changed()
+            if kind in ("parameters", "structure"):
+                result = self._adopt(kind, self.db_manager.context)
+                self._retry_pending = result == "error"
+                return result
+            self._retry_pending = False
+            return kind
+
+        kind = prepare()
+        if kind not in ("parameters", "structure"):
+            if kind in ("none", "unsupported"):
+                self._retry_pending = False
+            return kind
+        result = self._adopt(kind, self.db_manager.pending_context)
+        if result == "error":
+            self.db_manager.rollback_config_change()
+            self._retry_pending = True
+            return result
+        # 只有 flags/新增传感器探测等外部应用全部成功后才推进 DB 指纹。
+        self.db_manager.commit_config_change()
+        self._retry_pending = False
+        return result
+
+    def _restore_snapshot(self, snapshot: Any) -> None:
+        if snapshot is None:
+            return
+        self.db_manager.restore_config_snapshot(snapshot)
 
     def _adopt(self, kind: str, context: Any, *, recovered: bool = False) -> str:
         old_context = self.context
         old_settings = self.settings
         old_drivers = self.drivers
-        self.context = context
-        self.settings = resolve_runtime_settings(
+        new_settings = resolve_runtime_settings(
             context,
             cli_interval=self._cli_interval,
             cli_timeout=self._cli_timeout,
             cli_retries=self._cli_retries,
         )
-        self._log_parameter_changes(old_settings, self.settings, kind=kind)
+        new_drivers = old_drivers
+        if kind == "structure":
+            try:
+                candidate_drivers = self._driver_factory(context)
+                if self._on_structure_change is not None:
+                    applied_drivers = self._on_structure_change(
+                        old_context, context, candidate_drivers
+                    )
+                    if applied_drivers is not None:
+                        candidate_drivers = list(applied_drivers)
+                new_drivers = candidate_drivers
+            except Exception as exc:
+                self.logger.error(
+                    "结构配置应用失败，保留旧上下文、旧 driver 与旧配置指纹，"
+                    "下一轮继续重试: %s: %s",
+                    type(exc).__name__,
+                    exc,
+                )
+                return "error"
+
+        # 外部应用全部成功后才提交协调器状态；此前任何异常都保持旧对象不变。
+        self.context = context
+        self.settings = new_settings
+        self.drivers = new_drivers
+        self._log_parameter_changes(old_settings, new_settings, kind=kind)
         if kind != "structure":
             return kind
 
-        self.drivers = self._driver_factory(context)
         old_names = {driver.name for driver in old_drivers}
-        new_names = {driver.name for driver in self.drivers}
+        new_names = {driver.name for driver in new_drivers}
         removed = sorted(old_names - new_names)
         added = sorted(new_names - old_names)
         if removed:
@@ -202,15 +267,6 @@ class ConfigReloader:
         )
         if not self.drivers:
             self.logger.warning("当前没有已启用传感器，采集循环继续运行并等待再次启用")
-        if self._on_structure_change is not None:
-            try:
-                self._on_structure_change(old_context, context)
-            except Exception as exc:
-                self.logger.warning(
-                    "应用结构配置到串口失败（保持当前串口并继续采集）: %s: %s",
-                    type(exc).__name__,
-                    exc,
-                )
         return kind
 
     def _log_parameter_changes(
