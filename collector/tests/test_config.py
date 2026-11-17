@@ -3,6 +3,7 @@
 import os
 import sys
 import unittest
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -68,6 +69,66 @@ class CliDefaultsTest(unittest.TestCase):
         self.assertIsNone(args.timeout)
         self.assertIsNone(args.retries)
         self.assertIsNone(args.config_check_interval)
+
+    def test_zero_and_negative_interval_timeout_are_rejected(self):
+        parser = main.build_parser()
+        for option in ("--interval", "--timeout"):
+            for value in ("0", "-0.1", "-1"):
+                with self.subTest(option=option, value=value):
+                    with self.assertRaises(SystemExit):
+                        parser.parse_args([option, value])
+
+    def test_retries_allows_zero_but_rejects_negative(self):
+        parser = main.build_parser()
+        self.assertEqual(parser.parse_args(["--retries", "0"]).retries, 0)
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["--retries", "-1"])
+
+    def test_config_check_interval_rejects_zero_and_negative(self):
+        parser = main.build_parser()
+        for value in ("0", "-1"):
+            with self.subTest(value=value), self.assertRaises(SystemExit):
+                parser.parse_args(["--config-check-interval", value])
+
+
+class StructureDriverSelectionTest(unittest.TestCase):
+    def setUp(self):
+        self.cs = SimpleNamespace(name="CS1000")
+        self.hlb = SimpleNamespace(name="HLB1400")
+
+    def context(self, active):
+        return SimpleNamespace(active_sensor_codes=tuple(active))
+
+    def test_channel_change_does_not_add_initially_unresponsive_sensor(self):
+        old = self.context(("cs1000-01", "hlb1400-01"))
+        new = self.context(("cs1000-01", "hlb1400-01"))
+        retained, to_probe, newly = main.partition_structure_drivers(
+            old, new, [self.cs, self.hlb], {"CS1000"}
+        )
+        self.assertEqual(retained, [self.cs])
+        self.assertEqual(to_probe, [])
+        self.assertEqual(newly, set())
+
+    def test_new_or_reenabled_sensor_is_the_only_probe_target(self):
+        old = self.context(("cs1000-01",))
+        new = self.context(("cs1000-01", "hlb1400-01"))
+        retained, to_probe, newly = main.partition_structure_drivers(
+            old, new, [self.cs, self.hlb], {"CS1000"}
+        )
+        self.assertEqual(retained, [self.cs])
+        self.assertEqual(to_probe, [self.hlb])
+        self.assertEqual(newly, {"hlb1400-01"})
+
+    def test_empty_enabled_set_is_not_treated_as_unknown(self):
+        old = self.context(("cs1000-01", "hlb1400-01"))
+        new = self.context(())
+        responsive = {"CS1000", "HLB1400"}
+        retained, to_probe, newly = main.partition_structure_drivers(
+            old, new, [], responsive
+        )
+        self.assertEqual((retained, to_probe), ([], []))
+        self.assertEqual(newly, set())
+        self.assertEqual(responsive, set())
 
 
 class EngineeringValueTest(unittest.TestCase):

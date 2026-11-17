@@ -5,9 +5,12 @@ import os
 import sys
 import unittest
 from dataclasses import replace
+from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import poll  # noqa: E402
 from runtime_config import ConfigReloader  # noqa: E402
 from storage import (  # noqa: E402
     DEVICE_CODE,
@@ -177,7 +180,7 @@ class ConfigReloaderTest(unittest.TestCase):
         transport = FakeTransport()
         reloader = self.make_reloader(
             manager,
-            on_structure_change=lambda old, new: transport.set_rs485_flags(
+            on_structure_change=lambda old, new, candidates: transport.set_rs485_flags(
                 new.rs485_flags
             ),
         )
@@ -236,10 +239,123 @@ class ConfigReloaderTest(unittest.TestCase):
         self.assertEqual(reloader.before_cycle(), "none")
         self.assertEqual(manager.reload_calls, 1)
 
+    def test_structure_failure_keeps_old_state_and_retries_next_cycle(self):
+        manager = FakeDbManager()
+        attempts = []
+
+        def apply(old, new, candidates):
+            attempts.append(new.rs485_flags)
+            if len(attempts) == 1:
+                raise RuntimeError("模拟 ioctl 失败")
+            return candidates
+
+        reloader = self.make_reloader(manager, on_structure_change=apply)
+        old_context = reloader.context
+        old_settings = reloader.settings
+        old_drivers = reloader.drivers
+        manager.context = replace(manager.context, rs485_flags=3, timeout_ms=2500)
+        manager.reload_result = "structure"
+
+        with self.assertLogs(LOGGER, level="INFO") as captured:
+            self.assertEqual(reloader.before_cycle(force=True), "error")
+        self.assertIs(reloader.context, old_context)
+        self.assertIs(reloader.settings, old_settings)
+        self.assertIs(reloader.drivers, old_drivers)
+        self.assertFalse(any("配置热加载类型=" in line for line in captured.output))
+        self.assertTrue(any("保留旧上下文" in line for line in captured.output))
+
+        # 不依赖 force：失败后的下一轮必须立即重试，成功后才替换状态。
+        self.assertEqual(reloader.before_cycle(), "structure")
+        self.assertEqual(attempts, [3, 3])
+        self.assertEqual(manager.reload_calls, 2)
+        self.assertIs(reloader.context, manager.context)
+        self.assertEqual(reloader.settings.timeout_s, 2.5)
+        self.assertEqual([driver.name for driver in reloader.drivers], ["CS1000", "HLB1400"])
+
+    def test_all_sensors_disabled_keeps_loop_with_empty_driver_list(self):
+        manager = FakeDbManager()
+        reloader = self.make_reloader(manager)
+        manager.context = replace(manager.context, active_sensor_codes=())
+        manager.reload_result = "structure"
+
+        with self.assertLogs(LOGGER, level="WARNING") as captured:
+            self.assertEqual(reloader.before_cycle(force=True), "structure")
+        self.assertEqual(reloader.drivers, [])
+        self.assertTrue(any("没有已启用传感器" in line for line in captured.output))
+
+
+class RunLoopHotReloadIntegrationTest(unittest.TestCase):
+    def test_parameters_reuse_drivers_structure_rebuilds_and_interval_is_live(self):
+        clock = FakeClock()
+        manager = FakeDbManager()
+        manager.reload_result = "none"
+        reloader = ConfigReloader(
+            db_manager=manager,
+            context=manager.context,
+            drivers=enabled_drivers(manager.context),
+            driver_factory=enabled_drivers,
+            logger=LOGGER,
+            clock=clock,
+        )
+        original_drivers = list(reloader.drivers)
+        observed = []
+        clock.now = 60.0
+
+        def fake_poll_cycle(transport, drivers, stats, **kwargs):
+            observed.append(
+                {
+                    "drivers": list(drivers),
+                    "interval": reloader.settings.interval_s,
+                    "timeout": kwargs["timeout"],
+                    "retries": kwargs["retries"],
+                }
+            )
+            # 第一轮只改运行参数；第二轮改结构；第三轮无变化。
+            if len(observed) == 1:
+                manager.context = replace(
+                    manager.context, poll_interval_ms=1000, timeout_ms=2000, retries=0
+                )
+                manager.reload_result = "parameters"
+                clock.now = 120.0
+            elif len(observed) == 2:
+                manager.context = replace(
+                    manager.context, active_sensor_codes=("cs1000-01",)
+                )
+                manager.reload_result = "structure"
+                clock.now = 121.0
+            return []
+
+        with (
+            patch.object(poll, "poll_cycle", side_effect=fake_poll_cycle),
+            patch.object(poll, "_sleep_until", return_value=None),
+        ):
+            poll.run_loop(
+                object(),
+                list(reloader.drivers),
+                interval_s=reloader.settings.interval_s,
+                logger=LOGGER,
+                config_reloader=reloader,
+                should_stop=lambda: len(observed) >= 3,
+            )
+
+        self.assertEqual(manager.reload_calls, 3)
+        self.assertIs(observed[0]["drivers"][0], original_drivers[0])
+        # 参数变化不重建 driver，但 timeout/retries 当轮生效。
+        self.assertIs(observed[1]["drivers"][0], original_drivers[0])
+        self.assertEqual(observed[1]["interval"], 1.0)
+        self.assertEqual(observed[1]["timeout"], 2.0)
+        self.assertEqual(observed[1]["retries"], 0)
+        # 结构变化才重建；新 1 秒轮询间隔同时成为默认配置检查间隔。
+        self.assertEqual([d.name for d in observed[2]["drivers"]], ["CS1000"])
+        self.assertIsNot(observed[2]["drivers"][0], original_drivers[0])
+
 
 class ReloadStorage:
     def __init__(self):
         self.context = context()
+        # database_context 模拟表中的最新值；context 是 PgStorage 的已提交缓存。
+        # prepare 会恢复缓存，但不能把“数据库中的新值”一并覆盖，否则无法重试。
+        self.database_context = self.context
         self.fingerprint = fingerprint()
         self.fingerprint_error = None
         self.load_context_calls = 0
@@ -257,7 +373,8 @@ class ReloadStorage:
 
     def load_context(self):
         self.load_context_calls += 1
-        return self.context
+        self.context = self.database_context
+        return self.database_context
 
     def close(self):
         self.closed = True
@@ -295,10 +412,93 @@ class DatabaseManagerFingerprintTest(unittest.TestCase):
 
         # DB 恢复后无需重启，下一次指纹检查即可加载新参数。
         storage.fingerprint_error = None
-        storage.context = replace(old_context, timeout_ms=3000)
+        storage.database_context = replace(old_context, timeout_ms=3000)
         storage.fingerprint = fingerprint("t2")
         self.assertEqual(manager.reload_if_changed(), "parameters")
         self.assertEqual(manager.context.timeout_ms, 3000)
+
+    def test_flags_failure_preserves_old_fingerprint_then_retry_commits(self):
+        storage = ReloadStorage()
+        manager = self.make_manager(storage)
+        old_context = manager.context
+        old_fingerprint = manager.config_snapshot()[1]
+        reloader = ConfigReloader(
+            db_manager=manager,
+            context=old_context,
+            drivers=enabled_drivers(old_context),
+            driver_factory=enabled_drivers,
+            logger=LOGGER,
+        )
+        old_settings = reloader.settings
+        old_drivers = reloader.drivers
+        attempts = []
+
+        def apply(old, new, candidates):
+            attempts.append(new.rs485_flags)
+            if len(attempts) == 1:
+                raise RuntimeError("模拟 TIOCSRS485 失败")
+            return candidates
+
+        reloader._on_structure_change = apply
+        storage.database_context = replace(old_context, rs485_flags=5, timeout_ms=4000)
+        storage.fingerprint = fingerprint("t2", sensor_version="t2")
+
+        with self.assertLogs(LOGGER, level="INFO") as captured:
+            self.assertEqual(reloader.before_cycle(force=True), "error")
+        self.assertIs(manager.context, old_context)
+        self.assertIs(storage.context, old_context)
+        self.assertEqual(manager.config_snapshot(), (old_context, old_fingerprint))
+        self.assertIs(reloader.context, old_context)
+        self.assertIs(reloader.settings, old_settings)
+        self.assertIs(reloader.drivers, old_drivers)
+        self.assertFalse(any("配置热加载类型=" in line for line in captured.output))
+
+        # 同一时钟立即进入下一轮：绕过普通检查间隔，准备并应用同一个 t2。
+        self.assertEqual(reloader.before_cycle(), "structure")
+        self.assertEqual(attempts, [5, 5])
+        self.assertIs(manager.context, storage.context)
+        self.assertEqual(manager.context.rs485_flags, 5)
+        self.assertEqual(manager.config_snapshot()[1], storage.fingerprint)
+        self.assertEqual(reloader.settings.timeout_s, 4.0)
+
+        load_calls = storage.load_context_calls
+        self.assertEqual(reloader.before_cycle(force=True), "none")
+        self.assertEqual(storage.load_context_calls, load_calls)
+
+    def test_recovery_apply_failure_restores_pre_recovery_snapshot_and_retries(self):
+        storage = ReloadStorage()
+        manager = self.make_manager(storage)
+        manager.retry_interval_s = 0.0
+        old_context = manager.context
+        old_fingerprint = manager.config_snapshot()[1]
+        reloader = ConfigReloader(
+            db_manager=manager,
+            context=old_context,
+            drivers=enabled_drivers(old_context),
+            driver_factory=enabled_drivers,
+            logger=LOGGER,
+        )
+        manager._mark_unavailable(ConnectionError("模拟运行中断线"))
+        self.assertIs(manager.context, old_context)
+        self.assertEqual(manager.config_snapshot(), (old_context, old_fingerprint))
+
+        storage.database_context = replace(old_context, rs485_flags=3)
+        storage.fingerprint = fingerprint("t2", sensor_version="t2")
+        attempts = []
+
+        def apply(old, new, candidates):
+            attempts.append(new.rs485_flags)
+            if len(attempts) == 1:
+                raise RuntimeError("恢复后 flags 应用失败")
+            return candidates
+
+        reloader._on_structure_change = apply
+        self.assertEqual(reloader.before_cycle(force=True), "error")
+        self.assertEqual(manager.config_snapshot(), (old_context, old_fingerprint))
+        self.assertIs(reloader.context, old_context)
+        self.assertEqual(reloader.before_cycle(), "structure")
+        self.assertEqual(attempts, [3, 3])
+        self.assertEqual(manager.config_snapshot()[1], storage.fingerprint)
 
 
 if __name__ == "__main__":
