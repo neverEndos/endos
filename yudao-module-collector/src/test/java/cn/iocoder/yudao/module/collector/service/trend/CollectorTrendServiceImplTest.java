@@ -7,13 +7,16 @@ import cn.iocoder.yudao.module.collector.dal.dataobject.channel.CollectorChannel
 import cn.iocoder.yudao.module.collector.dal.dataobject.trend.CollectorTrendBucketRow;
 import cn.iocoder.yudao.module.collector.dal.dataobject.trend.CollectorTrendRawPointRow;
 import cn.iocoder.yudao.module.collector.dal.mysql.channel.CollectorChannelMapper;
+import cn.iocoder.yudao.module.collector.dal.mysql.device.CollectorDeviceMapper;
 import cn.iocoder.yudao.module.collector.dal.mysql.trend.CollectorTrendMapper;
+import org.apache.ibatis.exceptions.PersistenceException;
+import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnitRunner;
 
+import java.sql.SQLException;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -50,8 +53,14 @@ public class CollectorTrendServiceImplTest {
     private CollectorChannelMapper channelMapper;
     @Mock
     private CollectorTrendMapper trendMapper;
-    @InjectMocks
+    @Mock
+    private CollectorDeviceMapper deviceMapper;
     private CollectorTrendServiceImpl trendService;
+
+    @Before
+    public void setUp() {
+        trendService = new CollectorTrendServiceImpl(channelMapper, trendMapper, deviceMapper);
+    }
 
     @Test
     public void getSeries_autoSelectsSourcePerProfileAndQueriesByLayer() {
@@ -212,6 +221,94 @@ public class CollectorTrendServiceImplTest {
         ServiceException error = assertThrows(ServiceException.class,
                 () -> trendService.getSeries(request(List.of(1L), 7L, 3 * 60 * 60, "auto", true)));
         assertEquals(TREND_RAW_OVERLAY_RANGE_EXCEEDED.getCode(), error.getCode());
+    }
+
+    @Test
+    public void getSeries_rawOverlayRejectsTwoHoursPlus999Millis() {
+        // 2 小时 + 999ms 按毫秒向上取整为 7201 秒，必须拒绝，不能经 toSeconds 向下取整绕过
+        CollectorChannelDO channel = channel(1L, 7L, "normal");
+        when(channelMapper.selectBatchIds(List.of(1L))).thenReturn(List.of(channel));
+
+        CollectorTrendSeriesReqVO reqVO = fixedRequest(List.of(1L), BASE_MILLIS,
+                BASE_MILLIS + 2 * 60 * 60 * 1000 + 999, "auto", true);
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> trendService.getSeries(reqVO));
+        assertEquals(TREND_RAW_OVERLAY_RANGE_EXCEEDED.getCode(), error.getCode());
+    }
+
+    @Test
+    public void getSeries_rangeLimitsUseMillisAndRejectOneMillisOver() {
+        // 365 天恰好可用：normal 通道落到 day 层
+        CollectorChannelDO channel = channel(1L, 7L, "normal");
+        when(channelMapper.selectBatchIds(List.of(1L))).thenReturn(List.of(channel));
+        when(trendMapper.selectDayBuckets(any(), any(), any())).thenReturn(List.of());
+        CollectorTrendSeriesRespVO resp = trendService.getSeries(fixedRequest(List.of(1L), BASE_MILLIS,
+                BASE_MILLIS + 365L * 24 * 60 * 60 * 1000, "auto", false));
+        assertEquals("day", resp.getSourceSummary());
+
+        // 365 天 + 1ms 必须拒绝
+        ServiceException oneMillisOver = assertThrows(ServiceException.class,
+                () -> trendService.getSeries(fixedRequest(List.of(1L), BASE_MILLIS,
+                        BASE_MILLIS + 365L * 24 * 60 * 60 * 1000 + 1, "auto", false)));
+        assertEquals(TREND_QUERY_INVALID.getCode(), oneMillisOver.getCode());
+
+        // 1ms 范围不足 1 秒，必须拒绝
+        ServiceException tooShort = assertThrows(ServiceException.class,
+                () -> trendService.getSeries(fixedRequest(List.of(1L), BASE_MILLIS,
+                        BASE_MILLIS + 1, "auto", false)));
+        assertEquals(TREND_QUERY_INVALID.getCode(), tooShort.getCode());
+    }
+
+    @Test
+    public void getSeries_explicitGranularityRejectsTenMinutesPlusOneMillis() {
+        // 原始粒度上限 10 分钟；10 分钟 + 1ms 按毫秒核算必须拒绝
+        CollectorChannelDO channel = channel(1L, 7L, "normal");
+        when(channelMapper.selectBatchIds(List.of(1L))).thenReturn(List.of(channel));
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> trendService.getSeries(fixedRequest(List.of(1L), BASE_MILLIS,
+                        BASE_MILLIS + 10 * 60 * 1000 + 1, "raw", false)));
+        assertEquals(TREND_GRANULARITY_NOT_ALLOWED.getCode(), error.getCode());
+    }
+
+    @Test
+    public void getSeries_includeRawOverlayTimeoutDegradesToMainSeries() {
+        CollectorChannelDO channel = channel(1L, 7L, "fast");
+        when(channelMapper.selectBatchIds(List.of(1L))).thenReturn(List.of(channel));
+        when(trendMapper.selectAggregateBuckets(anyString(), anyInt(), any(), any(), any()))
+                .thenReturn(List.of(bucketRow(1L, BASE_MILLIS, 20D, 19D, 21D, 5)));
+        SQLException canceled = new SQLException(
+                "ERROR: canceling statement due to statement timeout", "57014");
+        when(trendMapper.selectRawPoints(anyInt(), any(), any(), any()))
+                .thenThrow(new PersistenceException("查询取消", canceled));
+
+        CollectorTrendSeriesRespVO resp = trendService.getSeries(request(List.of(1L), 7L, 30 * 60, "auto", true));
+
+        // 主序列保留，raw 序列降级为空并带中文警告
+        assertEquals(Boolean.TRUE, resp.getRawDegraded());
+        assertEquals("原始点加载超时，已仅展示聚合趋势", resp.getRawWarning());
+        assertEquals(2, resp.getSeries().size());
+        assertEquals("aggregate", resp.getSeries().get(0).getKind());
+        assertEquals(1, resp.getSeries().get(0).getPoints().size());
+        assertEquals("raw", resp.getSeries().get(1).getKind());
+        assertTrue(resp.getSeries().get(1).getPoints().isEmpty());
+        verify(trendMapper).setRawOverlayTimeout(anyInt());
+    }
+
+    @Test
+    public void getSeries_includeRawOverlayGenericExceptionPropagates() {
+        CollectorChannelDO channel = channel(1L, 7L, "fast");
+        when(channelMapper.selectBatchIds(List.of(1L))).thenReturn(List.of(channel));
+        when(trendMapper.selectAggregateBuckets(anyString(), anyInt(), any(), any(), any()))
+                .thenReturn(List.of(bucketRow(1L, BASE_MILLIS, 20D, 19D, 21D, 5)));
+        // 非超时异常（如 SQL 语法/权限错误）不得被吞掉
+        when(trendMapper.selectRawPoints(anyInt(), any(), any(), any()))
+                .thenThrow(new PersistenceException("relation does not exist",
+                        new SQLException("ERROR: relation \"x\" does not exist", "42P01")));
+
+        PersistenceException error = assertThrows(PersistenceException.class,
+                () -> trendService.getSeries(request(List.of(1L), 7L, 30 * 60, "auto", true)));
+        assertEquals("relation does not exist", error.getMessage());
     }
 
     private CollectorTrendSeriesReqVO request(List<Long> channelIds, Long deviceId, long rangeSeconds,

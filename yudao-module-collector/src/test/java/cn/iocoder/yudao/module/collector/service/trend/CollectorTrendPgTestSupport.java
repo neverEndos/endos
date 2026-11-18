@@ -4,6 +4,7 @@ import cn.iocoder.yudao.module.collector.dal.dataobject.channel.CollectorChannel
 import cn.iocoder.yudao.module.collector.dal.dataobject.trend.CollectorTrendBucketRow;
 import cn.iocoder.yudao.module.collector.dal.dataobject.trend.CollectorTrendRawPointRow;
 import cn.iocoder.yudao.module.collector.dal.mysql.channel.CollectorChannelMapper;
+import cn.iocoder.yudao.module.collector.dal.mysql.device.CollectorDeviceMapper;
 import cn.iocoder.yudao.module.collector.dal.mysql.trend.CollectorTrendMapper;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import org.apache.ibatis.datasource.unpooled.UnpooledDataSource;
@@ -12,10 +13,10 @@ import org.apache.ibatis.session.Configuration;
 import org.apache.ibatis.session.SqlSession;
 import org.apache.ibatis.session.SqlSessionFactoryBuilder;
 import org.apache.ibatis.session.SqlSessionFactory;
-import org.mybatis.spring.SqlSessionTemplate;
-import org.mybatis.spring.transaction.SpringManagedTransactionFactory;
+import org.junit.After;
 import org.junit.Assume;
 import org.junit.Before;
+import org.mybatis.spring.transaction.SpringManagedTransactionFactory;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -46,6 +47,7 @@ abstract class CollectorTrendPgTestSupport {
     protected CollectorTrendServiceImpl trendService;
     protected CollectorTrendMapper trendMapper;
     protected CollectorChannelMapper channelMapper;
+    protected CollectorDeviceMapper deviceMapper;
     protected UnpooledDataSource dataSource;
     private SqlSession sqlSession;
 
@@ -104,10 +106,36 @@ abstract class CollectorTrendPgTestSupport {
         configuration.setMapUnderscoreToCamelCase(true);
         configuration.addMapper(CollectorTrendMapper.class);
         SqlSessionFactory factory = new SqlSessionFactoryBuilder().build(configuration);
-        sqlSession = new SqlSessionTemplate(factory);
+        // 使用单连接会话：叠加查询的 SET LOCAL statement_timeout 与抽样 SQL 必须落在同一连接上，
+        // 与生产环境 @Transactional 绑定连接的行为一致。
+        sqlSession = factory.openSession(false);
+        // SpringManagedTransaction 不会应用 openSession(false) 的 autoCommit 设置，
+        // 需要显式关闭自动提交：让 SET LOCAL statement_timeout 与叠加查询处于同一事务，
+        // 与生产环境 @Transactional 绑定连接的行为一致（否则 SET LOCAL 在事务外不生效）。
+        sqlSession.getConnection().setAutoCommit(false);
         trendMapper = sqlSession.getMapper(CollectorTrendMapper.class);
         channelMapper = mock(CollectorChannelMapper.class);
-        trendService = new CollectorTrendServiceImpl(channelMapper, trendMapper);
+        deviceMapper = mock(CollectorDeviceMapper.class);
+        trendService = newCollectorTrendService(10_000);
+    }
+
+    @After
+    public void tearDownTrendPg() {
+        if (sqlSession != null) {
+            sqlSession.close();
+            sqlSession = null;
+        }
+    }
+
+    /** 构造被测服务；子类/用例可注入更短的叠加超时以真实触发 statement_timeout 降级。 */
+    protected CollectorTrendServiceImpl newCollectorTrendService(int rawOverlayTimeoutMillis) {
+        return new CollectorTrendServiceImpl(channelMapper, trendMapper, deviceMapper,
+                rawOverlayTimeoutMillis);
+    }
+
+    /** 当前测试会话持有的连接，用于验证 statement_timeout 机制真实生效。 */
+    protected Connection sessionConnection() {
+        return sqlSession.getConnection();
     }
 
     private void createAggregateTable(Statement statement, String table, String bucketColumn,
@@ -180,6 +208,37 @@ abstract class CollectorTrendPgTestSupport {
                 statement.setLong(2, deviceId);
                 statement.setTimestamp(3, Timestamp.valueOf(start.plusSeconds(i)));
                 statement.setDouble(4, startValue + i);
+                statement.addBatch();
+            }
+            statement.executeBatch();
+        }
+    }
+
+    /** 批量插入等间隔聚合桶，值随序号递增，用于验证非桶边界对齐下的点数上限。 */
+    protected void insertAggregateSeries(String table, long channelId, long deviceId,
+                                         LocalDateTime start, int count, int stepSeconds,
+                                         double startValue) throws SQLException {
+        boolean day = "collector_aggregate_day".equals(table);
+        String bucketColumn = day ? "bucket_date" : "bucket_time";
+        try (Connection connection = DriverManager.getConnection(URL, USER, PASSWORD);
+             PreparedStatement statement = connection.prepareStatement("""
+                     INSERT INTO %s (channel_id, device_id, %s, sample_count, good_count,
+                         valid_count, bad_count, value_avg, value_min, value_max, value_sum)
+                     VALUES (?, ?, ?, 1, 1, 1, 0, ?, ?, ?, ?)
+                     """.formatted(table, bucketColumn))) {
+            for (int i = 0; i < count; i++) {
+                LocalDateTime bucket = start.plusSeconds((long) i * stepSeconds);
+                statement.setLong(1, channelId);
+                statement.setLong(2, deviceId);
+                if (day) {
+                    statement.setObject(3, bucket.toLocalDate());
+                } else {
+                    statement.setTimestamp(3, Timestamp.valueOf(bucket));
+                }
+                statement.setDouble(4, startValue + i);
+                statement.setDouble(5, startValue + i);
+                statement.setDouble(6, startValue + i);
+                statement.setDouble(7, startValue + i);
                 statement.addBatch();
             }
             statement.executeBatch();

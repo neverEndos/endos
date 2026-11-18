@@ -73,18 +73,38 @@ public class CollectorTrendPlanUtilsTest {
 
     @Test
     public void bucketSeconds_enlargesWithinLayerToStayUnderPointCap() {
-        // 30 分钟：1800 秒，目标 1.8 秒，分钟层最小桶仍为 60 秒
+        // 30 分钟：1800 秒，最坏桶数 1800/60+1=31，分钟层最小桶仍为 60 秒
         assertEquals(60, CollectorTrendPlanUtils.bucketSeconds(
                 CollectorTrendPlanUtils.resolveAuto("normal", 30 * MINUTE), 30 * MINUTE));
-        // 48 小时：172800 秒，目标 172.8 秒，放大到 180 秒（960 点）
+        // 48 小时：172800 秒，180 秒桶最坏 961 点；120 秒桶最坏 1441 点不可用
         assertEquals(180, CollectorTrendPlanUtils.bucketSeconds(
                 CollectorTrendPlanUtils.resolveAuto("normal", 48 * HOUR), 48 * HOUR));
-        // 90 天小时层：目标 7776 秒，放大到 10800 秒（720 点）
+        // 90 天小时层：10800 秒桶最坏 721 点；7200 秒桶最坏 1081 点不可用
         assertEquals(10800, CollectorTrendPlanUtils.bucketSeconds(
                 CollectorTrendPlanUtils.resolveAuto("normal", 90 * DAY), 90 * DAY));
-        // fast 2 小时秒层：目标 7.2 秒，放大到 10 秒（720 点）
+        // fast 2 小时秒层：10 秒桶最坏 721 点；5 秒桶最坏 1441 点不可用
         assertEquals(10, CollectorTrendPlanUtils.bucketSeconds(
                 CollectorTrendPlanUtils.resolveAuto("fast", 2 * HOUR), 2 * HOUR));
+    }
+
+    @Test
+    public void bucketSeconds_fastFiveThousandSecondsMisalignedNeedsTenSecondBucket() {
+        // 复现 Blocker 1：fast 通道 5000 秒（00:00:01~01:23:21），from 不在 5 秒桶边界上。
+        // 旧公式 ceil(5000/5)=1000 会选 5 秒桶，SQL 实际返回 1001 点；
+        // 新公式按最坏桶数 ceil(5000/5)+1=1001 > 1000，递增到 10 秒桶（最坏 501 点）。
+        assertEquals(10, CollectorTrendPlanUtils.bucketSeconds(
+                CollectorTrendPlanUtils.resolveAuto("fast", 5000), 5000));
+        assertEquals(501, CollectorTrendSource.worstBucketCount(5000, 10));
+    }
+
+    @Test
+    public void bucketSeconds_rangeExactlyMultipleStillReservesBoundaryBucket() {
+        // 范围恰为桶宽整数倍（5000 = 1000 × 5）时，from 偏移仍会多覆盖一个边界桶
+        assertEquals(1001, CollectorTrendSource.worstBucketCount(5000, 5));
+        // 比整数倍少 1 秒同样可能跨 1001 个桶（首桶只覆盖 1ms 也算一个桶）
+        assertEquals(1001, CollectorTrendSource.worstBucketCount(4999, 5));
+        assertEquals(1000, CollectorTrendSource.worstBucketCount(999, 1));
+        assertEquals(1001, CollectorTrendSource.worstBucketCount(1000, 1));
     }
 
     @Test
@@ -94,28 +114,30 @@ public class CollectorTrendPlanUtilsTest {
             for (long range : ranges) {
                 int bucket = CollectorTrendPlanUtils.bucketSeconds(
                         CollectorTrendPlanUtils.resolveAuto(profile, range), range);
-                long points = (range + bucket - 1) / bucket;
-                assertTrue("profile=" + profile + " range=" + range + " bucket=" + bucket + " points=" + points,
-                        points <= CollectorTrendSource.MAX_POINTS_PER_SERIES);
+                long worstPoints = CollectorTrendSource.worstBucketCount(range, bucket);
+                assertTrue("profile=" + profile + " range=" + range + " bucket=" + bucket
+                                + " worstPoints=" + worstPoints,
+                        worstPoints <= CollectorTrendSource.MAX_POINTS_PER_SERIES);
             }
         }
     }
 
     @Test
     public void granularityRangeLimitsMatchContract() {
-        assertTrue(CollectorTrendGranularity.AUTO.supportsRange(365 * DAY));
-        assertTrue(CollectorTrendGranularity.RAW.supportsRange(10 * MINUTE));
-        assertFalse(CollectorTrendGranularity.RAW.supportsRange(10 * MINUTE + 1));
-        assertTrue(CollectorTrendGranularity.ONE_SECOND.supportsRange(2 * HOUR));
-        assertFalse(CollectorTrendGranularity.ONE_SECOND.supportsRange(2 * HOUR + 1));
-        assertTrue(CollectorTrendGranularity.ONE_MINUTE.supportsRange(48 * HOUR));
-        assertFalse(CollectorTrendGranularity.ONE_MINUTE.supportsRange(48 * HOUR + 1));
-        assertTrue(CollectorTrendGranularity.FIVE_MINUTES.supportsRange(90 * DAY));
-        assertFalse(CollectorTrendGranularity.FIVE_MINUTES.supportsRange(90 * DAY + 1));
-        assertTrue(CollectorTrendGranularity.ONE_HOUR.supportsRange(90 * DAY));
-        assertFalse(CollectorTrendGranularity.ONE_HOUR.supportsRange(90 * DAY + 1));
-        assertTrue(CollectorTrendGranularity.ONE_DAY.supportsRange(365 * DAY));
-        assertFalse(CollectorTrendGranularity.ONE_DAY.supportsRange(365 * DAY + 1));
+        long millis = 1000;
+        assertTrue(CollectorTrendGranularity.AUTO.supportsRangeMillis(365 * DAY * millis));
+        assertTrue(CollectorTrendGranularity.RAW.supportsRangeMillis(10 * MINUTE * millis));
+        assertFalse(CollectorTrendGranularity.RAW.supportsRangeMillis(10 * MINUTE * millis + 1));
+        assertTrue(CollectorTrendGranularity.ONE_SECOND.supportsRangeMillis(2 * HOUR * millis));
+        assertFalse(CollectorTrendGranularity.ONE_SECOND.supportsRangeMillis(2 * HOUR * millis + 1));
+        assertTrue(CollectorTrendGranularity.ONE_MINUTE.supportsRangeMillis(48 * HOUR * millis));
+        assertFalse(CollectorTrendGranularity.ONE_MINUTE.supportsRangeMillis(48 * HOUR * millis + 1));
+        assertTrue(CollectorTrendGranularity.FIVE_MINUTES.supportsRangeMillis(90 * DAY * millis));
+        assertFalse(CollectorTrendGranularity.FIVE_MINUTES.supportsRangeMillis(90 * DAY * millis + 1));
+        assertTrue(CollectorTrendGranularity.ONE_HOUR.supportsRangeMillis(90 * DAY * millis));
+        assertFalse(CollectorTrendGranularity.ONE_HOUR.supportsRangeMillis(90 * DAY * millis + 1));
+        assertTrue(CollectorTrendGranularity.ONE_DAY.supportsRangeMillis(365 * DAY * millis));
+        assertFalse(CollectorTrendGranularity.ONE_DAY.supportsRangeMillis(365 * DAY * millis + 1));
         assertEquals(CollectorTrendGranularity.MAX_TOTAL_RANGE, Duration.ofDays(365));
     }
 
