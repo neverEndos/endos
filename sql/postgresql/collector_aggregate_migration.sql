@@ -4,6 +4,8 @@
 --    扩展聚合水位类型与保留策略数据类，并幂等补充秒/分钟保留策略。
 -- 2. 旧库新增 valid_count 时以 good_count 近似回填；升级后建议对历史区间重算一次，
 --    校正 value_avg 分母与 valid_count。
+--    若此前执行过中间版本迁移（列已存在但为 0），本脚本不会再次回填，需手工执行一次
+--    UPDATE ... SET valid_count = good_count，或直接重算历史区间。
 -- 3. 幂等、单事务；只增列、增表、增索引和必要约束，不删除或清理业务数据。
 -- 4. 执行方式（密码从环境变量读取，不要写入仓库）：
 --    PGPASSWORD=... psql -h <host> -U <user> -d <database> -f sql/postgresql/collector_aggregate_migration.sql

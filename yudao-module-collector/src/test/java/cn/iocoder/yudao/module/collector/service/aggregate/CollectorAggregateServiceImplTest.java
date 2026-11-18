@@ -11,6 +11,7 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.Statement;
+import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -243,8 +244,78 @@ public class CollectorAggregateServiceImplTest extends CollectorAggregatePgTestS
     }
 
     @Test
-    public void backfill_clearsStaleBucketsAndCascadesAllLevels() throws Exception {
+    public void backfill_partiallyEmptyBatchPreservesOldBuckets() throws Exception {
         setChannels(channel(1, 7, "fast"));
+        setClock(BASE_TIME.plusDays(1));
+        insertRaw(1, 7, BASE_TIME, 10D, 0);
+        insertBucket("collector_aggregate_second", false, BASE_TIME, 999);
+        insertBucket("collector_aggregate_second", false, BASE_TIME.plusSeconds(1), 999);
+        insertBucket("collector_aggregate_second", false, BASE_TIME.plusSeconds(2), 999);
+
+        CollectorAggregateService.AggregateResult result = aggregateService.backfill(
+                CollectorAggregateType.SECOND, BASE_TIME, BASE_TIME.plusSeconds(3), List.of(1L),
+                true, false, false);
+        assertEquals(1, result.bucketCount());
+        assertEquals(1, result.rowCount());
+        assertEquals("批内只有 1 秒有源，另外 2 个旧桶必须保留", 2, result.preservedBuckets());
+        assertEquals(0, result.skippedEmptyBatches());
+        assertEquals(3, countRows("collector_aggregate_second"));
+
+        List<CollectorAggregateBucketDO> buckets = selectBuckets("collector_aggregate_second", false);
+        assertEquals("有源桶必须被重建", Integer.valueOf(1), buckets.get(0).getSampleCount());
+        assertEquals("无源旧桶必须保留原值", Integer.valueOf(999), buckets.get(1).getSampleCount());
+        assertEquals("无源旧桶必须保留原值", Integer.valueOf(999), buckets.get(2).getSampleCount());
+    }
+
+    @Test
+    public void backfill_dayPartialBatchPreservesOldBucket() throws Exception {
+        setChannels(channel(1, 7, "normal"));
+        setClock(BASE_TIME.plusDays(3));
+        insertRaw(1, 7, BASE_TIME, 10D, 0);
+        insertBucket("collector_aggregate_day", true, BASE_TIME.plusDays(1), 999);
+
+        CollectorAggregateService.AggregateResult result = aggregateService.backfill(
+                CollectorAggregateType.DAY, BASE_TIME, BASE_TIME.plusDays(2), List.of(1L),
+                true, false, false);
+        assertEquals(1, result.bucketCount());
+        assertEquals("第二个日期无 raw，旧天聚合必须保留", 1, result.preservedBuckets());
+        assertEquals(0, result.skippedEmptyBatches());
+        assertEquals(2, countRows("collector_aggregate_day"));
+        List<CollectorAggregateBucketDO> buckets = selectBuckets("collector_aggregate_day", true);
+        assertEquals(Integer.valueOf(1), buckets.get(0).getSampleCount());
+        assertEquals(Integer.valueOf(999), buckets.get(1).getSampleCount());
+    }
+
+    @Test
+    public void backfill_layeredPartialGapPreservesOldBucket() throws Exception {
+        setChannels(channel(1, 7, "normal"));
+        setClock(BASE_TIME.plusDays(2));
+        executeSql("""
+                INSERT INTO collector_sample_raw (channel_id, device_id, collect_time, value, quality)
+                SELECT 1, 7, TIMESTAMP '2026-01-01 00:00:00' + (i * interval '1 minute'),
+                    (i + 1)::double precision, 0
+                FROM generate_series(0, 59) i
+                """);
+        aggregateService.aggregateMinute(BASE_TIME, BASE_TIME.plusHours(1), List.of(1L));
+        insertBucket("collector_aggregate_hour", false, BASE_TIME.plusHours(1), 999);
+
+        CollectorAggregateService.AggregateResult result = aggregateService.backfill(
+                CollectorAggregateType.HOUR, BASE_TIME, BASE_TIME.plusHours(2), List.of(1L),
+                false, false, false);
+        assertEquals("第一小时有完整分钟源，第二小时无分钟/raw 源", 1, result.preservedBuckets());
+        assertEquals(1, result.bucketCount());
+        assertEquals(0, result.skippedEmptyBatches());
+        assertEquals(2, countRows("collector_aggregate_hour"));
+        List<CollectorAggregateBucketDO> buckets = selectBuckets("collector_aggregate_hour", false);
+        assertEquals(Integer.valueOf(60), buckets.get(0).getSampleCount());
+        assertEquals("无源小时的旧聚合必须保留", Integer.valueOf(999), buckets.get(1).getSampleCount());
+    }
+
+    @Test
+    public void backfill_cascadeReturnsAllLevelResults() throws Exception {
+        setChannels(channel(1, 7, "fast"));
+        // 日层关闭边界按天 floor，时钟必须推进到次日之后，1 分钟范围才会落在一个可写的日内。
+        setClock(BASE_TIME.plusDays(2));
         executeSql("""
                 INSERT INTO collector_sample_raw (channel_id, device_id, collect_time, value, quality)
                 SELECT 1, 7, TIMESTAMP '2026-01-01 00:00:00' + (i * interval '1 second'),
@@ -252,51 +323,33 @@ public class CollectorAggregateServiceImplTest extends CollectorAggregatePgTestS
                 FROM generate_series(0, 59) i
                 """);
 
-        // 目标区间内、但没有任何 raw 的重叠桶：显式回填必须先清掉，而不是 upsert 保留。
-        insertStaleBucket("collector_aggregate_second", false);
-        insertStaleBucket("collector_aggregate_minute", false);
-        insertStaleBucket("collector_aggregate_hour", false);
-        insertStaleBucket("collector_aggregate_day", true);
-
-        LocalDateTime to = BASE_TIME.plusMinutes(2);
-        aggregateService.backfill(CollectorAggregateType.SECOND, BASE_TIME, to, List.of(1L), false, true);
-
-        List<Long> ids = List.of(1L);
-        assertBucketsEqual(selectRawExpected("second", BASE_TIME, to, ids),
-                selectBuckets("collector_aggregate_second", false));
-        assertBucketsEqual(selectRawExpected("minute", BASE_TIME, to, ids),
-                selectBuckets("collector_aggregate_minute", false));
-        assertBucketsEqual(selectRawExpected("hour", BASE_TIME, to, ids),
-                selectBuckets("collector_aggregate_hour", false));
-        assertBucketsEqual(selectRawExpected("day", BASE_TIME, to, ids),
-                selectBuckets("collector_aggregate_day", true));
-        assertEquals("无 raw 的 90 秒陈旧秒桶必须被清掉", 60, countRows("collector_aggregate_second"));
-        assertEquals("无下层数据的分钟桶必须被清掉", 1, countRows("collector_aggregate_minute"));
-
-        // 给第二分钟补 raw 并级联重建，再删除第二分钟 raw；显式分钟回填必须移除已经失效的分钟桶。
-        executeSql("""
-                INSERT INTO collector_sample_raw (channel_id, device_id, collect_time, value, quality)
-                SELECT 1, 7, TIMESTAMP '2026-01-01 00:01:00' + (i * interval '1 second'),
-                    (i + 1)::double precision, 0
-                FROM generate_series(0, 59) i
-                """);
-        aggregateService.backfill(CollectorAggregateType.SECOND, BASE_TIME, to, List.of(1L), false, true);
-        assertEquals(2, countRows("collector_aggregate_minute"));
-
-        executeSql("""
-                DELETE FROM collector_sample_raw
-                WHERE collect_time >= TIMESTAMP '2026-01-01 00:01:00'
-                """);
-        aggregateService.backfill(CollectorAggregateType.MINUTE, BASE_TIME, to, List.of(1L), true, false);
-        assertEquals("源数据删除后目标分钟桶必须消失", 1, countRows("collector_aggregate_minute"));
-        assertBucketsEqual(selectRawExpected("minute", BASE_TIME, to, ids),
-                selectBuckets("collector_aggregate_minute", false));
+        CollectorAggregateService.AggregateResult result = aggregateService.backfill(
+                CollectorAggregateType.SECOND, BASE_TIME, BASE_TIME.plusMinutes(1),
+                List.of(1L), false, true, false);
+        assertEquals("根层加 minute/hour/day 共 4 层", 4, result.levels().size());
+        assertEquals(List.of("second", "minute", "hour", "day"),
+                result.levels().stream().map(CollectorAggregateService.AggregateLevelResult::aggType).toList());
+        List<Long> expectedBuckets = List.of(60L, 1L, 1L, 1L);
+        for (int i = 0; i < result.levels().size(); i++) {
+            CollectorAggregateService.AggregateLevelResult level = result.levels().get(i);
+            assertEquals(1, level.channelCount());
+            assertEquals(expectedBuckets.get(i).longValue(), level.bucketCount());
+            assertEquals(60, level.rowCount());
+            assertEquals(0, level.preservedBuckets());
+            assertTrue(level.durationMillis() >= 0);
+        }
+        CollectorAggregateService.AggregateLevelResult rootLevel = result.levels().get(0);
+        assertEquals(result.aggType(), rootLevel.aggType());
+        assertEquals(result.bucketCount(), rootLevel.bucketCount());
+        assertEquals(result.preservedBuckets(), rootLevel.preservedBuckets());
+        assertEquals(60, countRows("collector_aggregate_second"));
+        assertEquals(1, countRows("collector_aggregate_minute"));
+        assertEquals(1, countRows("collector_aggregate_hour"));
+        assertEquals(1, countRows("collector_aggregate_day"));
     }
 
     @Test
-    public void backfill_rejectsExpiredRawRangeAndPerTypeLimits() throws Exception {
-        setChannels(channel(1, 7, "fast"));
-
+    public void backfill_validatesRangeAndPerTypeLimits() throws Exception {
         ServiceException nullFrom = assertThrows(ServiceException.class, () -> aggregateService.backfill(
                 CollectorAggregateType.MINUTE, null, BASE_TIME.plusMinutes(1), null, false));
         assertEquals(AGGREGATE_BACKFILL_INVALID.getCode(), nullFrom.getCode());
@@ -304,17 +357,21 @@ public class CollectorAggregateServiceImplTest extends CollectorAggregatePgTestS
                 CollectorAggregateType.MINUTE, BASE_TIME, null, null, false));
         assertEquals(AGGREGATE_BACKFILL_INVALID.getCode(), nullTo.getCode());
 
-        // second：最长 6 小时、最多 5 通道；错误信息必须给出现行上限且不暴露格式化占位符。
+        // second：最长 3 小时、最多 5 通道；错误信息必须给出现行上限且不暴露格式化占位符。
         ServiceException durationLimit = assertThrows(ServiceException.class, () -> aggregateService.backfill(
-                CollectorAggregateType.SECOND, BASE_TIME, BASE_TIME.plusHours(7), null, false));
+                CollectorAggregateType.SECOND, BASE_TIME, BASE_TIME.plusHours(4), null, false));
         assertEquals(AGGREGATE_BACKFILL_INVALID.getCode(), durationLimit.getCode());
-        assertTrue(durationLimit.getMessage().contains("6 小时"));
+        assertTrue(durationLimit.getMessage().contains("3 小时"));
         assertFalse(durationLimit.getMessage().contains("%s"));
         assertFalse(durationLimit.getMessage().contains("%d"));
         assertBackfillInvalid(() -> aggregateService.backfill(
                 CollectorAggregateType.SECOND, BASE_TIME, BASE_TIME.plusMinutes(2), ids(1, 6), false));
 
-        // minute：最长 2 天、最多 20 通道。
+        // minute：最长 2 天、最多 20 通道；错误信息中的时长必须包含分钟，不能把 90 分钟吞成整小时。
+        ServiceException minuteLimit = assertThrows(ServiceException.class, () -> aggregateService.backfill(
+                CollectorAggregateType.MINUTE, BASE_TIME, BASE_TIME.plusDays(2).plusMinutes(90), null, false));
+        assertEquals(AGGREGATE_BACKFILL_INVALID.getCode(), minuteLimit.getCode());
+        assertTrue(minuteLimit.getMessage().contains("2 天 1 小时 30 分钟"));
         assertBackfillInvalid(() -> aggregateService.backfill(
                 CollectorAggregateType.MINUTE, BASE_TIME, BASE_TIME.plusDays(3), null, false));
         assertBackfillInvalid(() -> aggregateService.backfill(
@@ -325,20 +382,60 @@ public class CollectorAggregateServiceImplTest extends CollectorAggregatePgTestS
                 CollectorAggregateType.HOUR, BASE_TIME, BASE_TIME.plusDays(31), null, false));
         assertBackfillInvalid(() -> aggregateService.backfill(
                 CollectorAggregateType.DAY, BASE_TIME, BASE_TIME.plusDays(31), null, false));
+    }
 
-        // 缩短 raw 保留期后，fromRaw 的 2 天范围虽满足 minute 上限，仍必须因 raw 过期被拒绝。
-        setRawRetentionDays(1);
-        ServiceException rawExpired = assertThrows(ServiceException.class, () -> aggregateService.backfill(
-                CollectorAggregateType.MINUTE, BASE_TIME, BASE_TIME.plusDays(2), null, true, false));
-        assertEquals(AGGREGATE_BACKFILL_INVALID.getCode(), rawExpired.getCode());
-        assertTrue(rawExpired.getMessage().contains("raw 已过期"));
-        assertFalse(rawExpired.getMessage().contains("%s"));
-        assertFalse(rawExpired.getMessage().contains("%d"));
+    @Test
+    public void backfill_rejectsOldRawStartEvenForNarrowRangeAndAllowsExactBoundary() throws Exception {
+        setChannels(channel(1, 7, "normal"));
+        LocalDateTime now = BASE_TIME.plusDays(10);
+        setClock(now);
+        setRawRetentionDays(5);
+        setRawRetentionPolicyDays(null);
+
+        // 区间本身只有 1 秒，但起点超出 raw 保留期，仍必须拒绝；不能只看区间跨度。
+        LocalDateTime expiredFrom = now.minusDays(5).minusSeconds(1);
+        ServiceException expired = assertThrows(ServiceException.class, () -> aggregateService.backfill(
+                CollectorAggregateType.MINUTE, expiredFrom, expiredFrom.plusSeconds(1), List.of(1L), true));
+        assertEquals(AGGREGATE_BACKFILL_INVALID.getCode(), expired.getCode());
+        assertTrue(expired.getMessage().contains("raw 已过期"));
+        assertTrue(expired.getMessage().contains("5 天"));
+        assertFalse(expired.getMessage().contains("%s"));
+        assertFalse(expired.getMessage().contains("%d"));
+
+        // 起点恰好等于 now - retentionDays 时必须放行。
+        LocalDateTime boundaryFrom = now.minusDays(5);
+        CollectorAggregateService.AggregateResult boundary = aggregateService.backfill(
+                CollectorAggregateType.MINUTE, boundaryFrom, boundaryFrom.plusSeconds(1), List.of(1L), true);
+        assertEquals("边界内无 raw 时按整批跳过，但不能因保留期误拒", 1, boundary.skippedEmptyBatches());
+    }
+
+    @Test
+    public void backfill_rawRetentionPrefersDatabasePolicyOverConfig() throws Exception {
+        setChannels(channel(1, 7, "normal"));
+        LocalDateTime now = BASE_TIME.plusDays(10);
+        setClock(now);
+        setRawRetentionDays(30);
+
+        // 数据库策略 1 天优先于配置 30 天，2 天前的窄区间必须被拒。
+        setRawRetentionPolicyDays(1);
+        LocalDateTime oldFrom = now.minusDays(2);
+        ServiceException dbPolicy = assertThrows(ServiceException.class, () -> aggregateService.backfill(
+                CollectorAggregateType.MINUTE, oldFrom, oldFrom.plusSeconds(1), List.of(1L), true));
+        assertEquals(AGGREGATE_BACKFILL_INVALID.getCode(), dbPolicy.getCode());
+        assertTrue(dbPolicy.getMessage().contains("1 天"));
+        assertFalse(dbPolicy.getMessage().contains("30 天"));
+
+        // 数据库策略放宽后同一区间应放行，证明未继续使用配置值。
+        setRawRetentionPolicyDays(7);
+        CollectorAggregateService.AggregateResult allowed = aggregateService.backfill(
+                CollectorAggregateType.MINUTE, oldFrom, oldFrom.plusSeconds(1), List.of(1L), true);
+        assertEquals(1, allowed.skippedEmptyBatches());
     }
 
     @Test
     public void backfill_skipsEmptySourceUnlessForceClean() throws Exception {
         setChannels(channel(1, 7, "fast"));
+        setClock(BASE_TIME.plusDays(1));
         executeSql("""
                 INSERT INTO collector_sample_raw (channel_id, device_id, collect_time, value, quality)
                 SELECT 1, 7, TIMESTAMP '2026-01-01 00:00:00' + (i * interval '1 second'),
@@ -352,6 +449,7 @@ public class CollectorAggregateServiceImplTest extends CollectorAggregatePgTestS
                 CollectorAggregateType.SECOND, BASE_TIME, to, ids, false, false);
         assertEquals(60, seeded.bucketCount());
         assertEquals(0, seeded.skippedEmptyBatches());
+        assertEquals(0, seeded.preservedBuckets());
         assertEquals(60, countRows("collector_aggregate_second"));
 
         executeSql("DELETE FROM collector_sample_raw WHERE channel_id = 1");
@@ -359,17 +457,20 @@ public class CollectorAggregateServiceImplTest extends CollectorAggregatePgTestS
                 CollectorAggregateType.SECOND, BASE_TIME, to, ids, true, false, false);
         assertEquals("源为空时不得写入空批次", 0, skipped.bucketCount());
         assertEquals("跳过的批次数必须返回", 1, skipped.skippedEmptyBatches());
+        assertEquals("无源时必须报告保留的旧桶数", 60, skipped.preservedBuckets());
         assertEquals("源为空时必须保留旧聚合", 60, countRows("collector_aggregate_second"));
 
         CollectorAggregateService.AggregateResult cleaned = aggregateService.backfill(
                 CollectorAggregateType.SECOND, BASE_TIME, to, ids, true, false, true);
         assertEquals("forceClean 不计入跳过批次", 0, cleaned.skippedEmptyBatches());
+        assertEquals("forceClean 不保留任何旧桶", 0, cleaned.preservedBuckets());
         assertEquals("forceClean 才允许以空结果清空目标区间", 0, countRows("collector_aggregate_second"));
     }
 
     @Test
     public void backfill_upperLayerKeepsOldRowsWhenSourceGap() throws Exception {
         setChannels(channel(1, 7, "normal"));
+        setClock(BASE_TIME.plusDays(1));
         executeSql("""
                 INSERT INTO collector_aggregate_hour
                     (channel_id, device_id, bucket_time, sample_count, good_count, valid_count,
@@ -381,6 +482,7 @@ public class CollectorAggregateServiceImplTest extends CollectorAggregatePgTestS
         CollectorAggregateService.AggregateResult result = aggregateService.backfill(
                 CollectorAggregateType.HOUR, BASE_TIME, to, List.of(1L), false, false, false);
         assertEquals("小时层无分钟源且 raw 也为空，必须跳过该批", 1, result.skippedEmptyBatches());
+        assertEquals("无源小时桶必须计入保留数", 1, result.preservedBuckets());
         assertEquals("旧小时聚合不能因下层缺口被删除", 1, countRows("collector_aggregate_hour"));
         assertEquals(Integer.valueOf(999), selectBuckets("collector_aggregate_hour", false)
                 .get(0).getSampleCount());
@@ -409,13 +511,16 @@ public class CollectorAggregateServiceImplTest extends CollectorAggregatePgTestS
         assertEquals(0, countRows("collector_aggregate_minute"));
     }
 
-    private void insertStaleBucket(String table, boolean day) throws Exception {
+    private void insertBucket(String table, boolean day, LocalDateTime bucketTime, int sampleCount)
+            throws Exception {
         executeSql("""
                 INSERT INTO %s (channel_id, device_id, %s, sample_count, good_count, valid_count,
                     bad_count, value_avg, value_min, value_max, value_sum, value_first, value_last)
-                VALUES (1, 7, %s, 999, 999, 999, 0, 999, 999, 999, 999999, 999, 999)
+                VALUES (1, 7, %s, %d, %d, %d, 0, 999, 999, 999, 999999, 999, 999)
                 """.formatted(table, day ? "bucket_date" : "bucket_time",
-                day ? "DATE '2026-01-01'" : "TIMESTAMP '2026-01-01 00:01:30'"));
+                day ? "DATE '" + bucketTime.toLocalDate() + "'"
+                        : "TIMESTAMP '" + bucketTime + "'",
+                sampleCount, sampleCount, sampleCount));
     }
 
     private void assertBackfillInvalid(org.junit.function.ThrowingRunnable runnable) {
@@ -427,6 +532,12 @@ public class CollectorAggregateServiceImplTest extends CollectorAggregatePgTestS
         Field field = CollectorAggregateServiceImpl.class.getDeclaredField("rawRetentionDays");
         field.setAccessible(true);
         field.setLong(aggregateService, days);
+    }
+
+    private void setClock(LocalDateTime now) {
+        aggregateService.setClock(Clock.fixed(
+                now.atZone(CollectorAggregateServiceImpl.SHANGHAI_ZONE).toInstant(),
+                CollectorAggregateServiceImpl.SHANGHAI_ZONE));
     }
 
     private List<Long> ids(long from, long to) {

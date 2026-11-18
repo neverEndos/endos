@@ -33,14 +33,14 @@ public class CollectorAggregateBackfillReqVO {
     @Size(max = 50, message = "单次回填通道数不能超过 50")
     private List<Long> channelIds;
 
-    @Schema(description = "是否绕过下层聚合直接从 raw 重算，默认 false；范围不能超过 raw 保留期", example = "false")
+    @Schema(description = "是否绕过下层聚合直接从 raw 重算，默认 false；起点不能早于 raw 保留期", example = "false")
     private Boolean fromRaw = false;
 
     @Schema(description = "是否按 second→minute→hour→day 级联重建上层，默认 false", example = "false")
     private Boolean cascade = false;
 
-    @Schema(description = "源为空时是否仍清空目标区间，默认 false；true 会删除旧聚合，属于高风险操作",
-            example = "false")
+    @Schema(description = "是否按区间整段清空目标，默认 false；true 会删除无源旧聚合，"
+            + "需要独立权限 collector:aggregate:force-clean", example = "false")
     private Boolean forceClean = false;
 
 }

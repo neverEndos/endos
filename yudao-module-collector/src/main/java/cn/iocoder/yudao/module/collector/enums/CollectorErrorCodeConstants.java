@@ -54,5 +54,7 @@ public interface CollectorErrorCodeConstants {
 
     // ========== 聚合 1-023-006-000 ==========
     ErrorCode AGGREGATE_BACKFILL_INVALID = new ErrorCode(1_023_006_000, "聚合回填参数不合法：{}");
+    ErrorCode AGGREGATE_FORCE_CLEAN_FORBIDDEN = new ErrorCode(1_023_006_001,
+            "没有聚合强制清空权限（collector:aggregate:force-clean）");
 
 }

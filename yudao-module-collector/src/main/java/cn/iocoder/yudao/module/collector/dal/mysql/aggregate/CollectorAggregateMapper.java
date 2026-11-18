@@ -102,7 +102,27 @@ public interface CollectorAggregateMapper {
     int upsertBuckets(@Param("targetTable") String targetTable, @Param("day") boolean day,
                       @Param("buckets") List<CollectorAggregateBucketDO> buckets);
 
-    /** 显式回填前清空目标区间；定时任务不调用，避免删除仍保留的历史聚合。 */
+    /** 查询目标表指定区间内已有桶时间，用于区分本轮可重建桶与必须保留的无源旧桶。 */
+    @Select("""
+            <script>
+            SELECT <choose><when test="day">bucket_date::timestamp</when><otherwise>bucket_time</otherwise></choose>
+                AS bucket_time
+            FROM ${targetTable}
+            WHERE channel_id = #{channelId}
+              AND <choose><when test="day">bucket_date</when><otherwise>bucket_time</otherwise></choose>
+                  &gt;= <choose><when test="day">CAST(#{from} AS date)</when><otherwise>#{from}</otherwise></choose>
+              AND <choose><when test="day">bucket_date</when><otherwise>bucket_time</otherwise></choose>
+                  &lt; <choose><when test="day">CAST(#{to} AS date)</when><otherwise>#{to}</otherwise></choose>
+            ORDER BY 1
+            </script>
+            """)
+    List<LocalDateTime> selectTargetBucketTimes(@Param("targetTable") String targetTable,
+                                                @Param("day") boolean day,
+                                                @Param("channelId") Long channelId,
+                                                @Param("from") LocalDateTime from,
+                                                @Param("to") LocalDateTime to);
+
+    /** forceClean 专用：按区间整段清空；普通回填只调用下面的按桶删除。 */
     @Delete("""
             <script>
             DELETE FROM ${targetTable}
@@ -116,6 +136,32 @@ public interface CollectorAggregateMapper {
     int deleteBuckets(@Param("targetTable") String targetTable, @Param("day") boolean day,
                       @Param("channelId") Long channelId,
                       @Param("from") LocalDateTime from, @Param("to") LocalDateTime to);
+
+    /** 只删除本轮确有源覆盖、即将重新写入的目标桶；调用方必须保证 bucketTimes 非空。 */
+    @Delete("""
+            <script>
+            DELETE FROM ${targetTable}
+            WHERE channel_id = #{channelId}
+              AND <choose><when test="day">bucket_date</when><otherwise>bucket_time</otherwise></choose>
+                  IN
+            <foreach collection="bucketTimes" item="item" open="(" separator="," close=")">
+                <choose><when test="day">CAST(#{item} AS date)</when><otherwise>#{item}</otherwise></choose>
+            </foreach>
+            </script>
+            """)
+    int deleteBucketsByTimes(@Param("targetTable") String targetTable, @Param("day") boolean day,
+                             @Param("channelId") Long channelId,
+                             @Param("bucketTimes") List<LocalDateTime> bucketTimes);
+
+    /** 读取 raw 保留天数；没有策略行时返回 null，由 Service 回落 yudao.collector.aggregate.raw-retention-days。 */
+    @Select("""
+            SELECT retention_days
+            FROM collector_retention_policy
+            WHERE data_class = #{dataClass} AND deleted = 0
+            ORDER BY enabled DESC, id
+            LIMIT 1
+            """)
+    Integer selectRetentionDays(@Param("dataClass") String dataClass);
 
     @Insert("""
             INSERT INTO collector_aggregate_watermark (

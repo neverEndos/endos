@@ -70,7 +70,7 @@ abstract class CollectorAggregatePgTestSupport {
                     DROP TABLE IF EXISTS collector_sample_raw, collector_channel,
                         collector_aggregate_second, collector_aggregate_minute,
                         collector_aggregate_hour, collector_aggregate_day,
-                        collector_aggregate_watermark CASCADE
+                        collector_aggregate_watermark, collector_retention_policy CASCADE
                     """);
             statement.execute("""
                     CREATE TABLE collector_channel (
@@ -100,6 +100,13 @@ abstract class CollectorAggregatePgTestSupport {
                         last_error varchar(500), locked_until timestamp(3),
                         last_success_time timestamp(3), update_time timestamp(3) DEFAULT CURRENT_TIMESTAMP NOT NULL,
                         PRIMARY KEY (agg_type, channel_id)
+                    )
+                    """);
+            statement.execute("""
+                    CREATE TABLE collector_retention_policy (
+                        id bigserial PRIMARY KEY, data_class varchar(32) NOT NULL,
+                        retention_days integer NOT NULL, enabled smallint DEFAULT 1 NOT NULL,
+                        deleted smallint DEFAULT 0 NOT NULL
                     )
                     """);
         }
@@ -292,6 +299,20 @@ abstract class CollectorAggregatePgTestSupport {
             return;
         }
         assertEquals(message, expected, actual, 1e-9);
+    }
+
+    /** 设置数据库中的 sample_raw 保留策略；传 null 表示清空，让 Service 回落配置项。 */
+    protected void setRawRetentionPolicyDays(Integer days) throws SQLException {
+        try (Connection connection = DriverManager.getConnection(URL, USER, PASSWORD);
+             Statement statement = connection.createStatement()) {
+            statement.execute("DELETE FROM collector_retention_policy WHERE data_class = 'sample_raw'");
+            if (days != null) {
+                statement.execute("""
+                        INSERT INTO collector_retention_policy (data_class, retention_days, enabled, deleted)
+                        VALUES ('sample_raw', %d, 1, 0)
+                        """.formatted(days));
+            }
+        }
     }
 
     protected void executeSql(String sql) throws SQLException {
