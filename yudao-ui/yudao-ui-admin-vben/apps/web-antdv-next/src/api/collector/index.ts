@@ -289,6 +289,53 @@ export namespace CollectorApi {
     serverTime: number;
   }
 
+  /** 趋势查询数据点 */
+  export interface TrendPoint {
+    /** 桶起点或抽样点时间（epoch millis） */
+    t: number;
+    /** 原始采样值；仅 kind=raw 的抽样序列返回 */
+    value?: null | number;
+    /** 桶内有效样本均值 */
+    avg?: null | number;
+    min?: null | number;
+    max?: null | number;
+    /** 桶内有效样本数（quality=0 且 value 非 NULL） */
+    count?: null | number;
+  }
+
+  /** 趋势序列 */
+  export interface TrendSeries {
+    channelId: number;
+    channelName?: string;
+    unit?: null | string;
+    dataProfile?: string;
+    /** 数据源：raw|second|minute|hour|day */
+    source: string;
+    /** 实际桶宽（秒） */
+    bucketSeconds: number;
+    /** aggregate 聚合线、raw 原始点叠加 */
+    kind: string;
+    points: TrendPoint[];
+  }
+
+  /** 趋势查询结果 */
+  export interface TrendSeriesResult {
+    /** raw|second|minute|hour|day；多通道跨层时为 mixed */
+    sourceSummary: string;
+    series: TrendSeries[];
+  }
+
+  /** 趋势查询参数 */
+  export interface TrendSeriesParams {
+    deviceId?: number;
+    channelIds: number[];
+    /** epoch millis；按 Asia/Shanghai 墙钟解释 */
+    from: number;
+    to: number;
+    granularity?: string;
+    includeRaw?: boolean;
+  }
+
   /** 通道阈值批量更新项 */
   export interface ChannelThresholdBatchItem {
     channelId: number;
@@ -718,5 +765,15 @@ export function getDashboardLatest(deviceId: number) {
   return requestClient.get<CollectorApi.DashboardLatest>(
     '/collector/dashboard/latest',
     { params: { deviceId } },
+  );
+}
+
+// ==================== 历史趋势 ====================
+
+/** 查询历史趋势；后端按数据画像与范围自动选源，并按点数上限放大桶宽 */
+export function getTrendSeries(params: CollectorApi.TrendSeriesParams) {
+  return requestClient.get<CollectorApi.TrendSeriesResult>(
+    '/collector/trend/series',
+    { params },
   );
 }
