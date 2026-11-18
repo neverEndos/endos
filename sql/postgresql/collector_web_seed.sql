@@ -4,6 +4,7 @@
 -- 1. HSI 协议按 protocol_code 判重，已存在则跳过；不会覆盖已有 Schema。
 -- 2. 菜单固定使用编号 780~805。写入前逐 ID 预检（包含 deleted=1 的历史行）：
 --    已占用行必须与本种子的 name/permission/type 完全一致，否则立即报错并整体回滚。
+--    新增 804（趋势分析）前同样先做 ID 冲突预检，不会覆盖其他菜单。
 -- 3. super_admin 只授权本次种子中 name/permission/type 精确匹配的 collector 菜单，
 --    不再按 780~805 区间盲授权；角色菜单按 (role_id, menu_id) 判重。
 -- 4. 看板页面依赖设备查询权限 collector:device:query：已获得看板菜单（802）的
@@ -45,8 +46,8 @@ WHERE NOT EXISTS (
     SELECT 1 FROM public.collector_protocol WHERE protocol_code = 'hsi_rs485' AND deleted = 0
 );
 
--- ========== 本次菜单种子（目录 + 8 个页面 + 16 个按钮） ==========
--- 803 聚合数据回填、805 聚合强制清空仅为 API 权限点，无页面入口；804 保留给趋势分析页面；
+-- ========== 本次菜单种子（目录 + 9 个页面 + 16 个按钮） ==========
+-- 803 聚合数据回填、805 聚合强制清空仅为 API 权限点，无页面入口；804 为趋势分析页面；
 -- 请通过 POST /admin-api/collector/aggregate/backfill 使用，forceClean=true 需要 805 权限。
 CREATE TEMP TABLE collector_menu_seed (
     id bigint PRIMARY KEY,
@@ -73,6 +74,7 @@ INSERT INTO collector_menu_seed (
     (785, 780, '参数模板', 'collector:sensor-template:query', 2, 5, 'sensor-template', 'ep:document', 'collector/sensor-template/index', 'CollectorSensorTemplate'),
     (786, 780, '采集协议', 'collector:protocol:query', 2, 6, 'protocol', 'ep:link', 'collector/protocol/index', 'CollectorProtocol'),
     (801, 780, '报警记录', 'collector:alarm:query', 2, 7, 'alarm', 'ep:warning', 'collector/alarm/index', 'CollectorAlarm'),
+    (804, 780, '趋势分析', 'collector:trend:query', 2, 9, 'trend', 'ep:trend-charts', 'collector/trend/index', 'CollectorTrend'),
     (787, 781, '采集设备新增', 'collector:device:create', 3, 1, '', '', NULL, NULL),
     (788, 781, '采集设备修改', 'collector:device:update', 3, 2, '', '', NULL, NULL),
     (789, 781, '采集设备删除', 'collector:device:delete', 3, 3, '', '', NULL, NULL),
