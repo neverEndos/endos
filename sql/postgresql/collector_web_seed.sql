@@ -2,10 +2,10 @@
 --
 -- 幂等与冲突说明：
 -- 1. HSI 协议按 protocol_code 判重，已存在则跳过；不会覆盖已有 Schema。
--- 2. 菜单固定使用编号 780~804。写入前逐 ID 预检（包含 deleted=1 的历史行）：
+-- 2. 菜单固定使用编号 780~805。写入前逐 ID 预检（包含 deleted=1 的历史行）：
 --    已占用行必须与本种子的 name/permission/type 完全一致，否则立即报错并整体回滚。
 -- 3. super_admin 只授权本次种子中 name/permission/type 精确匹配的 collector 菜单，
---    不再按 780~804 区间盲授权；角色菜单按 (role_id, menu_id) 判重。
+--    不再按 780~805 区间盲授权；角色菜单按 (role_id, menu_id) 判重。
 -- 4. 看板页面依赖设备查询权限 collector:device:query：已获得看板菜单（802）的
 --    任何角色都会幂等补齐采集设备菜单（781），避免设备下拉请求 403。
 -- 5. 本脚本只负责协议注册行、菜单与角色授权，演示设备/传感器/通道
@@ -46,8 +46,8 @@ WHERE NOT EXISTS (
 );
 
 -- ========== 本次菜单种子（目录 + 8 个页面 + 16 个按钮） ==========
--- 803 聚合数据回填、804 聚合强制清空仅为 API 权限点，无页面入口；
--- 请通过 POST /admin-api/collector/aggregate/backfill 使用，forceClean=true 需要 804 权限。
+-- 803 聚合数据回填、805 聚合强制清空仅为 API 权限点，无页面入口；804 保留给趋势分析页面；
+-- 请通过 POST /admin-api/collector/aggregate/backfill 使用，forceClean=true 需要 805 权限。
 CREATE TEMP TABLE collector_menu_seed (
     id bigint PRIMARY KEY,
     parent_id bigint NOT NULL,
@@ -88,7 +88,7 @@ INSERT INTO collector_menu_seed (
     (799, 785, '参数模板修改', 'collector:sensor-template:update', 3, 2, '', '', NULL, NULL),
     (800, 785, '参数模板删除', 'collector:sensor-template:delete', 3, 3, '', '', NULL, NULL),
     (803, 780, '聚合数据回填', 'collector:aggregate:rebuild', 3, 8, '', '', NULL, NULL),
-    (804, 780, '聚合强制清空', 'collector:aggregate:force-clean', 3, 9, '', '', NULL, NULL);
+    (805, 780, '聚合强制清空', 'collector:aggregate:force-clean', 3, 9, '', '', NULL, NULL);
 
 -- 任何固定 ID 被非本种子菜单占用（包括逻辑删除行）都明确失败，不覆盖、不授权。
 DO $$
