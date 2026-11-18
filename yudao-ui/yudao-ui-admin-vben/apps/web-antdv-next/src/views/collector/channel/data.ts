@@ -86,6 +86,19 @@ export function useChannelFormSchema(): VbenFormSchema[] {
         .default(1),
     },
     {
+      fieldName: 'dataProfile',
+      label: '数据画像',
+      component: 'Select',
+      componentProps: {
+        options: [
+          { label: '常规', value: 'normal' },
+          { label: '高频', value: 'fast' },
+        ],
+      },
+      help: '高频通道写入秒聚合；常规通道从原始数据直接计算分钟聚合',
+      rules: z.enum(['normal', 'fast']).default('normal'),
+    },
+    {
       fieldName: 'unit',
       label: '单位',
       component: 'Input',
@@ -512,6 +525,12 @@ export function useGridColumns(
       title: '值类别',
       width: 90,
       slots: { default: 'valueKind' },
+    },
+    {
+      field: 'dataProfile',
+      title: '数据画像',
+      width: 100,
+      formatter: ({ cellValue }) => (cellValue === 'fast' ? '高频' : '常规'),
     },
     {
       field: 'valueMin',

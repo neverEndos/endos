@@ -58,6 +58,10 @@ public class CollectorChannelDO extends BaseDO {
      */
     private String valueKind;
     /**
+     * 数据画像：normal 常规、fast 高频
+     */
+    private String dataProfile;
+    /**
      * 协议专用寻址/解析参数 JSON
      */
     @TableField(typeHandler = CollectorJsonbTypeHandler.class)

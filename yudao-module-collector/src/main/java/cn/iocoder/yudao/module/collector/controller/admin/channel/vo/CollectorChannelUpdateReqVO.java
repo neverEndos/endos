@@ -4,6 +4,7 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
@@ -25,6 +26,10 @@ public class CollectorChannelUpdateReqVO {
     @Min(value = 0, message = "启用开关只能是 0 或 1")
     @Max(value = 1, message = "启用开关只能是 0 或 1")
     private Integer enabled;
+
+    @Schema(description = "数据画像：normal 常规、fast 高频", example = "normal")
+    @Pattern(regexp = "normal|fast", message = "数据画像只能是 normal 或 fast")
+    private String dataProfile;
 
     @Schema(description = "协议专用寻址/解析参数 JSON 对象")
     private Map<String, Object> channelConfig;

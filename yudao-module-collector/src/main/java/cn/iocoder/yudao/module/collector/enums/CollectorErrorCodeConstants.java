@@ -52,4 +52,9 @@ public interface CollectorErrorCodeConstants {
     ErrorCode CHANNEL_NOT_IN_DEVICE = new ErrorCode(1_023_005_004, "通道({})不存在或不属于设备({})");
     ErrorCode CHANNEL_ENUM_THRESHOLD_FORBIDDEN = new ErrorCode(1_023_005_005, "枚举通道({})不允许修改数值阈值、报警开关与死区");
 
+    // ========== 聚合 1-023-006-000 ==========
+    ErrorCode AGGREGATE_BACKFILL_INVALID = new ErrorCode(1_023_006_000, "聚合回填参数不合法：{}");
+    ErrorCode AGGREGATE_FORCE_CLEAN_FORBIDDEN = new ErrorCode(1_023_006_001,
+            "没有聚合强制清空权限（collector:aggregate:force-clean）");
+
 }

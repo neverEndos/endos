@@ -37,6 +37,9 @@ public class CollectorChannelRespVO {
     @Schema(description = "值类别：number 数值、enum 枚举", example = "number")
     private String valueKind;
 
+    @Schema(description = "数据画像：normal 常规、fast 高频", example = "normal")
+    private String dataProfile;
+
     @Schema(description = "协议专用寻址/解析参数 JSON 对象")
     private Map<String, Object> channelConfig;
 

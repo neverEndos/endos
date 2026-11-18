@@ -263,6 +263,10 @@ yudao:
 --- #################### 芋道相关配置 ####################
 
 yudao:
+  collector:
+    aggregate:
+      grace-seconds: 5 # 聚合桶闭合宽限秒数，只计算桶结束时间早于 now-grace 的桶
+      raw-retention-days: 30 # raw 保留天数，fromRaw 回填范围超过该值会被拒绝；需与 sample_raw 保留策略一致
   info:
     version: 1.0.0
     base-package: cn.iocoder.yudao
