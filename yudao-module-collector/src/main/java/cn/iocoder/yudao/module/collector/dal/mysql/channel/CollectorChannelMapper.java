@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.collector.dal.mysql.channel;
 
+import cn.iocoder.yudao.framework.common.pojo.PageParam;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.framework.mybatis.core.mapper.BaseMapperX;
 import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
@@ -23,6 +24,20 @@ public interface CollectorChannelMapper extends BaseMapperX<CollectorChannelDO> 
                 .likeIfPresent(CollectorChannelDO::getChannelName, reqVO.getChannelName())
                 .eqIfPresent(CollectorChannelDO::getValueKind, reqVO.getValueKind())
                 .eqIfPresent(CollectorChannelDO::getEnabled, reqVO.getEnabled())
+                .orderByAsc(CollectorChannelDO::getSort)
+                .orderByAsc(CollectorChannelDO::getId));
+    }
+
+    /**
+     * 趋势选择器分页：只返回指定设备下的启用通道，可按通道名称模糊匹配。
+     * 由趋势查询权限保护，供只有 collector:trend:query 的角色加载通道下拉。
+     */
+    default PageResult<CollectorChannelDO> selectEnabledPage(PageParam pageParam,
+                                                             Long deviceId, String channelName) {
+        return selectPage(pageParam, new LambdaQueryWrapperX<CollectorChannelDO>()
+                .eq(CollectorChannelDO::getDeviceId, deviceId)
+                .eq(CollectorChannelDO::getEnabled, 1)
+                .likeIfPresent(CollectorChannelDO::getChannelName, channelName)
                 .orderByAsc(CollectorChannelDO::getSort)
                 .orderByAsc(CollectorChannelDO::getId));
     }

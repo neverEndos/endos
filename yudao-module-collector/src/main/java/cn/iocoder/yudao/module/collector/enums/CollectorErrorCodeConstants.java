@@ -57,4 +57,10 @@ public interface CollectorErrorCodeConstants {
     ErrorCode AGGREGATE_FORCE_CLEAN_FORBIDDEN = new ErrorCode(1_023_006_001,
             "没有聚合强制清空权限（collector:aggregate:force-clean）");
 
+    // ========== 趋势 1-023-007-000 ==========
+    ErrorCode TREND_QUERY_INVALID = new ErrorCode(1_023_007_000, "趋势查询参数不合法：{}");
+    ErrorCode TREND_GRANULARITY_NOT_ALLOWED = new ErrorCode(1_023_007_001, "粒度({})在所选时间范围不可用，{}");
+    ErrorCode TREND_RAW_OVERLAY_RANGE_EXCEEDED = new ErrorCode(1_023_007_002,
+            "叠加原始点仅支持 {} 小时以内的时间范围");
+
 }
