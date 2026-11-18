@@ -26,8 +26,8 @@ import {
 import dayjs from 'dayjs';
 
 import {
-  getChannelPage,
-  getDeviceSimpleList,
+  getTrendChannelPage,
+  getTrendDevices,
   getTrendSeries,
 } from '#/api/collector';
 
@@ -50,6 +50,7 @@ import TrendChart from './modules/trend-chart.vue';
 
 defineOptions({ name: 'CollectorTrend' });
 
+/** 一次成功查询的完整快照；图表、单位、图例、includeRaw、单双图展示都由它驱动 */
 interface AppliedQuery {
   channelIds: number[];
   compareMode: boolean;
@@ -63,6 +64,11 @@ interface AppliedQuery {
   to: number;
 }
 
+interface DisplayedState {
+  query: AppliedQuery;
+  result: CollectorApi.TrendSeriesResult;
+}
+
 interface ApiErrorLike {
   message?: string;
   response?: { data?: { msg?: string } };
@@ -72,8 +78,8 @@ type ChartHandle = {
   applyZoom: (start: number, end: number) => void;
 };
 
-const devices = ref<CollectorApi.DeviceSimple[]>([]);
-const channels = ref<CollectorApi.Channel[]>([]);
+const devices = ref<CollectorApi.TrendDevice[]>([]);
+const channels = ref<CollectorApi.TrendChannel[]>([]);
 const selectedDeviceId = ref<number>();
 const devicesLoading = ref(false);
 const channelsLoading = ref(false);
@@ -81,6 +87,7 @@ const queryLoading = ref(false);
 const loadError = ref<string>();
 const queryError = ref<string>();
 
+// ===== 草稿状态：仅驱动表单控件，不影响已展示的图表；下次成功查询后才生效 =====
 const preset = ref<TrendPresetValue>('1h');
 const customRange = ref<[Dayjs, Dayjs] | null>(null);
 const granularity = ref<TrendGranularityValue>('auto');
@@ -92,8 +99,8 @@ const leftChannelIds = ref<number[]>([]);
 const rightChannelIds = ref<number[]>([]);
 const singleChannelIds = ref<number[]>([]);
 
-const result = ref<CollectorApi.TrendSeriesResult>();
-const applied = ref<AppliedQuery>();
+// ===== 展示状态：仅由成功的查询原子替换；查询失败或修改草稿时保持不变 =====
+const displayed = ref<DisplayedState>();
 
 const leftChartRef = ref<ChartHandle>();
 const rightChartRef = ref<ChartHandle>();
@@ -109,10 +116,7 @@ const deviceOptions = computed(() =>
 );
 
 const channelOptions = computed(() => {
-  const enabled = channels.value.filter(
-    (channel) => channel.id !== undefined && channel.enabled !== 0,
-  );
-  const baseLabels = enabled.map((channel) =>
+  const baseLabels = channels.value.map((channel) =>
     channel.unit
       ? `${channel.channelName}（${channel.unit}）`
       : channel.channelName,
@@ -121,13 +125,13 @@ const channelOptions = computed(() => {
   for (const label of baseLabels) {
     counts.set(label, (counts.get(label) ?? 0) + 1);
   }
-  return enabled.map((channel, index) => {
+  return channels.value.map((channel, index) => {
     const base = baseLabels[index]!;
     return {
       // 同名通道（如两颗温度传感器）追加通道号，避免下拉与 legend 混淆
       label:
         (counts.get(base) ?? 0) > 1 ? `${base}（通道 ${channel.id}）` : base,
-      value: channel.id!,
+      value: channel.id,
     };
   });
 });
@@ -164,14 +168,28 @@ const currentChannelIds = computed(() => {
   return [...new Set(singleChannelIds.value)];
 });
 
+/** 图表布局由展示快照驱动；首次查询前跟随草稿，保证初始布局与选择器一致 */
+const chartCompareMode = computed(
+  () => displayed.value?.query.compareMode ?? compareMode.value,
+);
+
+/** 图表配色按展示快照的通道集合建立，草稿改动不会改变已展示图例颜色 */
+const displayedChannelIds = computed(() => {
+  const query = displayed.value?.query;
+  if (!query) return [];
+  return query.compareMode
+    ? [...new Set([...query.leftChannelIds, ...query.rightChannelIds])]
+    : [...new Set(query.singleChannelIds)];
+});
+
 const channelColors = computed(() =>
-  buildChannelColors(currentChannelIds.value),
+  buildChannelColors(displayedChannelIds.value),
 );
 
 const appliedRangeText = computed(() =>
-  applied.value
-    ? `${dayjs(applied.value.from).format('YYYY-MM-DD HH:mm')} ~ ${dayjs(
-        applied.value.to,
+  displayed.value
+    ? `${dayjs(displayed.value.query.from).format('YYYY-MM-DD HH:mm')} ~ ${dayjs(
+        displayed.value.query.to,
       ).format('YYYY-MM-DD HH:mm')}`
     : '--',
 );
@@ -192,7 +210,7 @@ function granularityLabel(value?: string): string {
   );
 }
 
-function rangeForQuery(): null | { from: number; to: number; seconds: number } {
+function rangeForQuery(): null | { from: number; seconds: number; to: number } {
   if (preset.value === 'custom') {
     const range = customRange.value;
     if (!range || range.length !== 2) {
@@ -226,8 +244,8 @@ function handleDeviceChange(value: number) {
   devicesGeneration += 1;
   queryGeneration += 1;
   selectedDeviceId.value = value;
-  result.value = undefined;
-  applied.value = undefined;
+  // 切换设备后旧通道选择与新设备无关：清空草稿与展示快照，按明确空态处理，不保留旧图
+  displayed.value = undefined;
   queryError.value = undefined;
   leftChannelIds.value = [];
   rightChannelIds.value = [];
@@ -240,21 +258,27 @@ function handleDeviceChange(value: number) {
   });
 }
 
-/** 加载设备下全部启用通道；按分页循环，避免通道数超过单页时被截断 */
+/** 通过趋势选择器接口加载设备下全部启用通道；循环分页直到取完 total，不静默截断 */
 async function loadChannels(deviceId: number) {
   const generation = devicesGeneration;
   channelsLoading.value = true;
   channels.value = [];
   loadError.value = undefined;
   try {
-    const all: CollectorApi.Channel[] = [];
-    for (let pageNo = 1; pageNo <= 10; pageNo++) {
-      const page = await getChannelPage({ deviceId, pageNo, pageSize: 100 });
+    const all: CollectorApi.TrendChannel[] = [];
+    let pageNo = 1;
+    for (;;) {
+      const page = await getTrendChannelPage({
+        deviceId,
+        pageNo,
+        pageSize: 200,
+      });
       all.push(...page.list);
       if (all.length >= page.total || page.list.length === 0) break;
+      pageNo += 1;
     }
     if (generation !== devicesGeneration) return;
-    channels.value = all.filter((channel) => channel.enabled !== 0);
+    channels.value = all;
   } catch (error) {
     if (generation !== devicesGeneration) return;
     loadError.value = resolveErrorMessage(error);
@@ -269,7 +293,6 @@ async function loadChannels(deviceId: number) {
 function applyDefaultChannels() {
   const ids = channels.value
     .map((channel) => channel.id)
-    .filter((id): id is number => id !== undefined)
     .slice(0, MAX_CHANNELS_TOTAL);
   if (compareMode.value) {
     const leftCount = Math.ceil(ids.length / 2);
@@ -342,6 +365,7 @@ const rightOptions = computed(() =>
 );
 
 function handleCompareModeChange(checked: boolean) {
+  // 只调整草稿选择；已展示图表在下次成功查询前保持不变
   if (checked) {
     const ids = [...new Set(singleChannelIds.value)].slice(
       0,
@@ -356,57 +380,83 @@ function handleCompareModeChange(checked: boolean) {
   }
 }
 
-function filterSeries(ids: number[]): CollectorApi.TrendSeries[] {
-  if (!result.value) return [];
-  const includeRawNow = includeRaw.value;
-  return result.value.series.filter(
+/** 图表序列只从展示快照中取：草稿修改通道或 includeRaw 不影响已展示结果 */
+function displayedSeries(ids: number[]): CollectorApi.TrendSeries[] {
+  const state = displayed.value;
+  if (!state) return [];
+  const includeRawNow = state.query.includeRaw;
+  return state.result.series.filter(
     (series) =>
       ids.includes(series.channelId) &&
       (includeRawNow || series.kind !== 'raw'),
   );
 }
 
-const leftSeries = computed(() => filterSeries(leftChannelIds.value));
-const rightSeries = computed(() => filterSeries(rightChannelIds.value));
-const singleSeries = computed(() => filterSeries(singleChannelIds.value));
+const displayedQuery = computed(() => displayed.value?.query);
+
+const leftSeries = computed(() =>
+  displayedSeries(displayedQuery.value?.leftChannelIds ?? []),
+);
+const rightSeries = computed(() =>
+  displayedSeries(displayedQuery.value?.rightChannelIds ?? []),
+);
+const singleSeries = computed(() =>
+  displayedSeries(displayedQuery.value?.singleChannelIds ?? []),
+);
 
 const leftHasData = computed(() => hasAnyPoint(leftSeries.value));
 const rightHasData = computed(() => hasAnyPoint(rightSeries.value));
 const singleHasData = computed(() => hasAnyPoint(singleSeries.value));
 
 const leftUnits = computed(() =>
-  distinctUnits(result.value?.series ?? [], leftChannelIds.value),
+  distinctUnits(leftSeries.value, displayedQuery.value?.leftChannelIds ?? []),
 );
 const rightUnits = computed(() =>
-  distinctUnits(result.value?.series ?? [], rightChannelIds.value),
+  distinctUnits(rightSeries.value, displayedQuery.value?.rightChannelIds ?? []),
 );
 const singleUnits = computed(() =>
-  distinctUnits(result.value?.series ?? [], singleChannelIds.value),
+  distinctUnits(
+    singleSeries.value,
+    displayedQuery.value?.singleChannelIds ?? [],
+  ),
 );
 
 const leftSummary = computed(() =>
-  describeChartSource(result.value?.series ?? [], leftChannelIds.value),
+  describeChartSource(
+    leftSeries.value,
+    displayedQuery.value?.leftChannelIds ?? [],
+  ),
 );
 const rightSummary = computed(() =>
-  describeChartSource(result.value?.series ?? [], rightChannelIds.value),
+  describeChartSource(
+    rightSeries.value,
+    displayedQuery.value?.rightChannelIds ?? [],
+  ),
 );
 const singleSummary = computed(() =>
-  describeChartSource(result.value?.series ?? [], singleChannelIds.value),
+  describeChartSource(
+    singleSeries.value,
+    displayedQuery.value?.singleChannelIds ?? [],
+  ),
+);
+
+/** 原始点叠加降级提示；仅当最后一次成功查询发生降级时展示 */
+const rawDegradedWarning = computed(() =>
+  displayed.value?.result.rawDegraded
+    ? (displayed.value.result.rawWarning ?? '原始点加载超时，已仅展示聚合趋势')
+    : undefined,
 );
 
 const hasSelection = computed(() => currentChannelIds.value.length > 0);
 
 function emptyText(ids: number[]): string {
+  if (!displayed.value) {
+    return '请选择通道并点击查询加载趋势';
+  }
   if (ids.length === 0) {
-    return compareMode.value ? '当前图表未选择通道' : '请选择通道';
-  }
-  if (!result.value || !applied.value) {
-    return queryError.value
-      ? '查询失败，请调整条件后重试'
-      : '请点击查询加载趋势';
-  }
-  if (filterSeries(ids).length === 0) {
-    return '所选通道不在上次查询结果中，请点击查询';
+    return displayed.value.query.compareMode
+      ? '当前图表未选择通道'
+      : '请选择通道';
   }
   return '所选时间范围无有效数据';
 }
@@ -460,13 +510,12 @@ async function query() {
     if (!body) {
       throw new Error('趋势接口返回为空');
     }
-    result.value = body;
-    applied.value = snapshot;
+    // 只有成功响应才原子替换展示快照；失败时保留上一次成功结果
+    displayed.value = { query: snapshot, result: body };
   } catch (error) {
     if (generation !== queryGeneration) return;
     queryError.value = resolveErrorMessage(error);
     message.error(queryError.value);
-    // 失败时保留上一次成功结果，由页面顶部提示说明数据未更新。
   } finally {
     if (generation === queryGeneration) {
       queryLoading.value = false;
@@ -475,12 +524,12 @@ async function query() {
 }
 
 function handleLeftZoom(payload: { end: number; start: number }) {
-  if (!compareMode.value) return;
+  if (!chartCompareMode.value) return;
   rightChartRef.value?.applyZoom(payload.start, payload.end);
 }
 
 function handleRightZoom(payload: { end: number; start: number }) {
-  if (!compareMode.value) return;
+  if (!chartCompareMode.value) return;
   leftChartRef.value?.applyZoom(payload.start, payload.end);
 }
 
@@ -501,7 +550,7 @@ async function init() {
   devicesLoading.value = true;
   loadError.value = undefined;
   try {
-    devices.value = await getDeviceSimpleList();
+    devices.value = await getTrendDevices();
     if (devices.value.length === 0) return;
     selectedDeviceId.value = devices.value[0]!.id;
     await loadChannels(selectedDeviceId.value);
@@ -620,9 +669,16 @@ onMounted(() => {
       >
         <template #message>
           查询失败：{{ queryError }}。
-          {{ result ? '图表保留上一次成功查询的结果。' : '' }}
+          {{ displayed ? '图表保留上一次成功查询的结果。' : '' }}
         </template>
       </Alert>
+      <Alert
+        v-if="rawDegradedWarning"
+        data-testid="trend-raw-degraded"
+        type="warning"
+        show-icon
+        :message="rawDegradedWarning"
+      />
 
       <Spin
         :spinning="devicesLoading || (channelsLoading && channels.length === 0)"
@@ -679,29 +735,29 @@ onMounted(() => {
           </div>
 
           <div
-            v-if="result"
+            v-if="displayed"
             data-testid="trend-summary"
             class="mt-3 flex flex-wrap items-center gap-2"
           >
             <Tag color="blue">
-              数据源：{{ sourceLabel(result.sourceSummary) }}
+              数据源：{{ sourceLabel(displayed.result.sourceSummary) }}
             </Tag>
             <Tag>时间范围：{{ appliedRangeText }}</Tag>
-            <Tag v-if="applied">
-              粒度：{{ granularityLabel(applied.granularity) }}
+            <Tag>粒度：{{ granularityLabel(displayed.query.granularity) }}</Tag>
+            <Tag v-if="displayed.query.includeRaw" color="orange">
+              含原始点叠加
             </Tag>
-            <Tag v-if="applied?.includeRaw" color="orange">含原始点叠加</Tag>
-            <Tag v-if="currentChannelIds.length">
+            <Tag v-if="displayedChannelIds.length">
               {{
-                compareMode
-                  ? `左侧 ${leftChannelIds.length} 条 / 右侧 ${rightChannelIds.length} 条`
-                  : `${singleChannelIds.length} 条通道`
+                displayed.query.compareMode
+                  ? `左侧 ${displayed.query.leftChannelIds.length} 条 / 右侧 ${displayed.query.rightChannelIds.length} 条`
+                  : `${displayed.query.singleChannelIds.length} 条通道`
               }}
             </Tag>
           </div>
 
           <Spin :spinning="queryLoading">
-            <div v-if="compareMode" class="mt-3 grid gap-3 xl:grid-cols-2">
+            <div v-if="chartCompareMode" class="mt-3 grid gap-3 xl:grid-cols-2">
               <Card size="small" class="min-w-0">
                 <template #title>左侧趋势</template>
                 <div class="mb-2 flex flex-wrap items-center gap-1 text-xs">
@@ -716,7 +772,7 @@ onMounted(() => {
                     ref="leftChartRef"
                     class="h-full"
                     :colors="channelColors"
-                    :range-seconds="applied?.rangeSeconds ?? 3600"
+                    :range-seconds="displayed?.query.rangeSeconds ?? 3600"
                     :series="leftSeries"
                     :sync-enabled="syncZoom"
                     @zoom="handleLeftZoom"
@@ -725,7 +781,11 @@ onMounted(() => {
                     v-else
                     class="absolute inset-0 flex items-center justify-center"
                   >
-                    <Empty :description="emptyText(leftChannelIds)" />
+                    <Empty
+                      :description="
+                        emptyText(displayed?.query.leftChannelIds ?? [])
+                      "
+                    />
                   </div>
                 </div>
               </Card>
@@ -743,7 +803,7 @@ onMounted(() => {
                     ref="rightChartRef"
                     class="h-full"
                     :colors="channelColors"
-                    :range-seconds="applied?.rangeSeconds ?? 3600"
+                    :range-seconds="displayed?.query.rangeSeconds ?? 3600"
                     :series="rightSeries"
                     :sync-enabled="syncZoom"
                     @zoom="handleRightZoom"
@@ -752,7 +812,11 @@ onMounted(() => {
                     v-else
                     class="absolute inset-0 flex items-center justify-center"
                   >
-                    <Empty :description="emptyText(rightChannelIds)" />
+                    <Empty
+                      :description="
+                        emptyText(displayed?.query.rightChannelIds ?? [])
+                      "
+                    />
                   </div>
                 </div>
               </Card>
@@ -770,14 +834,18 @@ onMounted(() => {
                   v-if="singleHasData"
                   class="h-full"
                   :colors="channelColors"
-                  :range-seconds="applied?.rangeSeconds ?? 3600"
+                  :range-seconds="displayed?.query.rangeSeconds ?? 3600"
                   :series="singleSeries"
                 />
                 <div
                   v-else
                   class="absolute inset-0 flex items-center justify-center"
                 >
-                  <Empty :description="emptyText(singleChannelIds)" />
+                  <Empty
+                    :description="
+                      emptyText(displayed?.query.singleChannelIds ?? [])
+                    "
+                  />
                 </div>
               </div>
             </Card>

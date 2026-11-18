@@ -142,8 +142,16 @@ export function buildChannelColors(
   return colors;
 }
 
+/**
+ * 序列是否含有可绘制的有效点：不能只看数组长度——avg/value 仍可能为 NULL
+ * （如整桶无有效统计值已被后端过滤、raw 序列降级为空），必须确认存在有限数值。
+ */
 export function hasAnyPoint(series: CollectorApi.TrendSeries[]): boolean {
-  return series.some((item) => item.points.length > 0);
+  return series.some((item) =>
+    item.points.some((point) =>
+      Number.isFinite(point.avg ?? point.value ?? Number.NaN),
+    ),
+  );
 }
 
 /** 数值展示：最多 3 位小数，剔除末尾 0 */

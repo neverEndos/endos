@@ -323,6 +323,10 @@ export namespace CollectorApi {
     /** raw|second|minute|hour|day；多通道跨层时为 mixed */
     sourceSummary: string;
     series: TrendSeries[];
+    /** 原始点叠加是否因超时降级；true 时 raw 序列为空，仅主聚合序列有效 */
+    rawDegraded?: boolean;
+    /** 原始点叠加降级时的中文警告信息 */
+    rawWarning?: null | string;
   }
 
   /** 趋势查询参数 */
@@ -334,6 +338,30 @@ export namespace CollectorApi {
     to: number;
     granularity?: string;
     includeRaw?: boolean;
+  }
+
+  /** 趋势选择器设备；仅趋势选择所需字段，由 collector:trend:query 保护 */
+  export interface TrendDevice {
+    id: number;
+    deviceName: string;
+  }
+
+  /** 趋势选择器通道；仅启用通道的趋势选择字段，由 collector:trend:query 保护 */
+  export interface TrendChannel {
+    id: number;
+    deviceId: number;
+    channelName: string;
+    unit?: null | string;
+    dataProfile?: string;
+    valueKind?: string;
+  }
+
+  /** 趋势选择器通道分页参数 */
+  export interface TrendChannelPageParams {
+    deviceId: number;
+    keyword?: string;
+    pageNo: number;
+    pageSize: number;
   }
 
   /** 通道阈值批量更新项 */
@@ -774,6 +802,23 @@ export function getDashboardLatest(deviceId: number) {
 export function getTrendSeries(params: CollectorApi.TrendSeriesParams) {
   return requestClient.get<CollectorApi.TrendSeriesResult>(
     '/collector/trend/series',
+    { params },
+  );
+}
+
+/** 查询趋势选择器设备列表；仅返回启用设备，供仅有趋势权限的角色加载设备下拉 */
+export function getTrendDevices() {
+  return requestClient.get<CollectorApi.TrendDevice[]>(
+    '/collector/trend/devices',
+  );
+}
+
+/** 查询趋势选择器通道分页；仅返回指定设备下的启用通道，支持名称关键字模糊匹配 */
+export function getTrendChannelPage(
+  params: CollectorApi.TrendChannelPageParams,
+) {
+  return requestClient.get<PageResult<CollectorApi.TrendChannel>>(
+    '/collector/trend/channels',
     { params },
   );
 }
