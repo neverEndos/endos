@@ -48,8 +48,12 @@ public enum CollectorTrendGranularity {
         return this != AUTO;
     }
 
-    public boolean supportsRange(long rangeSeconds) {
-        return rangeSeconds <= maxRange.toSeconds();
+    /**
+     * 校验显式粒度是否承载该时间范围。入参为毫秒：范围上限按毫秒核算，
+     * 2 小时 + 999ms 这类输入不会被向下取整后误判为可用。
+     */
+    public boolean supportsRangeMillis(long rangeMillis) {
+        return rangeMillis <= maxRange.toMillis();
     }
 
     /** 解析 Web 入参；非法值抛出 IllegalArgumentException，由 Service 转为错误码。 */

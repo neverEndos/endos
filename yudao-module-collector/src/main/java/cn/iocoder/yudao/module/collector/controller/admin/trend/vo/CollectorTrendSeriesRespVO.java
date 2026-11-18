@@ -17,6 +17,13 @@ public class CollectorTrendSeriesRespVO {
             requiredMode = Schema.RequiredMode.REQUIRED)
     private List<Series> series;
 
+    @Schema(description = "原始点叠加是否因超时降级；true 时仅主聚合序列有效，raw 序列为空",
+            example = "false")
+    private Boolean rawDegraded;
+
+    @Schema(description = "原始点叠加降级时的中文警告信息；未降级时为空", example = "原始点加载超时，已仅展示聚合趋势")
+    private String rawWarning;
+
     @Schema(description = "管理后台 - 趋势序列")
     @Data
     public static class Series {

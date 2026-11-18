@@ -62,22 +62,38 @@ public enum CollectorTrendSource {
     }
 
     /**
-     * 计算实际返回的桶宽：先保证至少为层的基础桶宽，再在层内阶梯中选不小于
-     * ceil(范围秒数 / 1000) 的最小值，从而把点数控制在 {@link #MAX_POINTS_PER_SERIES} 以内。
+     * 计算实际返回的桶宽：在层内阶梯中，选择满足“最坏情况下桶数不超过
+     * {@link #MAX_POINTS_PER_SERIES}”的最小桶宽。
+     *
+     * <p>SQL 的 {@code date_bin} 固定以 2000-01-01 为分桶原点，而 from/to 由调用方任意指定：
+     * 当范围恰好是桶宽整数倍且 from 不在桶边界上时，首尾会各多覆盖半桶，最坏桶数为
+     * {@code ceil(范围 / 桶宽) + 1}（见 {@link #worstBucketCount(long, long)}）。
+     * 因此这里不能用 {@code ceil(范围 / 1000)} 直接选档，否则单序列可能返回 1001 个点。</p>
      */
     public int bucketSeconds(int baseSeconds, long rangeSeconds) {
         int base = Math.max(baseSeconds, getBaseBucketSeconds());
-        long target = (rangeSeconds + MAX_POINTS_PER_SERIES - 1) / MAX_POINTS_PER_SERIES;
-        if (target <= base) {
-            return base;
-        }
         for (int candidate : bucketLadder) {
-            if (candidate >= target) {
-                return Math.max(base, candidate);
+            if (candidate < base) {
+                continue;
+            }
+            if (worstBucketCount(rangeSeconds, candidate) <= MAX_POINTS_PER_SERIES) {
+                return candidate;
             }
         }
         // 范围上限已保证不会走到这里；保留兜底以免动态 SQL 得到 0。
         return Math.max(base, bucketLadder[bucketLadder.length - 1]);
+    }
+
+    /**
+     * 范围 [from, to) 在固定分桶原点下最多触发的桶数。
+     * 对齐最坏时比 {@code ceil(range / bucket)} 恰好多 1（首尾各多覆盖半桶），
+     * 用于桶宽选择与原始点抽样步长的统一核算。
+     */
+    public static long worstBucketCount(long rangeSeconds, long bucketSeconds) {
+        if (rangeSeconds <= 0 || bucketSeconds <= 0) {
+            return 0;
+        }
+        return Math.ceilDiv(rangeSeconds, bucketSeconds) + 1;
     }
 
 }
