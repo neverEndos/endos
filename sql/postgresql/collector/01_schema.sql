@@ -1,76 +1,59 @@
 /*
- 采集器采集数据表初始化脚本（PostgreSQL 17）
+ 采集器采集数据表初始化脚本（PostgreSQL 17）—— 纯 DDL 版
 
  适用范围：collector 22 张表（协议注册表、设备、传感器类型、参数模板、传感器、
  通道、分时段轮询、配置版本、原始采样、通道最新值、秒/分/小时/天聚合、聚合水位、报警、
- 报警状态、报警游标、设备状态、心跳、命令、保留策略）。
+ 报警状态、报警游标、设备状态、心跳、命令、保留策略）+ 13 个序列
+ + 2 张版本管理表（schema_migration / db_init_marker）。
 
  说明：
- 1. 所有表位于 public schema；除 collector_channel_latest 对通道表的外键级联外，
+ 1. 本脚本只包含 CREATE 语句，不含 DROP 与任何业务数据 INSERT，仅面向空库；
+    重复执行会因对象已存在而报错，属预期行为。
+ 2. 全新库的标准初始化链路（dbctl.sh init）为：
+    platform 基库 → Quartz → 本脚本（schema）→ 02_system_seed.sql（系统种子）
+    → 登记 migration/ 下全部迁移版本（本 schema 已包含其全部 DDL 结果）。
+ 3. 已有库的结构升级不要使用本脚本，请使用 dbctl.sh migrate 逐个执行
+    migration/ 下的增量迁移，避免清空已有数据。
+ 4. 所有表位于 public schema；除 collector_channel_latest 对通道表的外键级联外，
     其余表之间不建外键，只做逻辑关联，引用完整性由 Service 校验。
- 2. 配置表使用 bigint 主键 + 独立序列，并保留 BaseDO 字段（creator/create_time/
+ 5. 配置表使用 bigint 主键 + 独立序列，并保留 BaseDO 字段（creator/create_time/
     updater/update_time/deleted）；时间序列与运行状态表使用业务主键，不保留 BaseDO。
- 3. collector_sample_raw 按天 RANGE 分区，本脚本创建示例日分区与 DEFAULT 分区；
+ 6. collector_sample_raw 按天 RANGE 分区，本脚本创建示例日分区与 DEFAULT 分区；
     后续分区由维护任务按 collector_retention_policy.partition_lead_days 提前创建。
- 4. 业务时间统一使用 timestamp(3) without time zone，语义为 Asia/Shanghai 本地墙钟时间。
- 5. 本脚本支持重复执行：开头会删除并重建下述 22 张 collector 表与 13 个序列，
-    执行将清空采集器已有数据，请在确认后执行。已有库的结构升级请按需使用
-    collector_threshold_migration.sql（阈值模型）、collector_alarm_migration.sql
-    （报警引擎）、collector_latest_migration.sql（最新值看板）与
-    collector_aggregate_migration.sql（多级聚合），并按需执行
-    collector_aggregate_seed.sql（聚合定时任务），不要直接重跑本脚本。
- 6. 数值有限性约束显式排除 NaN 与正负 Infinity（数值类型没有可用的内置有限性判断
+ 7. 业务时间统一使用 timestamp(3) without time zone，语义为 Asia/Shanghai 本地墙钟时间。
+ 8. 数值有限性约束显式排除 NaN 与正负 Infinity（数值类型没有可用的内置有限性判断
     函数）；配置版本 snapshot 必须为 JSON 对象，checksum 必须为 64 位小写十六进制字符串。
 */
 
+\set ON_ERROR_STOP on
 SET client_encoding = 'UTF8';
 
 
 -- =============================================================================
--- 0. 删除旧对象（重建会清空采集器数据）
---    先删表再删序列，以固定顺序清理本期对象；
---    列默认值不依赖这些序列，序列仅供种子数据与后续 DO 主键生成使用；
---    分区表只 DROP 父表，分区及其索引/约束随父表一并删除，不单独 DROP。
+-- 0. 版本管理与初始化标记表（供 dbctl.sh 使用，先于业务表创建）
+--    schema_migration：迁移版本登记表，dbctl 新库初始化与基线标记均写入；
+--    db_init_marker：dbctl 初始化标记，是 drop-validation 允许删库的唯一凭证。
 -- =============================================================================
 
-DROP TABLE IF EXISTS public.collector_protocol;
-DROP TABLE IF EXISTS public.collector_device;
-DROP TABLE IF EXISTS public.collector_sensor_template;
-DROP TABLE IF EXISTS public.collector_sensor_type;
-DROP TABLE IF EXISTS public.collector_sensor;
--- 最新值表引用 collector_channel，必须在通道表之前删除。
-DROP TABLE IF EXISTS public.collector_channel_latest;
-DROP TABLE IF EXISTS public.collector_channel;
-DROP TABLE IF EXISTS public.collector_poll_schedule;
-DROP TABLE IF EXISTS public.collector_config_version;
-DROP TABLE IF EXISTS public.collector_sample_raw;
-DROP TABLE IF EXISTS public.collector_aggregate_second;
-DROP TABLE IF EXISTS public.collector_aggregate_minute;
-DROP TABLE IF EXISTS public.collector_aggregate_hour;
-DROP TABLE IF EXISTS public.collector_aggregate_day;
-DROP TABLE IF EXISTS public.collector_aggregate_watermark;
-DROP TABLE IF EXISTS public.collector_alarm_state;
-DROP TABLE IF EXISTS public.collector_alarm_cursor;
-DROP TABLE IF EXISTS public.collector_alarm;
-DROP TABLE IF EXISTS public.collector_device_status;
-DROP TABLE IF EXISTS public.collector_heartbeat;
-DROP TABLE IF EXISTS public.collector_command;
-DROP TABLE IF EXISTS public.collector_retention_policy;
+CREATE TABLE IF NOT EXISTS public.schema_migration (
+    version varchar(64) PRIMARY KEY,
+    filename varchar(255) NOT NULL,
+    kind varchar(16) NOT NULL DEFAULT 'ddl',
+    description varchar(255),
+    applied_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    applied_by varchar(64) NOT NULL DEFAULT current_user
+);
 
-DROP SEQUENCE IF EXISTS public.collector_protocol_seq;
-DROP SEQUENCE IF EXISTS public.collector_device_seq;
-DROP SEQUENCE IF EXISTS public.collector_sensor_type_seq;
-DROP SEQUENCE IF EXISTS public.collector_sensor_template_seq;
-DROP SEQUENCE IF EXISTS public.collector_sensor_seq;
-DROP SEQUENCE IF EXISTS public.collector_channel_seq;
-DROP SEQUENCE IF EXISTS public.collector_poll_schedule_seq;
-DROP SEQUENCE IF EXISTS public.collector_config_version_seq;
-DROP SEQUENCE IF EXISTS public.collector_alarm_seq;
-DROP SEQUENCE IF EXISTS public.collector_sample_raw_seq;
-DROP SEQUENCE IF EXISTS public.collector_heartbeat_seq;
-DROP SEQUENCE IF EXISTS public.collector_command_seq;
-DROP SEQUENCE IF EXISTS public.collector_retention_policy_seq;
+COMMENT ON TABLE public.schema_migration IS 'SQL 迁移版本登记表；新库初始化全量登记，旧库通过 dbctl mark-baseline 结构探测后登记';
 
+CREATE TABLE IF NOT EXISTS public.db_init_marker (
+    id smallint PRIMARY KEY DEFAULT 1,
+    purpose varchar(32) NOT NULL,
+    created_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT chk_db_init_marker_singleton CHECK (id = 1)
+);
+
+COMMENT ON TABLE public.db_init_marker IS 'dbctl.sh 初始化标记（singleton）；purpose=validation 是 drop-validation 允许删库的唯一凭证';
 
 -- =============================================================================
 -- 1. 序列
@@ -1501,383 +1484,6 @@ COMMENT ON COLUMN public.collector_retention_policy.create_time IS '创建时间
 COMMENT ON COLUMN public.collector_retention_policy.updater IS '更新者';
 COMMENT ON COLUMN public.collector_retention_policy.update_time IS '更新时间';
 COMMENT ON COLUMN public.collector_retention_policy.deleted IS '是否删除：0 否、1 是';
-
-
--- =============================================================================
--- 21. 首期种子数据
--- =============================================================================
-
--- 19.1 协议注册表：仅首期支持的 Modbus RTU / Modbus TCP。
--- id 使用序列生成，保证后续通过序列新增协议时编号不冲突。
--- connection_schema / channel_schema 为合法 JSON Schema（Draft 2020-12），
--- 包含必填字段、枚举、默认值与示例；Service 保存与发布配置时按此校验。
-INSERT INTO public.collector_protocol (
-    id, protocol_code, protocol_name, transport_type, driver_key,
-    connection_schema, channel_schema, protocol_version, enabled, sort, description
-) VALUES (
-    nextval('public.collector_protocol_seq'),
-    'modbus_rtu',
-    'Modbus RTU',
-    'serial',
-    'modbus_rtu_driver',
-    $json$
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://collector.local/schema/modbus_rtu/connection.json",
-  "title": "Modbus RTU 连接参数",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["serialPort", "baudRate", "dataBits", "stopBits", "parity", "unitId"],
-  "properties": {
-    "serialPort": {
-      "type": "string",
-      "title": "串口设备",
-      "description": "串口设备路径，例如 /dev/ttyS1",
-      "minLength": 1,
-      "examples": ["/dev/ttyS1", "/dev/ttyUSB0"]
-    },
-    "baudRate": {
-      "type": "integer",
-      "title": "波特率",
-      "enum": [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200],
-      "default": 9600
-    },
-    "dataBits": {
-      "type": "integer",
-      "title": "数据位",
-      "enum": [5, 6, 7, 8],
-      "default": 8
-    },
-    "stopBits": {
-      "type": "integer",
-      "title": "停止位",
-      "enum": [1, 2],
-      "default": 1
-    },
-    "parity": {
-      "type": "string",
-      "title": "校验方式",
-      "enum": ["none", "even", "odd"],
-      "default": "none"
-    },
-    "unitId": {
-      "type": "integer",
-      "title": "从站地址",
-      "minimum": 1,
-      "maximum": 247,
-      "default": 1
-    },
-    "interFrameDelayMs": {
-      "type": "integer",
-      "title": "帧间延迟（毫秒）",
-      "minimum": 0,
-      "maximum": 1000,
-      "default": 0
-    }
-  },
-  "x-ui": {
-    "order": ["serialPort", "baudRate", "dataBits", "stopBits", "parity", "unitId", "interFrameDelayMs"],
-    "groups": [
-      {"title": "串口参数", "fields": ["serialPort", "baudRate", "dataBits", "stopBits", "parity"]},
-      {"title": "从站参数", "fields": ["unitId", "interFrameDelayMs"]}
-    ]
-  }
-}
-$json$::jsonb,
-    $json$
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://collector.local/schema/modbus_rtu/channel.json",
-  "title": "Modbus RTU 通道参数",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["registerArea", "functionCode", "startAddress", "registerCount", "dataType", "byteOrder"],
-  "properties": {
-    "registerArea": {
-      "type": "string",
-      "title": "寄存器区",
-      "enum": ["holding", "input", "coil", "discrete"],
-      "default": "holding",
-      "examples": ["holding"]
-    },
-    "functionCode": {
-      "type": "integer",
-      "title": "功能码",
-      "enum": [1, 2, 3, 4],
-      "default": 3
-    },
-    "startAddress": {
-      "type": "integer",
-      "title": "起始地址",
-      "minimum": 0,
-      "maximum": 65535,
-      "examples": [0, 100]
-    },
-    "registerCount": {
-      "type": "integer",
-      "title": "寄存器数量",
-      "minimum": 1,
-      "maximum": 125,
-      "default": 1
-    },
-    "dataType": {
-      "type": "string",
-      "title": "数据类型",
-      "enum": ["u16", "i16", "u32", "i32", "f32", "f64", "bit"],
-      "default": "u16"
-    },
-    "byteOrder": {
-      "type": "string",
-      "title": "字节序",
-      "enum": ["ABCD", "CDAB", "BADC", "DCBA"],
-      "default": "ABCD"
-    },
-    "bitIndex": {
-      "type": "integer",
-      "title": "位序号",
-      "description": "dataType=bit 时使用，取值 0-15",
-      "minimum": 0,
-      "maximum": 15
-    }
-  },
-  "x-ui": {
-    "order": ["registerArea", "functionCode", "startAddress", "registerCount", "dataType", "byteOrder", "bitIndex"],
-    "groups": [
-      {"title": "寄存器寻址", "fields": ["registerArea", "functionCode", "startAddress", "registerCount"]},
-      {"title": "数值解析", "fields": ["dataType", "byteOrder", "bitIndex"]}
-    ]
-  }
-}
-$json$::jsonb,
-    '1.0.0',
-    1,
-    10,
-    '串口 Modbus RTU 从站；连接参数含串口、波特率、数据位、停止位、校验与从站地址'
-), (
-    nextval('public.collector_protocol_seq'),
-    'modbus_tcp',
-    'Modbus TCP',
-    'tcp',
-    'modbus_tcp_driver',
-    $json$
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://collector.local/schema/modbus_tcp/connection.json",
-  "title": "Modbus TCP 连接参数",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["host", "port", "unitId"],
-  "properties": {
-    "host": {
-      "type": "string",
-      "title": "主机地址",
-      "description": "IP 地址或可解析主机名",
-      "minLength": 1,
-      "examples": ["192.168.1.10", "plc.local"]
-    },
-    "port": {
-      "type": "integer",
-      "title": "端口",
-      "minimum": 1,
-      "maximum": 65535,
-      "default": 502
-    },
-    "unitId": {
-      "type": "integer",
-      "title": "从站地址",
-      "minimum": 1,
-      "maximum": 247,
-      "default": 1
-    },
-    "blockMergeEnabled": {
-      "type": "boolean",
-      "title": "启用块合并",
-      "description": "将连续寄存器合并为批量读取，减少请求次数",
-      "default": true
-    },
-    "blockMaxRegisters": {
-      "type": "integer",
-      "title": "单次最大寄存器数",
-      "minimum": 1,
-      "maximum": 125,
-      "default": 64
-    },
-    "blockMaxGap": {
-      "type": "integer",
-      "title": "块合并最大间隔",
-      "minimum": 0,
-      "maximum": 125,
-      "default": 8
-    },
-    "interFrameDelayMs": {
-      "type": "integer",
-      "title": "帧间延迟（毫秒）",
-      "minimum": 0,
-      "maximum": 1000,
-      "default": 0
-    }
-  },
-  "x-ui": {
-    "order": ["host", "port", "unitId", "blockMergeEnabled", "blockMaxRegisters", "blockMaxGap", "interFrameDelayMs"],
-    "groups": [
-      {"title": "网络参数", "fields": ["host", "port"]},
-      {"title": "从站参数", "fields": ["unitId"]},
-      {"title": "读取优化", "fields": ["blockMergeEnabled", "blockMaxRegisters", "blockMaxGap", "interFrameDelayMs"]}
-    ]
-  }
-}
-$json$::jsonb,
-    $json$
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://collector.local/schema/modbus_tcp/channel.json",
-  "title": "Modbus TCP 通道参数",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["registerArea", "functionCode", "startAddress", "registerCount", "dataType", "byteOrder"],
-  "properties": {
-    "registerArea": {
-      "type": "string",
-      "title": "寄存器区",
-      "enum": ["holding", "input", "coil", "discrete"],
-      "default": "holding",
-      "examples": ["holding"]
-    },
-    "functionCode": {
-      "type": "integer",
-      "title": "功能码",
-      "enum": [1, 2, 3, 4],
-      "default": 3
-    },
-    "startAddress": {
-      "type": "integer",
-      "title": "起始地址",
-      "minimum": 0,
-      "maximum": 65535,
-      "examples": [0, 100]
-    },
-    "registerCount": {
-      "type": "integer",
-      "title": "寄存器数量",
-      "minimum": 1,
-      "maximum": 125,
-      "default": 1
-    },
-    "dataType": {
-      "type": "string",
-      "title": "数据类型",
-      "enum": ["u16", "i16", "u32", "i32", "f32", "f64", "bit"],
-      "default": "u16"
-    },
-    "byteOrder": {
-      "type": "string",
-      "title": "字节序",
-      "enum": ["ABCD", "CDAB", "BADC", "DCBA"],
-      "default": "ABCD"
-    },
-    "bitIndex": {
-      "type": "integer",
-      "title": "位序号",
-      "description": "dataType=bit 时使用，取值 0-15",
-      "minimum": 0,
-      "maximum": 15
-    }
-  },
-  "x-ui": {
-    "order": ["registerArea", "functionCode", "startAddress", "registerCount", "dataType", "byteOrder", "bitIndex"],
-    "groups": [
-      {"title": "寄存器寻址", "fields": ["registerArea", "functionCode", "startAddress", "registerCount"]},
-      {"title": "数值解析", "fields": ["dataType", "byteOrder", "bitIndex"]}
-    ]
-  }
-}
-$json$::jsonb,
-    '1.0.0',
-    1,
-    20,
-    'TCP Modbus TCP 从站；连接参数含主机、端口、从站地址与块读取优化参数'
-);
-
--- 19.2 保留策略初始建议（对应设计稿容量结论）：
---   sample_raw        30 天，按天分区，过期分区整体 DROP；
---   aggregate_second   7 天，按 bucket_time 分批 DELETE；
---   aggregate_minute  90 天，按 bucket_time 分批 DELETE；
---   aggregate_hour   365 天，按 bucket_time 分批 DELETE；
---   aggregate_day  0 表示永久保留，不做清理；
---   alarm          仅清理已清除且超过 180 天的记录；
---   heartbeat      7 天；command 30 天。
-INSERT INTO public.collector_retention_policy (
-    id, data_class, retention_days, partition_lead_days, action, enabled, description
-) VALUES
-(
-    nextval('public.collector_retention_policy_seq'),
-    'sample_raw',
-    30,
-    7,
-    'drop_partition',
-    1,
-    '原始采样：按天分区，保留 30 天，过期分区整体 DROP'
-), (
-    nextval('public.collector_retention_policy_seq'),
-    'aggregate_second',
-    7,
-    3,
-    'delete_rows',
-    1,
-    '秒聚合：保留 7 天，按 bucket_time 分批删除'
-), (
-    nextval('public.collector_retention_policy_seq'),
-    'aggregate_minute',
-    90,
-    3,
-    'delete_rows',
-    1,
-    '分钟聚合：保留 90 天，按 bucket_time 分批删除'
-), (
-    nextval('public.collector_retention_policy_seq'),
-    'aggregate_hour',
-    365,
-    3,
-    'delete_rows',
-    1,
-    '小时聚合：保留 365 天，按 bucket_time 分批删除'
-), (
-    nextval('public.collector_retention_policy_seq'),
-    'aggregate_day',
-    0,
-    3,
-    'delete_rows',
-    1,
-    '天聚合：永久保留（0 表示不清理）'
-), (
-    nextval('public.collector_retention_policy_seq'),
-    'alarm',
-    180,
-    3,
-    'delete_rows',
-    1,
-    '报警：仅清理已清除（cleared_at 非空）且超过 180 天的记录'
-), (
-    nextval('public.collector_retention_policy_seq'),
-    'heartbeat',
-    7,
-    3,
-    'delete_rows',
-    1,
-    '心跳：保留 7 天'
-), (
-    nextval('public.collector_retention_policy_seq'),
-    'command',
-    30,
-    3,
-    'delete_rows',
-    1,
-    '命令：保留 30 天'
-);
-
--- 19.3 聚合水位：主键为 (agg_type, channel_id)，按通道分别记录。
--- 空库尚无设备/通道，故不预置 hour/day 行；通道创建或首个配置版本发布后，
--- 由聚合任务为每个 number 通道初始化 (hour, channel_id) 与 (day, channel_id) 水位，watermark_time 均为 NULL。
 
 
 -- =============================================================================

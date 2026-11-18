@@ -10,6 +10,12 @@
 -- 4. 执行方式（密码从环境变量读取，不要写入仓库）：
 --    PGPASSWORD=... psql -h <host> -U <user> -d <database> -f sql/postgresql/collector_aggregate_migration.sql
 
+-- ---------------------------------------------------------------------------
+-- 迁移版本：20261117.3 ｜ 分类：ddl ｜ 登记：public.schema_migration
+-- 位置：sql/postgresql/migration/；全新库无需执行（collector/01_schema.sql 已包含
+-- 全部 DDL 结果），由 dbctl.sh migrate / mark-baseline 管理版本；也可经 psql 单独
+-- 执行（幂等、单事务）。
+-- ---------------------------------------------------------------------------
 \set ON_ERROR_STOP on
 SET client_encoding = 'UTF8';
 BEGIN;
@@ -283,5 +289,15 @@ WHERE NOT EXISTS (
     WHERE data_class = 'aggregate_minute' AND deleted = 0
 );
 
+
+-- 自登记迁移版本（schema_migration 表存在时生效；dbctl.sh 管理版本时可忽略）
+DO $$
+BEGIN
+    IF to_regclass('public.schema_migration') IS NOT NULL THEN
+        INSERT INTO public.schema_migration (version, filename, kind, description)
+        VALUES ('20261117.3', 'collector_aggregate_migration.sql', 'ddl', '多级聚合（数据画像/秒分表/valid_count/水位与策略扩展）')
+        ON CONFLICT (version) DO NOTHING;
+    END IF;
+END $$;
 
 COMMIT;

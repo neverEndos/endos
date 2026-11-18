@@ -12,6 +12,12 @@
    PGPASSWORD=... psql -h <host> -U <user> -d <db> -f sql/postgresql/collector_range_fix.sql
 */
 
+-- ---------------------------------------------------------------------------
+-- 迁移版本：20261116.2 ｜ 分类：data_repair ｜ 登记：public.schema_migration
+-- 位置：sql/postgresql/migration/；全新库无需执行（collector/01_schema.sql 已包含
+-- 全部 DDL 结果），由 dbctl.sh migrate / mark-baseline 管理版本；也可经 psql 单独
+-- 执行（幂等、单事务）。
+-- ---------------------------------------------------------------------------
 \set ON_ERROR_STOP on
 SET client_encoding = 'UTF8';
 BEGIN;
@@ -108,5 +114,15 @@ WHERE deleted = 0
        OR threshold_low_warning_enabled <> 0
        OR threshold_high_warning_enabled <> 0
        OR threshold_high_error_enabled <> 0);
+
+-- 自登记迁移版本（schema_migration 表存在时生效；dbctl.sh 管理版本时可忽略）
+DO $$
+BEGIN
+    IF to_regclass('public.schema_migration') IS NOT NULL THEN
+        INSERT INTO public.schema_migration (version, filename, kind, description)
+        VALUES ('20261116.2', 'collector_range_fix.sql', 'data_repair', 'CS1000 量程与四档阈值占位数据修正（纯 DML）')
+        ON CONFLICT (version) DO NOTHING;
+    END IF;
+END $$;
 
 COMMIT;
