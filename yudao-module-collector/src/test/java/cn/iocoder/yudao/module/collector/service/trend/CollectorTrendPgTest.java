@@ -81,6 +81,32 @@ public class CollectorTrendPgTest extends CollectorTrendPgTestSupport {
     }
 
     @Test
+    public void aggregateBuckets_hourLayerComparesValidCountAverage() throws Exception {
+        insertAggregate("collector_aggregate_hour", 1, 7, BASE_TIME, 4, 2, 40D, 10D, 30D);
+        insertAggregate("collector_aggregate_hour", 1, 7, BASE_TIME.plusHours(1), 8, 4, 80D, 5D, 35D);
+
+        List<CollectorTrendBucketRow> actual = trendMapper.selectAggregateBuckets(
+                "collector_aggregate_hour", 3600, List.of(1L),
+                BASE_TIME, BASE_TIME.plusHours(2));
+
+        assertEquals(2, actual.size());
+        assertBucket(actual.get(0), 1L, BASE_TIME, 20D, 10D, 30D, 2);
+        assertBucket(actual.get(1), 1L, BASE_TIME.plusHours(1), 20D, 5D, 35D, 4);
+
+        List<CollectorTrendBucketRow> direct = selectBucketsBySql("""
+                SELECT channel_id,
+                    date_bin(INTERVAL '1 second' * 3600, bucket_time, TIMESTAMP '2000-01-01 00:00:00') AS bucket_time,
+                    SUM(value_sum) / NULLIF(SUM(valid_count), 0) AS avg,
+                    MIN(value_min) AS min, MAX(value_max) AS max, SUM(valid_count)::integer AS count
+                FROM collector_aggregate_hour
+                WHERE channel_id IN (1) AND bucket_time >= '2026-01-01 00:00:00'
+                  AND bucket_time < '2026-01-01 02:00:00'
+                GROUP BY 1, 2 ORDER BY 1, 2
+                """);
+        assertBucketsEqual(direct, actual);
+    }
+
+    @Test
     public void dayBuckets_compareBucketStartWithExclusiveEndTimestamp() throws Exception {
         insertAggregate("collector_aggregate_day", 1, 7, BASE_TIME, 10, 10, 50D, 3D, 7D);
         insertAggregate("collector_aggregate_day", 1, 7, BASE_TIME.plusDays(1), 20, 20, 120D, 4D, 8D);
