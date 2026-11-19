@@ -16,12 +16,16 @@
 #
 # 通用规则：
 #   1. 写操作默认 dry-run，必须显式 --run 才会真正执行；status 只读，无需 --run。
-#   2. 数据库名白名单：^[a-z][a-z0-9_]{2,30}$（防注入，psql 无法参数化标识符）。
-#   3. 写操作黑名单：ruoyi-vue-pro、yudao_board、postgres、template0、template1。
-#   4. 密码只从 PGPASSWORD 环境变量读取，不接受命令行参数。
-#   5. 连接参数：PGHOST/PGPORT/PGUSER/PGMAINTDB（默认 127.0.0.1:5432/postgres/postgres）。
-#   6. init --validation 任一步失败会自动删除已创建的校验库；init --new 失败保留现场
-#      并报告失败步骤，便于排查。
+#   2. 库名按子命令破坏性分级校验（psql 无法参数化标识符，一律先校验、插值时双引号包裹）：
+#      - init / seed-test / drop-validation 最严：仅 ^[a-z][a-z0-9_]{2,30}$ 且校验库还须
+#        匹配 yudao_validate(_[a-z0-9]+)?，正式库与系统库一律拒绝；
+#      - migrate / mark-baseline / seed-system / status 允许两个显式登记的正式库名
+#        ruoyi-vue-pro、yudao_board（精确匹配，连字符不向其他库名泛化），或符合上方
+#        安全标识规则的应用库；postgres/template0/template1 系统库任何子命令都拒绝。
+#   3. 密码只从 PGPASSWORD 环境变量读取，不接受命令行参数。
+#   4. 连接参数：PGHOST/PGPORT/PGUSER/PGMAINTDB（默认 127.0.0.1:5432/postgres/postgres）。
+#   5. init --validation 任一步失败（含 marker 写入与版本登记）由 ERR trap 自动删除本次
+#      创建的校验库；init --new 失败保留现场并报告失败步骤，便于排查。
 #
 # 典型用法（本地临时校验库）：
 #   export PGPASSWORD=***
@@ -37,7 +41,7 @@
 # 环境变量示例：
 #   PGHOST=192.168.0.101 PGPORT=5432 PGUSER=yudao PGPASSWORD=*** ./dbctl.sh status ruoyi-vue-pro
 
-set -euo pipefail
+set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SQL_ROOT="$SCRIPT_DIR"
@@ -51,10 +55,12 @@ RUN=0
 ACK_DATA_REPAIR=0
 INIT_MODE=""
 
-# 库名白名单与生产库黑名单
+# 库名校验：安全标识规则、校验库命名、显式登记的正式库、系统库
 IDENT_RE='^[a-z][a-z0-9_]{2,30}$'
 VALIDATION_RE='^yudao_validate(_[a-z0-9]+)?$'
-PROD_BLACKLIST="ruoyi-vue-pro yudao_board postgres template0 template1"
+# 含连字符的历史正式库名，仅这两个精确匹配放行，不泛化到任意连字符库名
+KNOWN_APP_DBS="ruoyi-vue-pro yudao_board"
+SYSTEM_DBS="postgres template0 template1"
 
 # 迁移版本清单（顺序即执行顺序；单一事实来源，init/migrate/mark-baseline 共用）
 MIGRATIONS=(
@@ -72,7 +78,7 @@ error(){ printf '[错误] %s\n' "$*" >&2; }
 die()  { error "$*"; exit 1; }
 
 usage() {
-    sed -n '2,38p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,42p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     exit 0
 }
 
@@ -82,29 +88,49 @@ require_password() {
 
 valid_ident() { [[ "${1:-}" =~ $IDENT_RE ]]; }
 
-is_blacklisted() {
-    case " $PROD_BLACKLIST " in
+is_known_app_db() {
+    case " $KNOWN_APP_DBS " in
         *" $1 "*) return 0 ;;
         *) return 1 ;;
     esac
 }
 
-# 写操作的库名校验：白名单 + 生产库黑名单
-check_db_name_for_write() {
-    local db="$1"
-    valid_ident "$db" || die "库名 [$db] 不合法：仅允许小写字母/数字/下划线，小写字母开头，3~31 位"
-    if is_blacklisted "$db"; then
-        die "库名 [$db] 在生产库黑名单中，拒绝执行写操作；生产库升级请用 migrate（不会重建对象）"
-    fi
+is_system_db() {
+    case " $SYSTEM_DBS " in
+        *" $1 "*) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
-# 校验库名规则：白名单 + 命名规则 + 黑名单（纵深防御）
+# 升级/只读类命令（migrate/mark-baseline/seed-system/status）的库名校验：
+# 精确放行两个正式库名（含连字符），或符合安全标识规则的应用库；拒绝系统库与注入串
+check_app_target_name() {
+    local db="$1"
+    if is_system_db "$db"; then
+        die "库名 [$db] 是 PostgreSQL 系统库，禁止作为 dbctl 目标"
+    fi
+    if is_known_app_db "$db"; then
+        return 0
+    fi
+    valid_ident "$db" || die "库名 [$db] 不合法：仅允许小写字母/数字/下划线（小写字母开头，3~31 位），或显式登记的正式库名 ruoyi-vue-pro / yudao_board"
+}
+
+# 破坏性创建命令 init 的库名校验：最严，正式库/系统库一律拒绝
+check_init_name() {
+    local db="$1"
+    if is_system_db "$db" || is_known_app_db "$db"; then
+        die "库名 [$db] 为系统库或已登记正式库，init 仅用于全新空库；已有库请先 mark-baseline 再 migrate 升级"
+    fi
+    valid_ident "$db" || die "库名 [$db] 不合法：init 仅接受小写字母/数字/下划线（小写字母开头，3~31 位）的新库名"
+}
+
+# 校验库名规则：安全标识 + 校验库命名 + 正式库/系统库拒绝（纵深防御）
 check_validation_name() {
     local db="$1"
     valid_ident "$db" || die "库名 [$db] 不合法：仅允许小写字母/数字/下划线，小写字母开头，3~31 位"
     [[ "$db" =~ $VALIDATION_RE ]] || die "库名 [$db] 不符合校验库命名规则 ^yudao_validate(_[a-z0-9]+)?$"
-    if is_blacklisted "$db"; then
-        die "库名 [$db] 在黑名单中，拒绝执行"
+    if is_system_db "$db" || is_known_app_db "$db"; then
+        die "库名 [$db] 为系统库或正式库，拒绝执行校验库操作"
     fi
 }
 
@@ -232,11 +258,13 @@ cmd_init() {
     done
     [ -n "$db" ] || die "init：缺少库名"
     [ -n "$INIT_MODE" ] || die "init：必须指定 --new（应用库）或 --validation（校验库）"
-    check_db_name_for_write "$db"
+    check_init_name "$db"
     require_password
 
     local purpose="$INIT_MODE"
-    local cleanup_on_fail=0
+    # 仅在本次成功 CREATE DATABASE 后赋值，ERR trap 据此证明库归属并决定是否自动清理
+    INIT_FAIL_DB=""
+    INIT_FAIL_PURPOSE=""
 
     if [ "$RUN" != "1" ]; then
         info "[dry-run] init $db（--$INIT_MODE）计划执行："
@@ -247,11 +275,13 @@ cmd_init() {
     fi
 
     if db_exists "$db"; then
-        die "数据库 $db 已存在，拒绝初始化（避免覆盖）。新装请选择不存在的库名；已有库请使用 migrate / mark-baseline"
+        die "数据库 $db 已存在，拒绝初始化（避免覆盖）。新装请选择不存在的库名；已有库请使用 mark-baseline / migrate"
     fi
     info "创建数据库 $db"
     psql_maint -q -c "CREATE DATABASE \"$db\""
-    cleanup_on_fail=1
+    INIT_FAIL_DB="$db"
+    INIT_FAIL_PURPOSE="$purpose"
+    trap init_fail_trap ERR
 
     local steps=(
         "platform/ruoyi-vue-pro.sql|平台基库（system/infra，含 DROP+CREATE，仅限空库）"
@@ -262,15 +292,7 @@ cmd_init() {
     local step
     for step in "${steps[@]}"; do
         local file="${step%%|*}" label="${step#*|}"
-        if ! run_file "$db" "$file" "$label"; then
-            if [ "$purpose" = "validation" ] && [ "$cleanup_on_fail" = "1" ]; then
-                warn "校验库初始化失败，自动清理数据库 $db"
-                psql_maint -q -c "DROP DATABASE \"$db\"" || warn "清理失败，请人工检查数据库 $db"
-                die "init 失败（步骤：$label），校验库已自动删除"
-            else
-                die "init 失败（步骤：$label），数据库 $db 已保留，请排查后重跑（platform 脚本可重复执行，collector 脚本仅限空库）"
-            fi
-        fi
+        run_file "$db" "$file" "$label"
     done
 
     info "写入初始化标记（purpose=$purpose）"
@@ -284,7 +306,32 @@ cmd_init() {
         record_migration "$db" "$ver" "$file" "$kind" "全新初始化：schema 与系统种子已包含该版本全部内容"
     done
 
+    trap - ERR
+    INIT_FAIL_DB=""
     info "init 完成：$db（purpose=$purpose，迁移版本 ${#MIGRATIONS[@]}/${#MIGRATIONS[@]} 已登记）"
+}
+
+# init 失败统一守卫：覆盖 SQL 文件、marker 写入与版本登记全部步骤。
+# 仅清理本次成功创建、名称已通过校验且仍存在的校验库；应用库一律保留。
+init_fail_trap() {
+    local rc=$?
+    trap - ERR
+    local last_cmd="${BASH_COMMAND:-未知命令}"
+    if [ "$INIT_FAIL_PURPOSE" = "validation" ] && [ -n "$INIT_FAIL_DB" ]; then
+        if db_exists "$INIT_FAIL_DB"; then
+            warn "校验库初始化失败（最后命令：$last_cmd），自动清理数据库 $INIT_FAIL_DB"
+            if psql_maint -q -c "DROP DATABASE \"$INIT_FAIL_DB\""; then
+                error "init 失败，校验库 $INIT_FAIL_DB 已自动删除"
+            else
+                error "init 失败且自动清理未成功，请人工检查数据库 $INIT_FAIL_DB"
+            fi
+        else
+            error "init 失败，数据库 $INIT_FAIL_DB 已不存在"
+        fi
+    else
+        error "init 失败（最后命令：$last_cmd），数据库 $INIT_FAIL_DB 已保留，请排查后重跑（platform 脚本可重复执行，collector 脚本仅限空库）"
+    fi
+    exit "$rc"
 }
 
 cmd_migrate() {
@@ -297,7 +344,7 @@ cmd_migrate() {
         shift
     done
     [ -n "$db" ] || die "migrate：缺少库名"
-    check_db_name_for_write "$db"
+    check_app_target_name "$db"
     require_password
 
     if [ "$RUN" != "1" ]; then
@@ -356,7 +403,7 @@ cmd_mark_baseline() {
         shift
     done
     [ -n "$db" ] || die "mark-baseline：缺少库名"
-    check_db_name_for_write "$db"
+    check_app_target_name "$db"
     require_password
 
     if [ "$RUN" != "1" ]; then
@@ -422,7 +469,7 @@ cmd_seed_system() {
         shift
     done
     [ -n "$db" ] || die "seed-system：缺少库名"
-    check_db_name_for_write "$db"
+    check_app_target_name "$db"
     require_password
 
     if [ "$RUN" != "1" ]; then
@@ -493,7 +540,8 @@ cmd_drop_validation() {
 cmd_status() {
     local db="${1:-}"; shift || true
     [ -n "$db" ] || die "status：缺少库名"
-    valid_ident "$db" || die "库名 [$db] 不合法：仅允许小写字母/数字/下划线，小写字母开头，3~31 位"
+    # 只读命令：与升级命令同档放行正式库名，但不套用写操作黑名单语义
+    check_app_target_name "$db"
     require_password
 
     if ! db_exists "$db"; then
