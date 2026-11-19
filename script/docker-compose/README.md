@@ -20,7 +20,7 @@ script/docker-compose
 
 | 服务 | 镜像 | 说明 |
 | --- | --- | --- |
-| `postgres` | `postgres:17-alpine` | 首次启动导入 `sql/postgresql/ruoyi-vue-pro.sql`、`sql/postgresql/quartz.sql`，数据卷 `yudao-boot_postgres-data` |
+| `postgres` | `postgres:17-alpine` | 首次启动导入 `sql/postgresql/platform/ruoyi-vue-pro.sql`、`sql/postgresql/platform/quartz.sql`，数据卷 `yudao-boot_postgres-data` |
 | `redis` | `redis:7.4-alpine` | 开启密码与 AOF，数据卷 `yudao-boot_redis-data` |
 | `yudao-server` | `yudao-server:${IMAGE_TAG}` | 由 `yudao-server/Dockerfile` 构建，端口 48080，只在 Compose 网络内访问 |
 | `web` | `nginx:1.28-alpine` | 对宿主机开放 `${WEB_PORT}`（默认 8080） |
@@ -144,7 +144,7 @@ docker compose down
 docker compose exec -T postgres sh -c 'exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < /path/to/upgrade.sql
 ```
 
-- 使用外部 PostgreSQL 时：自行导入 `sql/postgresql/ruoyi-vue-pro.sql`、`sql/postgresql/quartz.sql`，删除 `docker-compose.yml` 中的 `postgres` 服务及 `yudao-server` 对它的 `depends_on`，并把 `SPRING_DATASOURCE_DYNAMIC_DATASOURCE_MASTER_*`、`SLAVE_*` 改为外部地址；容器内的 `127.0.0.1` 指向容器自身，不是宿主机。
+- 使用外部 PostgreSQL 时：自行导入 `sql/postgresql/platform/ruoyi-vue-pro.sql`、`sql/postgresql/platform/quartz.sql`，删除 `docker-compose.yml` 中的 `postgres` 服务及 `yudao-server` 对它的 `depends_on`，并把 `SPRING_DATASOURCE_DYNAMIC_DATASOURCE_MASTER_*`、`SLAVE_*` 改为外部地址；容器内的 `127.0.0.1` 指向容器自身，不是宿主机。
 
 ## 其他分支同步替换点
 

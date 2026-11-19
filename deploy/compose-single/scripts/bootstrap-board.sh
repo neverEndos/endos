@@ -93,14 +93,32 @@ if [ "$(readlink -f "$COMPOSE_DIR")" != "$(readlink -f "$TARGET")" ]; then
   fi
 fi
 
-for sql in ruoyi-vue-pro.sql quartz.sql collector.sql collector_web_seed.sql \
-    collector_latest_migration.sql; do
+for sql in platform/ruoyi-vue-pro.sql platform/quartz.sql collector/01_schema.sql \
+    collector/02_system_seed.sql dbctl.sh; do
   [ -f "$SQL_SOURCE/$sql" ] || die "缺少初始化 SQL：$SQL_SOURCE/$sql"
   if [ "$SQL_SOURCE" = "$SQL_TARGET" ]; then
     info "初始化 SQL 已就位：$SQL_TARGET/$sql"
   else
-    run install -m 0644 "$SQL_SOURCE/$sql" "$SQL_TARGET/$sql"
+    run install -D -m 0644 "$SQL_SOURCE/$sql" "$SQL_TARGET/$sql"
   fi
+done
+# 迁移目录（增量升级用）与校验库演示种子一并安装
+if [ "$SQL_SOURCE" != "$SQL_TARGET" ]; then
+  run install -d -m 0755 "$SQL_TARGET/migration" "$SQL_TARGET/collector/test"
+  for sql in "$SQL_SOURCE"/migration/collector_*_migration.sql \
+      "$SQL_SOURCE"/migration/collector_range_fix.sql \
+      "$SQL_SOURCE"/collector/test/01_demo_seed.sql; do
+    [ -f "$sql" ] || die "缺少迁移/种子 SQL：$sql"
+    run install -m 0644 "$sql" "$SQL_TARGET/${sql#"$SQL_SOURCE"/}"
+  done
+fi
+# 清理已废弃的扁平旧脚本（内容已并入 platform/、collector/、migration/）
+for legacy in ruoyi-vue-pro.sql quartz.sql collector.sql collector_web_seed.sql \
+    collector_alarm_seed.sql collector_aggregate_seed.sql \
+    collector_threshold_migration.sql collector_range_fix.sql \
+    collector_alarm_migration.sql collector_latest_migration.sql \
+    collector_aggregate_migration.sql; do
+  run rm -f "$SQL_TARGET/$legacy"
 done
 
 if [ -n "$ENV_FILE" ]; then

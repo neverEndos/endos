@@ -36,7 +36,7 @@ DEFAULT_DB_RETRY_INTERVAL_S = 60.0
 SHANGHAI = timezone(timedelta(hours=8), name="Asia/Shanghai")
 LATEST_TABLE_MISSING_HINT = (
     "缺少 collector_channel_latest 表，无法在更新 raw 的同时写入最新值；"
-    "请先执行 sql/postgresql/collector_latest_migration.sql 后重启采集器"
+    "请先执行 sql/postgresql/migration/collector_latest_migration.sql 后重启采集器"
 )
 
 

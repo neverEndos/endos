@@ -32,6 +32,12 @@
       也不触碰 system_* / infra_* 表。
 */
 
+-- ---------------------------------------------------------------------------
+-- 迁移版本：20261116.1 ｜ 分类：ddl ｜ 登记：public.schema_migration
+-- 位置：sql/postgresql/migration/；全新库无需执行（collector/01_schema.sql 已包含
+-- 全部 DDL 结果），由 dbctl.sh migrate / mark-baseline 管理版本；也可经 psql 单独
+-- 执行（幂等、单事务）。
+-- ---------------------------------------------------------------------------
 \set ON_ERROR_STOP on
 SET client_encoding = 'UTF8';
 BEGIN;
@@ -653,5 +659,15 @@ COMMENT ON TABLE public.collector_sensor IS '采集传感器表（设备下级�
 COMMENT ON TABLE public.collector_channel IS '采集通道通用配置表（协议无关，含 UI 渲染字段与四档阈值）';
 COMMENT ON TABLE public.collector_config_version IS '采集配置版本快照表';
 COMMENT ON COLUMN public.collector_config_version.snapshot IS '全量配置快照（protocols/devices/sensors/channels/schedules），channels 含 valueKind/量程/四档阈值与开关；checksum 覆盖传感器及协议配置';
+
+-- 自登记迁移版本（schema_migration 表存在时生效；dbctl.sh 管理版本时可忽略）
+DO $$
+BEGIN
+    IF to_regclass('public.schema_migration') IS NOT NULL THEN
+        INSERT INTO public.schema_migration (version, filename, kind, description)
+        VALUES ('20261116.1', 'collector_threshold_migration.sql', 'ddl', '采集器阈值模型迁移（传感器类型/参数模板/通道四档阈值）')
+        ON CONFLICT (version) DO NOTHING;
+    END IF;
+END $$;
 
 COMMIT;

@@ -15,7 +15,7 @@ DB 不可用时进程不退出：按 ``--db-retry-interval``（默认 60 秒）�
 执行幂等种子并重新解析通道映射；期间 JSONL 仍输出，尚未取得有效配置时
 ``channel_id`` 为 null，已有配置则保留最后一次有效映射。DB 恢复后自动开始落库。
 启动自检要求 ``collector_channel_latest`` 已存在；缺少该表时提示先执行
-``sql/postgresql/collector_latest_migration.sql`` 并退出，避免只写 raw 静默丢最新值。
+``sql/postgresql/migration/collector_latest_migration.sql`` 并退出，避免只写 raw 静默丢最新值。
 运行中按 ``--config-check-interval`` 检查三张配置表指纹，DB 修改轮询参数、传感器
 或通道后无需重启；热加载不会关闭或重开串口。
 

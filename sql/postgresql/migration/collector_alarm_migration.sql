@@ -16,9 +16,15 @@
  表写入；生产环境请安排在维护窗口或停机期执行，避免采集写入超时。
 
  执行方式（密码从环境变量读取，不要写入仓库）：
-   PGPASSWORD=... psql -h <host> -U <user> -d <db> -f sql/postgresql/collector_alarm_migration.sql
+   PGPASSWORD=... psql -h <host> -U <user> -d <db> -f sql/postgresql/migration/collector_alarm_migration.sql
 */
 
+-- ---------------------------------------------------------------------------
+-- 迁移版本：20261117.1 ｜ 分类：ddl ｜ 登记：public.schema_migration
+-- 位置：sql/postgresql/migration/；全新库无需执行（collector/01_schema.sql 已包含
+-- 全部 DDL 结果），由 dbctl.sh migrate / mark-baseline 管理版本；也可经 psql 单独
+-- 执行（幂等、单事务）。
+-- ---------------------------------------------------------------------------
 \set ON_ERROR_STOP on
 SET client_encoding = 'UTF8';
 BEGIN;
@@ -179,5 +185,15 @@ COMMENT ON COLUMN public.collector_alarm_cursor.id IS '固定为 1，限制单�
 COMMENT ON COLUMN public.collector_alarm_cursor.last_sample_time IS '已处理采样的 collect_time（含）';
 COMMENT ON COLUMN public.collector_alarm_cursor.last_sample_id IS '同一 collect_time 下已处理的最大 sample_id（含）';
 COMMENT ON COLUMN public.collector_alarm_cursor.updated_time IS '游标更新时间';
+
+-- 自登记迁移版本（schema_migration 表存在时生效；dbctl.sh 管理版本时可忽略）
+DO $$
+BEGIN
+    IF to_regclass('public.schema_migration') IS NOT NULL THEN
+        INSERT INTO public.schema_migration (version, filename, kind, description)
+        VALUES ('20261117.1', 'collector_alarm_migration.sql', 'ddl', '报警引擎 v1（sample_id/event_type/活动唯一/状态与游标）')
+        ON CONFLICT (version) DO NOTHING;
+    END IF;
+END $$;
 
 COMMIT;
