@@ -93,7 +93,8 @@ ssh cat@192.168.0.101 'rm -rf /tmp/yudao-src /tmp/yudao-compose.env'
 
 上传归档明确排除 `.env`、`deploy.env` 和 `*.env.local`，但保留 `*.env.example`；
 初始化结束后删除整个暂存目录，避免私有环境文件残留。初始化会安装 Compose 文件到
-`/opt/yudao/compose-single`，把四份 SQL 安装到 `/opt/yudao/sql/postgresql`，创建
+`/opt/yudao/compose-single`，把整套 SQL（`platform/`、`collector/`、`migration/`、
+`dbctl.sh`）安装到 `/opt/yudao/sql/postgresql`，创建
 数据/发布/日志/备份目录。复制 Compose 文件本身不覆盖已有 `.env`；显式传 `--env-file`
 则会用指定文件替换它（0600）。`--with-collector` 安装单元和 `/etc/yudao/env.remote`，
 执行 `systemctl enable collector`（不加 `--now`），不会启动 collector。
@@ -128,15 +129,17 @@ ssh cat@192.168.0.101 \
 ```
 
 也可在暂存目录重新执行 `bootstrap-board.sh --run --start --env-file ...`。
-首次 PostgreSQL 数据目录为空时才按顺序执行：
+首次 PostgreSQL 数据目录为空时才按顺序执行（`docker-entrypoint-initdb.d` 按文件名排序）：
 
-1. `ruoyi-vue-pro.sql`（system/infra 基线）；
-2. `quartz.sql`；
-3. `collector.sql`；
-4. `collector_web_seed.sql`（采集器菜单）；
-5. `collector_alarm_seed.sql`（报警判定定时任务记录；bootstrap 当前只同步前四项，
-   需先把本文件复制到板端 `/opt/yudao/sql/postgresql/` 并手工执行）；
+1. `platform/ruoyi-vue-pro.sql`（system/infra 基线）；
+2. `platform/quartz.sql`；
+3. `collector/01_schema.sql`（采集器 22 表纯 DDL，含 `schema_migration`/`db_init_marker`）；
+4. `collector/02_system_seed.sql`（协议、保留策略、采集器菜单与 5 个定时任务记录，幂等）；
+5. `init/04a-collector-baseline-marker.sh`（登记 5 个迁移版本为已包含基线）；
 6. `init/05-file-config.sh`（MinIO master 文件配置）。
+
+> 手动初始化（非 compose 空卷路径）推荐使用 `sql/postgresql/dbctl.sh init <库> --new --run`，
+> 它按相同顺序执行并完成版本登记与初始化标记；`migration/` 下的增量脚本仅供已有库升级。
 
 后端启动后还需同步一次定时任务，报警判定作业才会进入 Quartz。推荐使用管理后台
 “定时任务 → 同步”；该操作要求管理员账号具有 `infra:job:create` 权限。若使用命令行，
@@ -150,22 +153,24 @@ curl -X POST -H 'tenant-id: 1' -H 'Authorization: Bearer <管理员Token>' \
 确认 `采集报警判定` 任务存在、状态为开启，并在“调度日志”中看到至少一次执行记录；
 未同步时 `infra_job` 只有记录，Quartz 不会调度。
 
-**不要在已有数据的库上手工重跑基线 SQL**，其中包含 DROP/重建语句。清空数据目录或
-`down` 后重新 `up` 不等于安全升级；数据库结构升级必须另行备份与评估。
+**不要在已有数据的库上手工重跑基线 SQL**，其中 `platform/` 脚本包含 DROP/重建语句。清空数据目录或
+`down` 后重新 `up` 不等于安全升级；数据库结构升级必须另行备份与评估，并用 `dbctl.sh migrate`
+（或 `migration/` 下的幂等脚本）增量执行。
 
-**既有库升级到最新值看板**：在发布新版 collector 之前，先在板端备份数据库，再执行
-幂等迁移（不要重跑 `collector.sql`）：
+**既有库升级（最新值看板、报警、聚合等）**：在发布新版 collector 之前，先在板端备份数据库，
+再用版本控制工具执行增量迁移（不要重跑 `01_schema.sql`）：
 
 ```bash
-cd /opt/yudao/compose-single
-sudo docker compose exec -T postgres \
-  psql -U yudao -d ruoyi-vue-pro -v ON_ERROR_STOP=1 \
-  < /opt/yudao/sql/postgresql/collector_latest_migration.sql
+# 一次性：对从未登记版本的旧库做结构探测基线标记（拒绝盲标，range_fix 不可证明时按指引处理）
+sudo /opt/yudao/sql/postgresql/dbctl.sh mark-baseline ruoyi-vue-pro --run
+# 之后每次发版：自动跳过已登记版本，只执行缺失迁移并刷新系统种子
+sudo /opt/yudao/sql/postgresql/dbctl.sh migrate ruoyi-vue-pro --run
 ```
 
-迁移脚本由 `bootstrap-board.sh` 一并安装到 `/opt/yudao/sql/postgresql`。新版 collector
-启动时会检查 `collector_channel_latest`；缺表时记录中文错误、提示先执行
-`collector_latest_migration.sql` 并以退出码 2 失败，避免只写 raw 静默丢最新值。
+`bootstrap-board.sh` 会把 `dbctl.sh`、`platform/`、`collector/`、`migration/` 一并安装到
+`/opt/yudao/sql/postgresql/`。新版 collector 启动时会检查 `collector_channel_latest`；
+缺表时记录中文错误、提示先执行 `migration/collector_latest_migration.sql` 并以退出码 2
+失败，避免只写 raw 静默丢最新值。
 
 检查：
 
@@ -184,33 +189,27 @@ sudo docker compose run --rm --no-deps minio-init
 
 MinIO bucket 由 `minio-init` 自动创建。最后一条命令可幂等重跑 bucket 初始化。
 
-### 4.4 既有库升级：报警引擎
+### 4.4 既有库升级：报警引擎（历史说明，现由 dbctl 统一管理）
 
-已有数据目录不要重跑 `collector.sql`，按顺序执行报警引擎增量：
+已有数据目录不要重跑 `collector/01_schema.sql`，报警引擎增量的原始步骤如下（幂等，
+对应 `migration/collector_alarm_migration.sql`，现由 `dbctl.sh migrate` 自动按序执行）：
 
 1. **维护窗口**：`collector_alarm_migration.sql` 包含 `collector_sample_raw` 全表回填，
    且事务内创建索引会阻塞写入；执行期间暂停采集写入，避免超时。
-2. **结构迁移**：`collector_alarm_migration.sql`（幂等，可重复执行）。
-3. **两个种子**：`collector_web_seed.sql`（报警菜单）与 `collector_alarm_seed.sql`
-   （定时任务记录），均幂等。
+2. **结构迁移**：`migration/collector_alarm_migration.sql`（幂等，可重复执行）。
+3. **系统种子**：`collector/02_system_seed.sql` 已合并原 `collector_web_seed.sql`（报警菜单）
+   与 `collector_alarm_seed.sql`（定时任务记录），幂等；`dbctl.sh migrate` 末尾会自动刷新。
 4. **同步 Quartz**：在管理后台“定时任务 → 同步”（需要 `infra:job:create`），或携带
    管理员 Token 调用一次 `POST /admin-api/infra/job/sync`。种子只写 `infra_job`，
    不同步则作业不会执行。
 5. **验收检查**：确认“采集报警判定”任务存在且开启；在“调度日志”中看到至少一次
    执行记录；打开报警记录页确认能查询。部署验收清单应包含“查看一次作业执行日志”。
 
-`bootstrap-board.sh` 当前只同步基线四个 SQL；升级前请先把新增的
-`collector_alarm_migration.sql`、`collector_web_seed.sql`、`collector_alarm_seed.sql`
-复制到板端 `/opt/yudao/sql/postgresql/`，然后执行：
+`bootstrap-board.sh` 会把整套 `platform/`、`collector/`、`migration/` 与 `dbctl.sh`
+安装到板端 `/opt/yudao/sql/postgresql/`，升级直接执行：
 
 ```bash
-cd /opt/yudao/compose-single
-sudo docker compose exec -T postgres psql -U yudao -d ruoyi-vue-pro \
-  < /opt/yudao/sql/postgresql/collector_alarm_migration.sql
-sudo docker compose exec -T postgres psql -U yudao -d ruoyi-vue-pro \
-  < /opt/yudao/sql/postgresql/collector_web_seed.sql
-sudo docker compose exec -T postgres psql -U yudao -d ruoyi-vue-pro \
-  < /opt/yudao/sql/postgresql/collector_alarm_seed.sql
+sudo /opt/yudao/sql/postgresql/dbctl.sh migrate ruoyi-vue-pro --run
 curl -X POST -H 'tenant-id: 1' -H 'Authorization: Bearer <管理员Token>' \
   http://192.168.0.101/admin-api/infra/job/sync
 ```

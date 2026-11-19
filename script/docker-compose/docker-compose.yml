@@ -17,13 +17,13 @@ services:
       - postgres-data:/var/lib/postgresql/data
       # 仅在 postgres-data 卷为空（首次启动）时，按文件名顺序执行；SQL 文件不存在时直接报错，避免被创建成空目录
       - type: bind
-        source: ../../sql/postgresql/ruoyi-vue-pro.sql
+        source: ../../sql/postgresql/platform/ruoyi-vue-pro.sql
         target: /docker-entrypoint-initdb.d/01-ruoyi-vue-pro.sql
         read_only: true
         bind:
           create_host_path: false
       - type: bind
-        source: ../../sql/postgresql/quartz.sql
+        source: ../../sql/postgresql/platform/quartz.sql
         target: /docker-entrypoint-initdb.d/02-quartz.sql
         read_only: true
         bind:

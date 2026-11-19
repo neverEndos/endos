@@ -91,8 +91,8 @@ docker compose pull && docker compose up -d
 
 仓库自带 PostgreSQL 初始化 SQL：
 
-- `sql/postgresql/ruoyi-vue-pro.sql`
-- `sql/postgresql/quartz.sql`
+- `sql/postgresql/platform/ruoyi-vue-pro.sql`
+- `sql/postgresql/platform/quartz.sql`
 
 **仅在空库首次初始化时执行；两个脚本包含 `DROP TABLE IF EXISTS`，在已有数据的库上重跑会清空表。**
 
