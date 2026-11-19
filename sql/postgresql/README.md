@@ -60,11 +60,18 @@ sql/postgresql/
 
 ### 安全护栏
 
-1. 库名白名单 `^[a-z][a-z0-9_]{2,30}$`（psql 无法参数化标识符，杜绝注入）；
-2. 写操作黑名单：`ruoyi-vue-pro`、`yudao_board`、`postgres`、`template0`、`template1`；
-3. 校验库命名 `^yudao_validate(_[a-z0-9]+)?$`，且 `seed-test`/`drop-validation` 强制校验
-   `db_init_marker.purpose=validation`；
-4. `init` 拒绝在已存在的库上执行；校验库初始化失败自动清理，应用库失败保留并报告步骤；
+库名按子命令破坏性分级（psql 无法参数化标识符，所有标识符先校验、插值时双引号包裹）：
+
+1. **最严档（`init` / `seed-test` / `drop-validation`）**：库名必须匹配
+   `^[a-z][a-z0-9_]{2,30}$`，校验库还须匹配 `^yudao_validate(_[a-z0-9]+)?$`；正式库
+   `ruoyi-vue-pro`、`yudao_board` 与系统库 `postgres`/`template0`/`template1` 一律拒绝；
+2. **升级/只读档（`migrate` / `mark-baseline` / `seed-system` / `status`）**：允许两个
+   显式登记的正式库名 `ruoyi-vue-pro`、`yudao_board`（精确匹配，连字符不向其他库名泛化，
+   如 `my-db`、`ruoyi-vue-prox` 仍拒绝），或符合安全标识规则的应用库；系统库任何子命令都拒绝；
+3. `seed-test`/`drop-validation` 还强制校验 `db_init_marker.purpose=validation`，
+   marker 是删库唯一凭证；
+4. `init` 拒绝在已存在的库上执行；校验库初始化任一步失败（含 marker 写入与版本登记）由
+   ERR trap 自动删除本次创建的库，应用库失败保留并报告最后失败命令；
 5. `mark-baseline` 对每个版本做结构探测，不能证明已应用则不登记；其中纯 DML 的
    `20261116.2`（range_fix）无法证明时，只能先执行该修正脚本，或在确认不适用时显式加
    `--ack-data-repair`，不会被静默跳过。

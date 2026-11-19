@@ -167,6 +167,10 @@ sudo /opt/yudao/sql/postgresql/dbctl.sh mark-baseline ruoyi-vue-pro --run
 sudo /opt/yudao/sql/postgresql/dbctl.sh migrate ruoyi-vue-pro --run
 ```
 
+`ruoyi-vue-pro`（含连字符）与 `yudao_board` 是 dbctl 显式登记的正式库名，仅
+`mark-baseline`/`migrate`/`seed-system`/`status` 精确放行；`init`/`seed-test`/
+`drop-validation` 仍最严拒绝，其他连字符库名（如 `my-db`）也不会被泛化放行。
+
 `bootstrap-board.sh` 会把 `dbctl.sh`、`platform/`、`collector/`、`migration/` 一并安装到
 `/opt/yudao/sql/postgresql/`。新版 collector 启动时会检查 `collector_channel_latest`；
 缺表时记录中文错误、提示先执行 `migration/collector_latest_migration.sql` 并以退出码 2
