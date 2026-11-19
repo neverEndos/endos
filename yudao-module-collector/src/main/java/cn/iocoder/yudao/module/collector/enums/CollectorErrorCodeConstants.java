@@ -73,5 +73,7 @@ public interface CollectorErrorCodeConstants {
     ErrorCode PARTITION_DEFAULT_CONFLICT = new ErrorCode(1_023_008_003,
             "默认分区存在冲突数据，需要受控迁移");
     ErrorCode PARTITION_MAINTAIN_FAILED = new ErrorCode(1_023_008_004, "分区维护失败：{}");
+    ErrorCode PARTITION_DEFAULT_PARTITION_INVALID = new ErrorCode(1_023_008_005,
+            "默认分区对象({})不可用：{}，需人工确认");
 
 }

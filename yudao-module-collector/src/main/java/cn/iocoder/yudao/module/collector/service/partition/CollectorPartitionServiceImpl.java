@@ -15,6 +15,7 @@ import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.chrono.IsoChronology;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -22,11 +23,13 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.PARTITION_DEFAULT_CONFLICT;
+import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.PARTITION_DEFAULT_PARTITION_INVALID;
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.PARTITION_POLICY_DUPLICATE;
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.PARTITION_POLICY_INVALID;
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.PARTITION_POLICY_NOT_EXISTS;
@@ -48,7 +51,9 @@ public class CollectorPartitionServiceImpl implements CollectorPartitionService 
     private static final String PARENT_TABLE_NAME = "collector_sample_raw";
     private static final String PARENT_TABLE = PARENT_SCHEMA + "." + PARENT_TABLE_NAME;
     private static final String PARTITION_PREFIX = "collector_sample_raw_p";
-    private static final String DEFAULT_PARTITION = PARENT_TABLE + "_default";
+    private static final String DEFAULT_PARTITION_NAME = PARENT_TABLE_NAME + "_default";
+    private static final String DEFAULT_PARTITION = PARENT_SCHEMA + "." + DEFAULT_PARTITION_NAME;
+    private static final String RETENTION_POLICY_TABLE = PARENT_SCHEMA + ".collector_retention_policy";
     private static final String RAW_DATA_CLASS = "sample_raw";
 
     private static final int MIN_LEAD_DAYS = 0;
@@ -69,20 +74,41 @@ public class CollectorPartitionServiceImpl implements CollectorPartitionService 
     /** 只允许固定前缀 + 8 位日期，分区名不来自任何外部输入。 */
     private static final Pattern PARTITION_NAME_PATTERN = Pattern.compile("^collector_sample_raw_p\\d{8}$");
 
-    /** PostgreSQL pg_get_expr 输出的 RANGE 边界；DEFAULT 分区由 {@link #parseBound} 单独识别。 */
+    /**
+     * PostgreSQL pg_get_expr 输出的 RANGE 边界。
+     *
+     * <p>两端既可能是 {@code ('2026-11-20 00:00:00')}，也可能是无引号的 {@code (MINVALUE)} /
+     * {@code (MAXVALUE)}；DEFAULT 分区由 {@link #parseBound} 单独识别。</p>
+     */
     private static final Pattern RANGE_BOUND_PATTERN =
-            Pattern.compile("^FOR VALUES FROM \\('([^']+)'\\) TO \\('([^']+)'\\)$");
+            Pattern.compile("^FOR VALUES FROM \\((.+)\\) TO \\((.+)\\)$", Pattern.CASE_INSENSITIVE);
 
-    private static final DateTimeFormatter PARTITION_SUFFIX_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd");
-    private static final DateTimeFormatter BOUND_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    /**
+     * 单个边界值：{@code '...' } 后可能带受控的类型后缀，例如
+     * {@code '2026-11-20 00:00:00'::timestamp without time zone}。
+     *
+     * <p>只接受「字符串常量 + 可选类型名（可含括号精度）」，不解析任意表达式。</p>
+     */
+    private static final Pattern BOUND_VALUE_PATTERN = Pattern.compile(
+            "^'([^']*)'(?:::\\s*[A-Za-z_][A-Za-z0-9_ ]*(?:\\(\\s*[0-9, ]+\\s*\\))?)?$");
+
+    private static final String MINVALUE = "MINVALUE";
+    private static final String MAXVALUE = "MAXVALUE";
+
+    private static final DateTimeFormatter PARTITION_SUFFIX_FORMATTER = DateTimeFormatter
+            .ofPattern("yyyyMMdd", Locale.ROOT)
+            .withChronology(IsoChronology.INSTANCE);
+    private static final DateTimeFormatter BOUND_TIME_FORMATTER = DateTimeFormatter
+            .ofPattern("yyyy-MM-dd HH:mm:ss", Locale.ROOT)
+            .withChronology(IsoChronology.INSTANCE);
 
     private static final String CHILD_PARTITION_SQL = """
             SELECT c.relname, c.relispartition, pg_get_expr(c.relpartbound, c.oid) AS bound
             FROM pg_inherits i
             JOIN pg_class c ON c.oid = i.inhrelid
             JOIN pg_class p ON p.oid = i.inhparent
-            WHERE p.oid = 'public.collector_sample_raw'::regclass
-            """;
+            WHERE p.oid = '%s'::regclass
+            """.formatted(PARENT_TABLE);
 
     private static final String RELATION_SQL = """
             SELECT c.relname, c.relkind, c.relispartition, pg_get_expr(c.relpartbound, c.oid) AS bound,
@@ -92,9 +118,17 @@ public class CollectorPartitionServiceImpl implements CollectorPartitionService 
             LEFT JOIN pg_inherits i ON i.inhrelid = c.oid
             LEFT JOIN pg_class p ON p.oid = i.inhparent
             LEFT JOIN pg_namespace pn ON pn.oid = p.relnamespace
-            WHERE n.nspname = 'public' AND c.relname = ?
+            WHERE n.nspname = '%s' AND c.relname = ?
             LIMIT 1
-            """;
+            """.formatted(PARENT_SCHEMA);
+
+    private static final String DEFAULT_PARTITION_HAS_DATA_SQL =
+            "SELECT EXISTS (SELECT 1 FROM " + DEFAULT_PARTITION
+                    + " WHERE collect_time >= ? AND collect_time < ?)";
+
+    private static final String RETENTION_POLICY_SQL =
+            "SELECT partition_lead_days FROM " + RETENTION_POLICY_TABLE
+                    + " WHERE deleted = 0 AND data_class = ?";
 
     private final JdbcTemplate jdbcTemplate;
 
@@ -165,10 +199,18 @@ public class CollectorPartitionServiceImpl implements CollectorPartitionService 
                             "同名对象已存在但不是分区（relispartition=false）"));
                     continue;
                 }
-                PartitionBound bound = parseBound(sameNamePartition.bound());
-                if (bound == null || !bound.exactly(dayStart, dayEnd)) {
+                BoundParse parsed = parseBound(sameNamePartition.bound());
+                if (parsed.state() == BoundState.UNPARSEABLE) {
+                    // 不可解析与「边界不符」必须区分，便于人工介入时快速定位 catalog 异常。
                     ddlFailures.add(new PartitionFailure(partitionName, day, range,
-                            "同名分区已存在但边界(" + describeBound(sameNamePartition.bound()) + ")与期望不一致"));
+                            "无法识别的分区边界表达式：" + parsed.raw() + "，需人工确认"));
+                    continue;
+                }
+                if (parsed.state() != BoundState.RANGE
+                        || !parsed.bound().exactly(dayStart, dayEnd)) {
+                    ddlFailures.add(new PartitionFailure(partitionName, day, range,
+                            "同名分区已存在但边界(" + describeBound(sameNamePartition.bound())
+                                    + ")与期望(" + range + ")不一致"));
                     continue;
                 }
                 skippedExistingCount++;
@@ -236,16 +278,21 @@ public class CollectorPartitionServiceImpl implements CollectorPartitionService 
     }
 
     /**
-     * 读取 raw 保留策略中的预建天数；0 行、多行与越界值都直接失败，不使用默认值兜底。
+     * 读取 raw 保留策略中的预建天数；0 行、多行、NULL 与越界值都直接失败，不使用默认值兜底。
      */
     private int loadPartitionLeadDays(Connection connection) throws SQLException {
         List<Integer> leadDaysList = new ArrayList<>();
-        try (PreparedStatement statement = connection.prepareStatement(
-                "SELECT partition_lead_days FROM public.collector_retention_policy"
-                        + " WHERE deleted = 0 AND data_class = '" + RAW_DATA_CLASS + "'");
-             ResultSet resultSet = statement.executeQuery()) {
-            while (resultSet.next()) {
-                leadDaysList.add(resultSet.getInt(1));
+        try (PreparedStatement statement = connection.prepareStatement(RETENTION_POLICY_SQL)) {
+            statement.setString(1, RAW_DATA_CLASS);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    // getInt 会把 NULL 静默读成 0，必须显式取对象再判空。
+                    Integer leadDays = resultSet.getObject(1, Integer.class);
+                    if (leadDays == null) {
+                        throw exception(PARTITION_POLICY_INVALID, "NULL");
+                    }
+                    leadDaysList.add(leadDays);
+                }
             }
         }
         if (leadDaysList.isEmpty()) {
@@ -288,20 +335,37 @@ public class CollectorPartitionServiceImpl implements CollectorPartitionService 
         }
     }
 
+    /**
+     * 确认 DEFAULT 分区存在，且确实是本父表的 DEFAULT 分区。
+     *
+     * <p>只看名字会把「同名普通表」或「其他父表的同名分区」误判成默认分区仍存在，
+     * 从而静默跳过冲突保护；这里改为 catalog 校验并显式失败。</p>
+     */
     private boolean defaultPartitionExists(Connection connection) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("SELECT to_regclass(?)::text")) {
-            statement.setString(1, DEFAULT_PARTITION);
-            try (ResultSet resultSet = statement.executeQuery()) {
-                return resultSet.next() && resultSet.getString(1) != null;
-            }
+        RelationInfo relation = loadRelation(connection, DEFAULT_PARTITION_NAME);
+        if (relation == null) {
+            return false;
         }
+        if (!relation.partition()) {
+            throw exception(PARTITION_DEFAULT_PARTITION_INVALID, DEFAULT_PARTITION,
+                    "同名对象不是分区表（relkind=" + relation.relKind() + "）");
+        }
+        if (!PARENT_SCHEMA.equals(relation.parentSchema())
+                || !PARENT_TABLE_NAME.equals(relation.parentName())) {
+            throw exception(PARTITION_DEFAULT_PARTITION_INVALID, DEFAULT_PARTITION,
+                    "实际为 " + relation.parentSchema() + "." + relation.parentName()
+                            + " 的分区，边界=" + describeBound(relation.bound()));
+        }
+        if (!"DEFAULT".equalsIgnoreCase(relation.bound() == null ? "" : relation.bound().trim())) {
+            throw exception(PARTITION_DEFAULT_PARTITION_INVALID, DEFAULT_PARTITION,
+                    "边界为 " + describeBound(relation.bound()) + "，不是 DEFAULT");
+        }
+        return true;
     }
 
     private boolean defaultPartitionHasData(Connection connection, LocalDateTime dayStart,
                                             LocalDateTime dayEnd) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(
-                "SELECT EXISTS (SELECT 1 FROM public.collector_sample_raw_default"
-                        + " WHERE collect_time >= ? AND collect_time < ?)")) {
+        try (PreparedStatement statement = connection.prepareStatement(DEFAULT_PARTITION_HAS_DATA_SQL)) {
             statement.setTimestamp(1, Timestamp.valueOf(dayStart));
             statement.setTimestamp(2, Timestamp.valueOf(dayEnd));
             try (ResultSet resultSet = statement.executeQuery()) {
@@ -316,8 +380,9 @@ public class CollectorPartitionServiceImpl implements CollectorPartitionService 
             if (!child.partition()) {
                 continue;
             }
-            PartitionBound bound = parseBound(child.bound());
-            if (bound != null && bound.covers(dayStart, dayEnd)) {
+            BoundParse parsed = parseBound(child.bound());
+            // MINVALUE/MAXVALUE 已解析为无穷，可正确判断覆盖；DEFAULT 与不可解析均不代表具体自然日覆盖。
+            if (parsed.state() == BoundState.RANGE && parsed.bound().covers(dayStart, dayEnd)) {
                 return true;
             }
         }
@@ -351,8 +416,11 @@ public class CollectorPartitionServiceImpl implements CollectorPartitionService 
             return "父表为 " + relation.parentSchema() + "." + relation.parentName()
                     + "，不是 " + PARENT_TABLE;
         }
-        PartitionBound bound = parseBound(relation.bound());
-        if (bound == null || !bound.exactly(dayStart, dayEnd)) {
+        BoundParse parsed = parseBound(relation.bound());
+        if (parsed.state() == BoundState.UNPARSEABLE) {
+            return "无法识别的分区边界表达式：" + parsed.raw();
+        }
+        if (parsed.state() != BoundState.RANGE || !parsed.bound().exactly(dayStart, dayEnd)) {
             return "边界为 " + describeBound(relation.bound()) + "，期望为 " + range;
         }
         return null;
@@ -399,40 +467,62 @@ public class CollectorPartitionServiceImpl implements CollectorPartitionService 
     }
 
     /**
-     * PostgreSQL 默认分区约束冲突：SQLState 23514，且错误信息包含 default partition / partition constraint。
-     * 并发插入可能在默认分区检查后落入数据，此时需要把 SQL 异常映射成与预检查一致的中文冲突信息。
+     * PostgreSQL 默认分区约束冲突。
+     *
+     * <p>{@code CREATE ... PARTITION OF} 期间的 check_violation(SQLState 23514) 只可能来自默认分区校验，
+     * 因此不再依赖英文错误文本，避免中文 {@code lc_messages} 环境下漏判。</p>
      */
     private boolean isDefaultPartitionConflict(SQLException exception) {
         for (Throwable current = exception; current != null; current = current.getCause()) {
-            if (!(current instanceof SQLException sqlException)) {
-                continue;
-            }
-            String message = sqlException.getMessage();
-            String lowerMessage = message == null ? "" : message.toLowerCase(Locale.ROOT);
-            if ("23514".equals(sqlException.getSQLState())
-                    && (lowerMessage.contains("default partition") || lowerMessage.contains("partition constraint"))) {
+            if (current instanceof SQLException sqlException
+                    && "23514".equals(sqlException.getSQLState())) {
                 return true;
             }
         }
         return false;
     }
 
-    private PartitionBound parseBound(String expression) {
+    /**
+     * 解析 pg_get_expr 输出的分区边界。
+     *
+     * <p>不可解析时返回 {@link BoundState#UNPARSEABLE} 并保留原文，绝不当作「已存在」或「已覆盖」。</p>
+     */
+    private BoundParse parseBound(String expression) {
+        String raw = describeBound(expression);
         if (expression == null) {
-            return null;
+            return BoundParse.unparseable(raw);
         }
         String trimmed = expression.trim();
         if ("DEFAULT".equalsIgnoreCase(trimmed)) {
             // DEFAULT 分区不构成某个具体自然日的覆盖。
-            return null;
+            return BoundParse.defaultPartition();
         }
         Matcher matcher = RANGE_BOUND_PATTERN.matcher(trimmed);
         if (!matcher.matches()) {
-            return null;
+            return BoundParse.unparseable(raw);
         }
-        LocalDateTime from = parseBoundTime(matcher.group(1));
-        LocalDateTime to = parseBoundTime(matcher.group(2));
-        return from == null || to == null ? null : new PartitionBound(from, to);
+        BoundValue from = parseBoundValue(matcher.group(1));
+        BoundValue to = parseBoundValue(matcher.group(2));
+        if (!from.parsed() || !to.parsed()) {
+            return BoundParse.unparseable(raw);
+        }
+        return BoundParse.range(new PartitionBound(from.time(), to.time()));
+    }
+
+    /**
+     * 解析单个边界值；{@code MINVALUE}/{@code MAXVALUE} 解析为「无穷」，返回的 time 为 null。
+     */
+    private BoundValue parseBoundValue(String value) {
+        String trimmed = value.trim();
+        if (MINVALUE.equalsIgnoreCase(trimmed) || MAXVALUE.equalsIgnoreCase(trimmed)) {
+            return BoundValue.infinity();
+        }
+        Matcher matcher = BOUND_VALUE_PATTERN.matcher(trimmed);
+        if (!matcher.matches()) {
+            return BoundValue.invalid();
+        }
+        LocalDateTime time = parseBoundTime(matcher.group(1));
+        return time == null ? BoundValue.invalid() : BoundValue.at(time);
     }
 
     private LocalDateTime parseBoundTime(String value) {
@@ -479,15 +569,57 @@ public class CollectorPartitionServiceImpl implements CollectorPartitionService 
                                 String parentName, String bound) {
     }
 
-    /** 解析后的 RANGE 边界。 */
+    /** 分区边界解析状态。 */
+    private enum BoundState {
+        RANGE, DEFAULT, UNPARSEABLE
+    }
+
+    /** 单个边界值：parsed=false 表示无法解析；time=null 表示 MINVALUE/MAXVALUE 无穷。 */
+    private record BoundValue(boolean parsed, LocalDateTime time) {
+
+        static BoundValue infinity() {
+            return new BoundValue(true, null);
+        }
+
+        static BoundValue invalid() {
+            return new BoundValue(false, null);
+        }
+
+        static BoundValue at(LocalDateTime time) {
+            return new BoundValue(true, time);
+        }
+    }
+
+    /** 分区边界解析结果；UNPARSEABLE 时保留 catalog 原文便于人工确认。 */
+    private record BoundParse(BoundState state, PartitionBound bound, String raw) {
+
+        static BoundParse range(PartitionBound bound) {
+            return new BoundParse(BoundState.RANGE, bound, null);
+        }
+
+        static BoundParse defaultPartition() {
+            return new BoundParse(BoundState.DEFAULT, null, "DEFAULT");
+        }
+
+        static BoundParse unparseable(String raw) {
+            return new BoundParse(BoundState.UNPARSEABLE, null, raw);
+        }
+    }
+
+    /**
+     * 解析后的 RANGE 边界；{@code from == null} 表示 MINVALUE（−∞），
+     * {@code to == null} 表示 MAXVALUE（+∞）。
+     */
     private record PartitionBound(LocalDateTime from, LocalDateTime to) {
 
         boolean exactly(LocalDateTime expectedFrom, LocalDateTime expectedTo) {
-            return from.equals(expectedFrom) && to.equals(expectedTo);
+            return Objects.equals(from, expectedFrom) && Objects.equals(to, expectedTo);
         }
 
         boolean covers(LocalDateTime dayStart, LocalDateTime dayEnd) {
-            return !from.isAfter(dayStart) && !to.isBefore(dayEnd);
+            boolean coversFrom = from == null || !from.isAfter(dayStart);
+            boolean coversTo = to == null || !to.isBefore(dayEnd);
+            return coversFrom && coversTo;
         }
     }
 
