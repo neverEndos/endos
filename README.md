@@ -93,13 +93,15 @@ yudao-server
 # 创建数据库（PostgreSQL）
 psql -U postgres -c "CREATE DATABASE \"ruoyi-vue-pro\";"
 
-# 先导入业务表，再导入 Quartz 表
-psql -U postgres -d ruoyi-vue-pro -f sql/postgresql/ruoyi-vue-pro.sql
-psql -U postgres -d ruoyi-vue-pro -f sql/postgresql/quartz.sql
+# 先导入业务表，再导入 Quartz 表（脚本已归入 platform/ 子目录）
+psql -U postgres -d ruoyi-vue-pro -f sql/postgresql/platform/ruoyi-vue-pro.sql
+psql -U postgres -d ruoyi-vue-pro -f sql/postgresql/platform/quartz.sql
 ```
 
-- 业务及基础设施表：[`sql/postgresql/ruoyi-vue-pro.sql`](sql/postgresql/ruoyi-vue-pro.sql)
-- 定时任务表：[`sql/postgresql/quartz.sql`](sql/postgresql/quartz.sql)
+- 业务及基础设施表：[`sql/postgresql/platform/ruoyi-vue-pro.sql`](sql/postgresql/platform/ruoyi-vue-pro.sql)
+- 定时任务表：[`sql/postgresql/platform/quartz.sql`](sql/postgresql/platform/quartz.sql)
+- 采集器表结构与系统种子：`sql/postgresql/collector/`（`01_schema.sql` 纯 DDL、`02_system_seed.sql` 幂等种子）
+- 采集器历史增量迁移：`sql/postgresql/migration/`，由 [`sql/postgresql/dbctl.sh`](sql/postgresql/dbctl.sh) 统一管理版本
 
 仓库只维护 PostgreSQL 初始化脚本；其他数据库脚本及转换工具已移除。
 
@@ -167,7 +169,7 @@ docker compose up -d --build
 ```
 
 - 默认访问地址：`http://localhost:8080`（由 `WEB_PORT` 控制）。
-- 首次启动时，PostgreSQL 按顺序导入 [`sql/postgresql/ruoyi-vue-pro.sql`](sql/postgresql/ruoyi-vue-pro.sql) 和 [`sql/postgresql/quartz.sql`](sql/postgresql/quartz.sql)；之后修改 SQL 文件不会作用于已有数据卷。
+- 首次启动时，PostgreSQL 按顺序导入 [`platform/ruoyi-vue-pro.sql`](sql/postgresql/platform/ruoyi-vue-pro.sql)、[`platform/quartz.sql`](sql/postgresql/platform/quartz.sql)、采集器 `collector/01_schema.sql`、`collector/02_system_seed.sql`（仅在数据卷为空时执行）；之后修改 SQL 文件不会作用于已有数据卷。
 - PostgreSQL、Redis、后端默认不映射到宿主机端口，避免与本机的 5432、6379、48080 冲突。
 - 后端镜像由 [`yudao-server/Dockerfile`](yudao-server/Dockerfile) 构建。
 - **不要执行 `docker compose down -v`**，它会删除 PostgreSQL、Redis 数据卷并清空数据库。停止环境使用 `docker compose down`。

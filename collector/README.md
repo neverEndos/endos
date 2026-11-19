@@ -83,7 +83,7 @@ WARN，并在后续轮询中跳过；`--require-sensors` 可恢复“所有已�
 起恢复 raw/设备状态/心跳写入，无需人工重启。同一类连接错误在一个失败周期内只
 告警一次，恢复时记录 INFO，避免日志刷屏。**例外**：启动自检发现缺少
 `collector_channel_latest` 时不会进入重试，而是提示执行
-`sql/postgresql/collector_latest_migration.sql` 并以退出码 2 结束。进程收到
+`sql/postgresql/migration/collector_latest_migration.sql` 并以退出码 2 结束。进程收到
 SIGINT/SIGTERM 或达到 `--duration` 后关闭 JSONL/DB 连接、恢复串口设置，并输出
 统计摘要。
 
@@ -193,15 +193,17 @@ SIGINT/SIGTERM 或达到 `--duration` 后关闭 JSONL/DB 连接、恢复串口�
   温度 -60~150、Drive 0~100。
 
 已有旧版（仅两档阈值）数据库需先执行一次
-`sql/postgresql/collector_threshold_migration.sql`，再启动新版种子；新库直接执行
-`sql/postgresql/collector.sql` 即可。种子可重复执行，不会重复创建类型、模板、
+`sql/postgresql/migration/collector_threshold_migration.sql`，再启动新版种子；新库直接执行
+`sql/postgresql/collector/01_schema.sql` 与 `sql/postgresql/collector/02_system_seed.sql`
+（或使用 `sql/postgresql/dbctl.sh init`）即可。种子可重复执行，不会重复创建类型、模板、
 设备、传感器或通道。
 
 **既有库升级到最新值看板**：先执行一次幂等的
-`sql/postgresql/collector_latest_migration.sql`，再启动新版采集器。采集器启动时会
+`sql/postgresql/migration/collector_latest_migration.sql`，再启动新版采集器（或直接用
+`dbctl.sh migrate` 统一管理版本）。采集器启动时会
 检查 `public.collector_channel_latest`；缺表时记录中文错误并提示“请先执行
 collector_latest_migration.sql”，随后以退出码 2 失败，不会只写 raw 而静默丢失
-最新值。全新库由 `collector.sql` 一并建表，无需单独迁移。
+最新值。全新库由 `collector/01_schema.sql` 一并建表，无需单独迁移。
 
 配置消费（不再“只写不读”）：
 
@@ -262,8 +264,8 @@ PGPASSWORD=123456 psql -h 192.168.0.23 -U root -d yudao_board \
 `GET /admin-api/collector/dashboard/latest?deviceId=<id>`，权限
 `collector:dashboard:query`；返回设备状态、按传感器分组的启用通道最新值。页面
 同时调用 `/admin-api/collector/device/simple-list`，因此看板角色还需要
-`collector:device:query`；`collector_web_seed.sql` 会给已获得看板菜单（802）的角色
-幂等补齐采集设备菜单（781）。
+`collector:device:query`；`collector/02_system_seed.sql`（原 collector_web_seed.sql）
+会给已获得看板菜单（802）的角色幂等补齐采集设备菜单（781）。
 
 - **不做 ETag/304**：响应只由采样与设备状态生成时看似可缓存，但
   `online/staleOffline/stale/serverTime` 会随服务器时间变化；若用采样时间做版本
