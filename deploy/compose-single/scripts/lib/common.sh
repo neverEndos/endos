@@ -12,6 +12,46 @@ die() { error "$*"; exit 1; }
 is_dry_run() { [ "$DRY_RUN" = "1" ]; }
 require_cmd() { command -v "$1" >/dev/null 2>&1 || die "缺少命令：$1"; }
 
+# ---------- 文本文件 LF 归一化 ----------
+# Windows 开发机 core.autocrlf=true 时，工作区文本可能检出为 CRLF（deploy/ 下有
+# .gitattributes 强制 LF，但 sql/postgresql/ 不在其覆盖范围内），经 tar/目录拷贝
+# 到板端后会出现 shebang 的 bash\r 与 SQL/配置残留 CR。板端不一定安装 git，且
+# 部署包可能来自非 git 来源，因此这里按文件内容做归一化，只认扩展名白名单：
+# shell/SQL/Compose/nginx/systemd 文本；.env 真实凭据与 jar、图片、压缩包等二进制
+# 不匹配白名单，字节保持不变。
+LF_TEXT_FIND_ARGS=(
+  -name '*.sh' -o -name '*.sql' -o -name '*.yml' -o -name '*.yaml'
+  -o -name '*.conf' -o -name '*.service'
+)
+
+# 用法：normalize_text_lf <目录>...
+# 递归处理目录下白名单扩展名的普通文件，只删除行尾 CR（CRLF -> LF），行内 CR 与
+# 其他字节不变；不含 CR 的文件不重写，重复执行幂等。dry-run 只打印不改写。
+# 路径不存在时告警并跳过，不因暂存目录缺项中断初始化。
+normalize_text_lf() {
+  local dir f
+  [ "$#" -gt 0 ] || die "normalize_text_lf 缺少目录参数"
+  for dir in "$@"; do
+    if [ ! -d "$dir" ]; then
+      warn "跳过不存在的 LF 归一化目录：$dir"
+      continue
+    fi
+    while IFS= read -r -d '' f; do
+      # 用 sed|cmp 按字节判断是否存在行尾 CR：部分平台（如 MSYS grep）会对
+      # CRLF 做透明处理，不能依赖 grep 检测；无 CR 的文件直接跳过，避免无意义重写。
+      if sed 's/\r$//' "$f" | cmp -s - "$f"; then
+        continue
+      fi
+      if is_dry_run; then
+        info "[dry-run] LF 归一化（CRLF -> LF）：$f"
+        continue
+      fi
+      sed -i 's/\r$//' "$f"
+      info "LF 归一化：$f"
+    done < <(find "$dir" -type f \( "${LF_TEXT_FIND_ARGS[@]}" \) -print0)
+  done
+}
+
 load_compose_env() {
   [ -f "$COMPOSE_DIR/.env" ] || die "缺少 $COMPOSE_DIR/.env，请先复制 .env.example 并修改"
   set -a

@@ -28,6 +28,8 @@ bootstrap-board.sh —— 单机 Compose 新板初始化
   - 缺少时安装 docker.io、docker-compose-v2、python3-psycopg2；
   - 创建 /opt/yudao/{compose-single,releases,data,logs,backups,collector}；
   - 安装 Compose 配置和 PostgreSQL 初始化 SQL，未显式 --env-file 时保留已有 .env；
+  - 安装的 shell/SQL/Compose/nginx/systemd 文本按扩展名白名单统一归一化为 LF
+    （.env 凭据与 jar、压缩包等二进制不处理），Windows core.autocrlf=true 也无需手工 sed；
   - PostgreSQL 绑定目录属主设为 70:70（postgres:17-alpine）；
   - 只有显式 --start 才启动应用，启动前需先用 apply-*.sh --stage-only 安装产物。
 EOF
@@ -92,6 +94,9 @@ if [ "$(readlink -f "$COMPOSE_DIR")" != "$(readlink -f "$TARGET")" ]; then
       | tar -C "$TARGET" -xf -
   fi
 fi
+# Windows 工作区或非 git 来源包可能带入 CRLF；安装后按白名单统一 LF，
+# 覆盖 docker-compose.yml、init/*.sh、nginx/*.conf、scripts/**/*.sh。
+normalize_text_lf "$TARGET"
 
 for sql in platform/ruoyi-vue-pro.sql platform/quartz.sql collector/01_schema.sql \
     collector/02_system_seed.sql dbctl.sh; do
@@ -120,6 +125,9 @@ for legacy in ruoyi-vue-pro.sql quartz.sql collector.sql collector_web_seed.sql 
     collector_aggregate_migration.sql; do
   run rm -f "$SQL_TARGET/$legacy"
 done
+# SQL 目录不在 deploy/.gitattributes 覆盖范围内，Windows 检出常为 CRLF；
+# 归一化覆盖 dbctl.sh、platform/、collector/、migration/ 下的 sh/sql 文本。
+normalize_text_lf "$SQL_TARGET"
 
 if [ -n "$ENV_FILE" ]; then
   run install -m 0600 "$ENV_FILE" "$TARGET/.env"
@@ -138,8 +146,9 @@ if [ "$WITH_COLLECTOR" -eq 1 ]; then
   if is_dry_run; then
     info "[dry-run] 渲染 collector.service：User/Group=$SERVICE_USER"
   else
+    # 再经一道行尾 CR 清理，避免非 git 来源的单元模板带 CRLF 导致 systemd 解析异常。
     sed -e "s/^User=.*/User=$SERVICE_USER/" -e "s/^Group=.*/Group=$SERVICE_USER/" \
-      "$UNIT_SOURCE" > "$UNIT_RENDERED"
+      "$UNIT_SOURCE" | sed 's/\r$//' > "$UNIT_RENDERED"
     install -m 0644 "$UNIT_RENDERED" /etc/systemd/system/collector.service
     set -a; . "$TARGET/.env"; set +a
     install -d -m 0755 /etc/yudao
