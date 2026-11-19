@@ -23,7 +23,7 @@ collector（宿主机 systemd）── /dev/ttyS4
 | 服务 | 镜像 | 宿主机端口 | 数据/产物目录 |
 |---|---|---|---|
 | postgres | `postgres:17-alpine` | `127.0.0.1:5432` | `/opt/yudao/data/postgres` |
-| redis | `redis:7-alpine` | 不发布 | `/opt/yudao/data/redis` |
+| redis | `redis:7-alpine` | `127.0.0.1:6379` | `/opt/yudao/data/redis` |
 | minio | `pgsty/minio:RELEASE.2026-08-04T00-00-00Z` | `127.0.0.1:9000/9001` | `/opt/yudao/data/minio` |
 | minio-init | 同 MinIO | 一次性退出 | 幂等创建私有 bucket |
 | yudao-server | `eclipse-temurin:25-jre` | 不发布 | `/opt/yudao/releases/backend` |
@@ -31,6 +31,19 @@ collector（宿主机 systemd）── /dev/ttyS4
 
 所有数据均使用显式 bind mount，不用 named volume 隐藏目录。路径可在 `.env` 覆盖，
 但覆盖后必须自行创建目录并处理属主。后端只在容器网络监听 48080，Nginx 是唯一 Web 入口。
+
+PostgreSQL、Redis 与 MinIO 的宿主机端口都只绑定回环地址，开发机通过固定 SSH 隧道访问，
+不对局域网暴露。以 Redis 为例（本地 `16379` → 板端 `127.0.0.1:6379`）：
+
+```bash
+ssh -N -L 16379:127.0.0.1:6379 cat@192.168.0.101
+# 另开终端：默认使用 db 0，密码取板端 .env 的 REDIS_PASSWORD，不要写入仓库或命令历史
+redis-cli -h 127.0.0.1 -p 16379
+127.0.0.1:16379> AUTH <REDIS_PASSWORD>
+```
+
+隧道只打通到板端回环端口，Redis 仍要求 `--requirepass` 密码认证；不得改为 `0.0.0.0`
+绑定、裸 `6379:6379` 或移除密码。
 
 ## 2. 前置条件
 
@@ -48,7 +61,9 @@ collector（宿主机 systemd）── /dev/ttyS4
 **已知风险：** Redis 密码会展开到 `docker-compose.yml` 的 `--requirepass` 启动参数，主机上的
 Docker 管理员可通过 `docker inspect` 读取。本方案以 root、Docker 组与 0600 的 `.env`
 属于同一受信任管理域为前提；必须限制 sudo/Docker 组成员，不要把 inspect 输出交给不受信任方。
-Redis 不向宿主机发布端口，这不能替代上述主机权限控制。
+Redis 与 PostgreSQL 一样只在宿主机回环地址发布端口（默认 `127.0.0.1:6379`，可用
+`REDIS_PORT` 覆盖），不对局域网暴露，连接仍须通过 `--requirepass` 密码认证；回环发布
+同样不能替代上述主机权限控制。
 
 ## 3. 构建产物
 

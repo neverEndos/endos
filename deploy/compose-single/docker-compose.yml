@@ -61,6 +61,9 @@ services:
     environment:
       TZ: ${TZ:-Asia/Shanghai}
       REDISCLI_AUTH: ${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}
+    # 与 PostgreSQL 同风格：仅发布到宿主机回环地址，经 SSH 隧道访问，不对局域网暴露。
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}"]
     volumes:
       - type: bind
