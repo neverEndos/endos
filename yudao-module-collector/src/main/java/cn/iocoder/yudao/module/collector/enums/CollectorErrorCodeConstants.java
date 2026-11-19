@@ -63,4 +63,15 @@ public interface CollectorErrorCodeConstants {
     ErrorCode TREND_RAW_OVERLAY_RANGE_EXCEEDED = new ErrorCode(1_023_007_002,
             "叠加原始点仅支持 {} 小时以内的时间范围");
 
+    // ========== 分区维护 1-023-008-000 ==========
+    ErrorCode PARTITION_POLICY_NOT_EXISTS = new ErrorCode(1_023_008_000,
+            "采集 raw 分区策略缺失：collector_retention_policy 中 data_class='sample_raw' 的记录不存在");
+    ErrorCode PARTITION_POLICY_DUPLICATE = new ErrorCode(1_023_008_001,
+            "采集 raw 分区策略不唯一：collector_retention_policy 中 data_class='sample_raw' 的记录数为 {}");
+    ErrorCode PARTITION_POLICY_INVALID = new ErrorCode(1_023_008_002,
+            "采集 raw 分区策略的 partition_lead_days({}) 超出 0~30 范围");
+    ErrorCode PARTITION_DEFAULT_CONFLICT = new ErrorCode(1_023_008_003,
+            "默认分区存在冲突数据，需要受控迁移");
+    ErrorCode PARTITION_MAINTAIN_FAILED = new ErrorCode(1_023_008_004, "分区维护失败：{}");
+
 }
