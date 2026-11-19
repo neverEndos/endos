@@ -25,18 +25,39 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
+import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.PARTITION_DEFAULT_PARTITION_INVALID;
+import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.PARTITION_MAINTAIN_FAILED;
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.PARTITION_POLICY_DUPLICATE;
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.PARTITION_POLICY_INVALID;
 import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.PARTITION_POLICY_NOT_EXISTS;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 /**
  * raw 日分区自动预建的真实 PostgreSQL 验证，对应任务卡 13 项验收场景（11 由种子幂等测试与
  * dbctl 校验库共同覆盖）。
+ *
+ * <p><b>一次性运行方式</b>（必须使用临时库，破坏性测试会重建表）：</p>
+ * <ol>
+ *   <li>启动隔离实例，例如
+ *   {@code docker run -d --name collector-partition-pg -p 55433:5432
+ *   -e POSTGRES_PASSWORD=... postgres:17}；</li>
+ *   <li>创建库名前缀为 {@code collector_partition_} 的临时库（如
+ *   {@code collector_partition_verify}），严禁连接 {@code ruoyi-vue-pro}/{@code yudao_board}
+ *   或任何正式库；</li>
+ *   <li>设置环境变量 {@code COLLECTOR_TEST_PG_URL}、{@code COLLECTOR_TEST_PG_USER}、
+ *   {@code COLLECTOR_TEST_PG_PASSWORD}，并显式设置
+ *   {@code COLLECTOR_TEST_PG_ALLOW_DESTRUCTIVE=true}；未设置时用例按 Assume 跳过；</li>
+ *   <li>执行
+ *   {@code mvn -B -pl yudao-module-collector -am test -Dtest='CollectorPartition*Test'
+ *   -Dsurefire.failIfNoSpecifiedTests=false}，跑完立即读取
+ *   {@code yudao-module-collector/target/surefire-reports/*.xml} 的
+ *   {@code tests/skipped/failures/errors} 作为证据。</li>
+ * </ol>
  */
 public class CollectorPartitionPgTest extends CollectorPartitionPgTestSupport {
 
@@ -347,6 +368,194 @@ public class CollectorPartitionPgTest extends CollectorPartitionPgTestSupport {
         List<PartitionFailure> failures = result.ddlFailures();
         assertTrue("正常路径不应有 DDL 失败：" + failures, failures.isEmpty());
         assertNotNull(result.createdPartitions());
+    }
+
+    /**
+     * M1：FROM (MINVALUE) 是无引号边界，必须解析为 −∞ 参与覆盖判断，
+     * 不能因不可解析而误判「未覆盖」再撞 would overlap partition。
+     */
+    @Test
+    public void minValueBound_coversDay_isSkipped() throws Exception {
+        executeSql("CREATE TABLE public.collector_sample_raw_p_min PARTITION OF public.collector_sample_raw"
+                + " FOR VALUES FROM (MINVALUE) TO ('2026-11-21 00:00:00')");
+        setLeadDays(0);
+        System.out.println("[证据] M1 MINVALUE 边界原文=" + partitionBound("collector_sample_raw_p_min"));
+
+        PartitionMaintainResult result = partitionService.maintainDailyPartitions();
+
+        echoResult("M1 MINVALUE 覆盖当天", result);
+        assertEquals(List.of(), result.createdPartitions());
+        assertEquals(1, result.skippedExistingCount());
+        assertFalse("MINVALUE 覆盖不应产生失败：" + result.ddlFailures(), result.failed());
+        assertFalse("不应再创建同范围分区", relationExists(nameOf(BASE_DAY)));
+    }
+
+    /** M1：TO (MAXVALUE) 是无引号边界，必须解析为 +∞ 参与覆盖判断。 */
+    @Test
+    public void maxValueBound_coversDay_isSkipped() throws Exception {
+        executeSql("CREATE TABLE public.collector_sample_raw_p_max PARTITION OF public.collector_sample_raw"
+                + " FOR VALUES FROM ('2026-11-20 00:00:00') TO (MAXVALUE)");
+        setLeadDays(0);
+        System.out.println("[证据] M1 MAXVALUE 边界原文=" + partitionBound("collector_sample_raw_p_max"));
+
+        PartitionMaintainResult result = partitionService.maintainDailyPartitions();
+
+        echoResult("M1 MAXVALUE 覆盖当天", result);
+        assertEquals(List.of(), result.createdPartitions());
+        assertEquals(1, result.skippedExistingCount());
+        assertFalse("MAXVALUE 覆盖不应产生失败：" + result.ddlFailures(), result.failed());
+        assertFalse("不应再创建同范围分区", relationExists(nameOf(BASE_DAY)));
+    }
+
+    /** M2①：同名对象是普通表（非分区）时计入 ddlFailures，中文原因可区分且不误建其他对象。 */
+    @Test
+    public void sameNamePlainTable_isReportedAsFailure() throws Exception {
+        String partitionName = nameOf(BASE_DAY);
+        executeSql("CREATE TABLE public." + partitionName + " (collect_time timestamp(3))");
+        setLeadDays(0);
+
+        PartitionMaintainResult result = partitionService.maintainDailyPartitions();
+
+        echoResult("M2① 同名普通表", result);
+        assertEquals(List.of(), result.createdPartitions());
+        assertEquals(0, result.skippedExistingCount());
+        assertEquals(1, result.ddlFailures().size());
+        String reason = result.ddlFailures().get(0).reason();
+        System.out.println("[证据] M2① 失败原因=" + reason);
+        assertTrue("原因应为中文且指明不是分区，实际：" + reason, reason.contains("不是分区"));
+        assertTrue("不应误报边界问题，实际：" + reason, !reason.contains("无法识别"));
+        assertTrue(result.failed());
+        // 同名普通表仍在，且没有创建任何日分区。
+        assertEquals(List.of(DEFAULT_PARTITION), childPartitionNames());
+        assertEquals(List.of(), dailyPartitionNames());
+        assertTrue(relationExists(partitionName));
+        assertNull("普通表没有分区边界", partitionBound(partitionName));
+    }
+
+    /** M2②：同名对象是其他父表的分区时计入 ddlFailures，原因指明实际父表。 */
+    @Test
+    public void sameNamePartitionOfOtherParent_isReportedAsFailure() throws Exception {
+        String partitionName = nameOf(BASE_DAY);
+        executeSql("CREATE TABLE public.collector_sample_raw_other_parent ("
+                + " collect_time timestamp(3) NOT NULL) PARTITION BY RANGE (collect_time)");
+        executeSql("CREATE TABLE public." + partitionName
+                + " PARTITION OF public.collector_sample_raw_other_parent"
+                + " FOR VALUES FROM ('2026-11-20 00:00:00') TO ('2026-11-21 00:00:00')");
+        setLeadDays(0);
+
+        PartitionMaintainResult result = partitionService.maintainDailyPartitions();
+
+        echoResult("M2② 同名其他父表分区", result);
+        assertEquals(List.of(), result.createdPartitions());
+        assertEquals(1, result.ddlFailures().size());
+        String reason = result.ddlFailures().get(0).reason();
+        System.out.println("[证据] M2② 失败原因=" + reason);
+        assertTrue("原因应指明其他父表，实际：" + reason,
+                reason.contains("其他父表") && reason.contains("collector_sample_raw_other_parent"));
+        assertTrue(result.failed());
+        // 本表仍只有 DEFAULT，没有被误建。
+        assertEquals(List.of(DEFAULT_PARTITION), childPartitionNames());
+        assertEquals(List.of(), dailyPartitionNames());
+    }
+
+    /** M2③：同名且是本表分区，但边界覆盖两天（与期望不一致），必须失败且原因可区分。 */
+    @Test
+    public void sameNamePartitionWithWiderBound_isReportedAsFailure() throws Exception {
+        String partitionName = nameOf(BASE_DAY);
+        executeSql("CREATE TABLE public." + partitionName + " PARTITION OF public.collector_sample_raw"
+                + " FOR VALUES FROM ('2026-11-20 00:00:00') TO ('2026-11-22 00:00:00')");
+        setLeadDays(0);
+
+        PartitionMaintainResult result = partitionService.maintainDailyPartitions();
+
+        echoResult("M2③ 同名分区边界过宽", result);
+        assertEquals(List.of(), result.createdPartitions());
+        assertEquals(0, result.skippedExistingCount());
+        assertEquals(1, result.ddlFailures().size());
+        String reason = result.ddlFailures().get(0).reason();
+        System.out.println("[证据] M2③ 失败原因=" + reason);
+        assertTrue("原因应为边界不一致，实际：" + reason, reason.contains("与期望"));
+        assertTrue("已解析边界不应提示无法识别，实际：" + reason, !reason.contains("无法识别"));
+        assertTrue(result.failed());
+        assertEquals(List.of(DEFAULT_PARTITION, partitionName), childPartitionNames());
+        // 原分区保持不变，没有被重建或新增。
+        assertEquals("FOR VALUES FROM ('2026-11-20 00:00:00') TO ('2026-11-22 00:00:00')",
+                partitionBound(partitionName));
+    }
+
+    /** M2：Job 失败路径必须抛异常，且消息包含中文摘要（默认分区冲突场景）。 */
+    @Test
+    public void jobOnDefaultConflict_throwsWithChineseSummary() throws Exception {
+        insertRaw(BASE_NOON, 7.0D);
+        setLeadDays(0);
+
+        ServiceException exception = assertThrows(ServiceException.class,
+                () -> executeJob(partitionService));
+
+        System.out.println("[证据] M2 Job 失败摘要=" + exception.getMessage());
+        assertEquals(PARTITION_MAINTAIN_FAILED.getCode(), exception.getCode());
+        assertTrue("异常消息应包含失败摘要，实际：" + exception.getMessage(),
+                exception.getMessage().contains("分区维护失败"));
+        assertTrue("摘要应保留关键中文冲突提示，实际：" + exception.getMessage(),
+                exception.getMessage().contains("默认分区存在冲突数据，需要受控迁移"));
+        assertTrue("摘要长度应远小于 infra_job_log.result 上限，实际：" + exception.getMessage().length(),
+                exception.getMessage().length() < 1000);
+    }
+
+    /** M2：策略异常抛 ServiceException 后 advisory lock 必须已释放（另一连接可立即获取）。 */
+    @Test
+    public void policyException_releasesAdvisoryLock() throws Exception {
+        clearPolicy();
+
+        ServiceException exception = assertThrows(ServiceException.class,
+                () -> partitionService.maintainDailyPartitions());
+
+        assertEquals(PARTITION_POLICY_NOT_EXISTS.getCode(), exception.getCode());
+        assertEquals("抛出业务异常后不得残留 advisory lock", 0, advisoryLockCount());
+        try (Connection connection = DriverManager.getConnection(URL, USER, PASSWORD);
+             Statement statement = connection.createStatement();
+             ResultSet rs = statement.executeQuery(
+                     "SELECT pg_try_advisory_lock(" + CollectorPartitionServiceImpl.ADVISORY_LOCK_KEY + ")")) {
+            assertTrue("另一连接应能立即获得该锁", rs.next() && rs.getBoolean(1));
+            System.out.println("[证据] M2 异常后另一连接 pg_try_advisory_lock=true");
+        }
+        // 连接关闭即释放；再次确认 pg_locks 中该 key 计数为 0。
+        assertEquals(0, advisoryLockCount());
+    }
+
+    /** Minor 2：partition_lead_days 为 NULL 时必须抛策略不合法，不能静默当 0。 */
+    @Test
+    public void nullLeadDays_throwsPolicyInvalid() throws Exception {
+        executeSql("ALTER TABLE public.collector_retention_policy"
+                + " ALTER COLUMN partition_lead_days DROP NOT NULL");
+        executeSql("INSERT INTO public.collector_retention_policy"
+                + " (data_class, retention_days, partition_lead_days, enabled, deleted)"
+                + " VALUES ('sample_raw', 30, NULL, 1, 0)");
+
+        ServiceException exception = assertThrows(ServiceException.class,
+                () -> partitionService.maintainDailyPartitions());
+
+        System.out.println("[证据] Minor2 NULL 策略异常=" + exception.getMessage());
+        assertEquals(PARTITION_POLICY_INVALID.getCode(), exception.getCode());
+        assertTrue(exception.getMessage().contains("NULL"));
+        assertEquals(List.of(), dailyPartitionNames());
+    }
+
+    /** Minor 4：同名对象不是本表 DEFAULT 分区时必须显式失败，不能当成「默认分区不存在」。 */
+    @Test
+    public void invalidDefaultPartitionObject_failsExplicitly() throws Exception {
+        executeSql("DROP TABLE public.collector_sample_raw_default");
+        executeSql("CREATE TABLE public.collector_sample_raw_default (foo integer)");
+        setLeadDays(0);
+
+        ServiceException exception = assertThrows(ServiceException.class,
+                () -> partitionService.maintainDailyPartitions());
+
+        System.out.println("[证据] Minor4 非法默认分区对象异常=" + exception.getMessage());
+        assertEquals(PARTITION_DEFAULT_PARTITION_INVALID.getCode(), exception.getCode());
+        assertTrue(exception.getMessage().contains("不是分区表"));
+        assertEquals(List.of(), dailyPartitionNames());
+        assertEquals("失败路径同样不得残留 advisory lock", 0, advisoryLockCount());
     }
 
     private static String nameOf(LocalDate day) {

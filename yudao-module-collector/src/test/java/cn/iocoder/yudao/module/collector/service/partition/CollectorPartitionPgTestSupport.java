@@ -62,7 +62,22 @@ abstract class CollectorPartitionPgTestSupport {
         Class.forName("org.postgresql.Driver");
         try (Connection connection = DriverManager.getConnection(URL, USER, PASSWORD);
              Statement statement = connection.createStatement()) {
-            statement.execute("DROP TABLE IF EXISTS " + PARENT + " CASCADE");
+            // 清掉上一轮遗留的 raw 相关对象：同名普通表、其他父表的分区等不属于父表继承树，
+            // DROP collector_sample_raw CASCADE 无法清理，必须按前缀兜底，保证用例可重复执行。
+            statement.execute("""
+                    DO $$
+                    DECLARE r record;
+                    BEGIN
+                        FOR r IN
+                            SELECT c.relname FROM pg_class c
+                            JOIN pg_namespace n ON n.oid = c.relnamespace
+                            WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')
+                              AND c.relname LIKE 'collector_sample_raw%'
+                        LOOP
+                            EXECUTE format('DROP TABLE IF EXISTS public.%I CASCADE', r.relname);
+                        END LOOP;
+                    END $$
+                    """);
             statement.execute("DROP TABLE IF EXISTS collector_retention_policy CASCADE");
             // 与 01_schema.sql 第 10 节一致：时间列 timestamp(3)，主键 (channel_id, collect_time)，
             // 数值有限性与 quality 取值约束一并保留，避免测试结构与生产漂移。

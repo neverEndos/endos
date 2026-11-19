@@ -22,6 +22,12 @@ import static org.junit.Assert.assertTrue;
  * <p>真实部署由 {@code dbctl.sh init/seed-system} 执行完整种子；本用例只建最小
  * {@code infra_job}/{@code infra_job_seq} 结构，把种子文件第 6 节原样执行两次，
  * 保证 CI 中也能回归「重复执行只有一条 deleted=0 记录」。</p>
+ *
+ * <p><b>一次性运行方式</b>：需要临时 PostgreSQL（库名前缀 {@code collector_partition_}），
+ * 设置 {@code COLLECTOR_TEST_PG_URL/USER/PASSWORD} 与
+ * {@code COLLECTOR_TEST_PG_ALLOW_DESTRUCTIVE=true}，然后执行
+ * {@code mvn -B -pl yudao-module-collector -am test -Dtest='CollectorPartition*Test'
+ * -Dsurefire.failIfNoSpecifiedTests=false}。完整步骤见 {@link CollectorPartitionPgTest} 类注释。</p>
  */
 public class CollectorPartitionSeedPgTest extends CollectorPartitionPgTestSupport {
 
