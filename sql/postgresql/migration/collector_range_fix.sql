@@ -9,7 +9,7 @@
 
  本脚本幂等，所有修改在一个事务内执行；通过 psql 执行时 ON_ERROR_STOP 失败即停。
  执行方式（密码从环境变量读取，不要写入仓库）：
-   PGPASSWORD=... psql -h <host> -U <user> -d <db> -f sql/postgresql/collector_range_fix.sql
+   PGPASSWORD=... psql -h <host> -U <user> -d <db> -f sql/postgresql/migration/collector_range_fix.sql
 */
 
 -- ---------------------------------------------------------------------------

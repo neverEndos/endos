@@ -16,7 +16,7 @@
  表写入；生产环境请安排在维护窗口或停机期执行，避免采集写入超时。
 
  执行方式（密码从环境变量读取，不要写入仓库）：
-   PGPASSWORD=... psql -h <host> -U <user> -d <db> -f sql/postgresql/collector_alarm_migration.sql
+   PGPASSWORD=... psql -h <host> -U <user> -d <db> -f sql/postgresql/migration/collector_alarm_migration.sql
 */
 
 -- ---------------------------------------------------------------------------

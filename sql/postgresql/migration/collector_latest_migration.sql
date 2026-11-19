@@ -2,7 +2,7 @@
 --
 -- 幂等、单事务；可重复执行。只新增最新值表及索引，不修改既有采样与报警表。
 -- 执行方式（密码从环境变量读取，不要写入仓库）：
---   PGPASSWORD=... psql -h <host> -U <user> -d <database> -f sql/postgresql/collector_latest_migration.sql
+--   PGPASSWORD=... psql -h <host> -U <user> -d <database> -f sql/postgresql/migration/collector_latest_migration.sql
 
 -- ---------------------------------------------------------------------------
 -- 迁移版本：20261117.2 ｜ 分类：ddl ｜ 登记：public.schema_migration

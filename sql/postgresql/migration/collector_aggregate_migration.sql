@@ -8,7 +8,7 @@
 --    UPDATE ... SET valid_count = good_count，或直接重算历史区间。
 -- 3. 幂等、单事务；只增列、增表、增索引和必要约束，不删除或清理业务数据。
 -- 4. 执行方式（密码从环境变量读取，不要写入仓库）：
---    PGPASSWORD=... psql -h <host> -U <user> -d <database> -f sql/postgresql/collector_aggregate_migration.sql
+--    PGPASSWORD=... psql -h <host> -U <user> -d <database> -f sql/postgresql/migration/collector_aggregate_migration.sql
 
 -- ---------------------------------------------------------------------------
 -- 迁移版本：20261117.3 ｜ 分类：ddl ｜ 登记：public.schema_migration
