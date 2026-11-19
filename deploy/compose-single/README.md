@@ -100,6 +100,17 @@ ssh cat@192.168.0.101 'rm -rf /tmp/yudao-src /tmp/yudao-compose.env'
 执行 `systemctl enable collector`（不加 `--now`），不会启动 collector。
 `--run` 本身也不启动应用；只有同时指定 `--start` 才执行 `compose up -d`。
 
+**Windows 行尾归一化（无需手工 sed）：** Windows 开发机 `core.autocrlf=true` 时，工作区
+文本可能检出为 CRLF——`deploy/.gitattributes` 只强制 `deploy/` 内为 LF，`sql/postgresql/`
+不在覆盖范围内，曾出现 `dbctl.sh` shebang 变成 `bash\r` 的事故。`bootstrap-board.sh` 安装到
+`/opt/yudao` 后会按扩展名白名单（`sh`/`sql`/`yml`/`yaml`/`conf`/`service`）把 Compose 目录与
+SQL 目录的文本统一归一化为 LF（systemd 单元在渲染管线中同步清理），幂等、只去行尾 CR，
+不依赖板端安装 git，非 git 来源的 tar 包同样生效。`.env`/`deploy.env` 等真实凭据文件
+（tar 复制本身也已排除）与 jar、图片、压缩包等二进制不匹配白名单，字节保持不变。
+该机制只覆盖 bootstrap 首次部署链路：`release-server.sh` 经 scp 传 jar（二进制）、
+`release-web.sh` 传前端构建产物，均不涉及 shell/SQL；`release-collector.sh` 传的
+`deploy/scripts`、`deploy/systemd` 已由 `deploy/.gitattributes` 强制 LF，不在归一化范围内。
+
 ### 4.2 安装首个后端与前端版本
 
 版本号可自定义，这里用 `VERSION=20261116-220000-first` 示例：
