@@ -6,6 +6,7 @@
 --   3. 采集器 Web 端菜单与角色授权（固定 ID 780~805，冲突预检，不覆盖他人菜单）
 --   4. 报警判定定时任务（infra_job，按 handler_name 判重）
 --   5. 秒/分/小时/天聚合定时任务（infra_job，按 handler_name 判重）
+--   6. raw 日分区预建定时任务（infra_job，按 handler_name 判重）
 --
 -- 注意：
 -- 1. 本脚本不包含演示设备/传感器/通道（业务数据）：生产/开发库由 collector/seed.py
@@ -605,6 +606,30 @@ FROM collector_aggregate_job_seed s
 WHERE NOT EXISTS (
     SELECT 1 FROM public.infra_job j
     WHERE j.handler_name = s.handler_name AND j.deleted = 0
+);
+
+-- ========== 6. raw 日分区预建定时任务 ==========
+-- 每小时第 20 分钟检查一次，按 partition_lead_days 预建「今天 ~ 今天+N 天」的缺失日分区。
+INSERT INTO public.infra_job (
+    id, name, status, handler_name, handler_param, cron_expression,
+    retry_count, retry_interval, monitor_timeout, creator, updater, deleted
+)
+SELECT
+    nextval('public.infra_job_seq'),
+    '采集 raw 日分区预建',
+    1,
+    'collectorPartitionMaintainJob',
+    '',
+    '0 20 * * * ?',
+    0,
+    0,
+    60000,
+    '1',
+    '1',
+    0
+WHERE NOT EXISTS (
+    SELECT 1 FROM public.infra_job
+    WHERE handler_name = 'collectorPartitionMaintainJob' AND deleted = 0
 );
 
 COMMIT;
