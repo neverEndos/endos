@@ -58,8 +58,10 @@ public class CollectorPartitionServiceImpl implements CollectorPartitionService 
      * 分区维护专用 PostgreSQL advisory lock key（固定值）。
      *
      * <p>这是跨实例互斥的唯一凭据，修改后新旧实例将无法互斥，务必保持稳定。</p>
+     *
+     * <p>包可见：仅供同包测试在 pg_locks 中定位该锁，不对外暴露公共 API。</p>
      */
-    private static final long ADVISORY_LOCK_KEY = 2026111901L;
+    static final long ADVISORY_LOCK_KEY = 2026111901L;
 
     /** 限制 DDL 等待父表 ACCESS EXCLUSIVE 锁的时间，避免阻塞采集写入。 */
     private static final String DDL_LOCK_TIMEOUT = "5s";
