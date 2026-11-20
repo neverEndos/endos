@@ -286,7 +286,7 @@ abstract class CollectorPartitionPgTestSupport {
      * 这里按同一拆法定位分区维护用的 key。</p>
      */
     protected int advisoryLockCount() throws SQLException {
-        long key = CollectorPartitionServiceImpl.ADVISORY_LOCK_KEY;
+        long key = CollectorPartitionDdlSupport.ADVISORY_LOCK_KEY;
         try (Connection connection = DriverManager.getConnection(URL, USER, PASSWORD);
              Statement statement = connection.createStatement();
              ResultSet rs = statement.executeQuery("""

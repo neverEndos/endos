@@ -259,7 +259,7 @@ public class CollectorPartitionPgTest extends CollectorPartitionPgTestSupport {
         setLeadDays(0);
         try (Connection holder = DriverManager.getConnection(URL, USER, PASSWORD)) {
             try (Statement statement = holder.createStatement()) {
-                statement.execute("SELECT pg_advisory_lock(" + CollectorPartitionServiceImpl.ADVISORY_LOCK_KEY + ")");
+                statement.execute("SELECT pg_advisory_lock(" + CollectorPartitionDdlSupport.ADVISORY_LOCK_KEY + ")");
             }
 
             PartitionMaintainResult result = partitionService.maintainDailyPartitions();
@@ -280,7 +280,7 @@ public class CollectorPartitionPgTest extends CollectorPartitionPgTestSupport {
 
             try (Statement statement = holder.createStatement()) {
                 statement.execute("SELECT pg_advisory_unlock("
-                        + CollectorPartitionServiceImpl.ADVISORY_LOCK_KEY + ")");
+                        + CollectorPartitionDdlSupport.ADVISORY_LOCK_KEY + ")");
             }
         }
 
@@ -515,7 +515,7 @@ public class CollectorPartitionPgTest extends CollectorPartitionPgTestSupport {
         try (Connection connection = DriverManager.getConnection(URL, USER, PASSWORD);
              Statement statement = connection.createStatement();
              ResultSet rs = statement.executeQuery(
-                     "SELECT pg_try_advisory_lock(" + CollectorPartitionServiceImpl.ADVISORY_LOCK_KEY + ")")) {
+                     "SELECT pg_try_advisory_lock(" + CollectorPartitionDdlSupport.ADVISORY_LOCK_KEY + ")")) {
             assertTrue("另一连接应能立即获得该锁", rs.next() && rs.getBoolean(1));
             System.out.println("[证据] M2 异常后另一连接 pg_try_advisory_lock=true");
         }
