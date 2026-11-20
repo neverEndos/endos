@@ -23,13 +23,13 @@ services:
         source: ${POSTGRES_DATA_DIR:-/opt/yudao/data/postgres}
         target: /var/lib/postgresql/data
       - type: bind
-        source: ${SQL_DIR:-../../sql/postgresql}/ruoyi-vue-pro.sql
+        source: ${SQL_DIR:-../../sql/postgresql}/platform/ruoyi-vue-pro.sql
         target: /docker-entrypoint-initdb.d/01-ruoyi-vue-pro.sql
         read_only: true
         bind:
           create_host_path: false
       - type: bind
-        source: ${SQL_DIR:-../../sql/postgresql}/quartz.sql
+        source: ${SQL_DIR:-../../sql/postgresql}/platform/quartz.sql
         target: /docker-entrypoint-initdb.d/02-quartz.sql
         read_only: true
         bind:
