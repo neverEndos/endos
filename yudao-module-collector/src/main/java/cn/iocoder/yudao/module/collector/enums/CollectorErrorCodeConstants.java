@@ -76,4 +76,16 @@ public interface CollectorErrorCodeConstants {
     ErrorCode PARTITION_DEFAULT_PARTITION_INVALID = new ErrorCode(1_023_008_005,
             "默认分区对象({})不可用：{}，需人工确认");
 
+    // ========== 数据保留清理 1-023-009-000 ==========
+    ErrorCode RETENTION_POLICY_NOT_EXISTS = new ErrorCode(1_023_009_000, "采集数据保留策略不存在");
+    ErrorCode RETENTION_POLICY_FIELD_INVALID = new ErrorCode(1_023_009_001, "保留策略字段不合法：{}");
+    ErrorCode RETENTION_POLICY_LEAD_DAYS_FORBIDDEN = new ErrorCode(1_023_009_002,
+            "仅 sample_raw 允许修改分区预建天数，数据类({})不支持");
+    ErrorCode RETENTION_POLICY_UNSUPPORTED = new ErrorCode(1_023_009_003,
+            "不支持的保留数据类或清理动作：{}");
+    ErrorCode RETENTION_POLICY_DUPLICATE = new ErrorCode(1_023_009_004,
+            "保留策略数据类({})存在多条有效记录");
+    ErrorCode RETENTION_PREVIEW_FAILED = new ErrorCode(1_023_009_005, "保留策略预检失败：{}");
+    ErrorCode RETENTION_CLEANUP_FAILED = new ErrorCode(1_023_009_006, "数据保留清理失败：{}");
+
 }
