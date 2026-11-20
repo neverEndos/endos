@@ -83,8 +83,6 @@ public interface CollectorErrorCodeConstants {
             "仅 sample_raw 允许修改分区预建天数，数据类({})不支持");
     ErrorCode RETENTION_POLICY_UNSUPPORTED = new ErrorCode(1_023_009_003,
             "不支持的保留数据类或清理动作：{}");
-    ErrorCode RETENTION_POLICY_DUPLICATE = new ErrorCode(1_023_009_004,
-            "保留策略数据类({})存在多条有效记录");
     ErrorCode RETENTION_PREVIEW_FAILED = new ErrorCode(1_023_009_005, "保留策略预检失败：{}");
     ErrorCode RETENTION_CLEANUP_FAILED = new ErrorCode(1_023_009_006, "数据保留清理失败：{}");
 

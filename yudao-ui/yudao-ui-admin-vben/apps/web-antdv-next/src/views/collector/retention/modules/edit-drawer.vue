@@ -64,7 +64,8 @@ const [Drawer, drawerApi] = useVbenDrawer({
       id: policy.value.id,
       retentionDays: values.retentionDays,
       enabled: values.enabled ? 1 : 0,
-      description: values.description?.trim() || undefined,
+      // 空串也要显式提交：后端 null 表示「不修改」，只有 '' 才能清空已有说明。
+      description: (values.description ?? '').trim(),
     };
     if (isRawDataClass(policy.value.dataClass)) {
       payload.partitionLeadDays = values.partitionLeadDays;

@@ -1,5 +1,7 @@
 package cn.iocoder.yudao.module.collector.service.retention;
 
+import cn.iocoder.yudao.framework.common.exception.ServiceException;
+import cn.iocoder.yudao.module.collector.enums.CollectorRetentionDataClass;
 import cn.iocoder.yudao.module.collector.service.partition.CollectorPartitionDdlSupport;
 import cn.iocoder.yudao.module.collector.service.retention.CollectorRetentionCleanupService.PartitionDrop;
 import cn.iocoder.yudao.module.collector.service.retention.CollectorRetentionCleanupService.RetentionClassOutcome;
@@ -11,12 +13,15 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.Statement;
+import java.sql.Timestamp;
 import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 /**
  * 采集数据保留清理的真实 PostgreSQL 验证（对应任务卡验收 1~20 中属于后端核心的场景）。
@@ -389,6 +394,218 @@ public class CollectorRetentionCleanupPgTest extends CollectorRetentionPgTestSup
         assertEquals(2, countRows("collector_aggregate_day"));
         assertEquals(1, scalarLong("SELECT COUNT(*) FROM public.collector_aggregate_day WHERE bucket_date = '"
                 + CUTOFF_DAY + "'"));
+    }
+
+    /**
+     * B1：statement_timeout 必须作用在真正的 COUNT 查询上。
+     *
+     * <p>把秒聚合表换成带 {@code pg_sleep(2)} 的视图，只让该类计数变慢；200ms 的
+     * statement_timeout 必然在计数阶段触发 57014，并翻译成中文业务异常，绝不返回 0。</p>
+     */
+    @Test
+    public void previewTimesOutOnCountQueryWithChineseError() throws Exception {
+        insertAggregate("collector_aggregate_second", 1, CUTOFF.minusDays(1));
+        executeSql("ALTER TABLE public.collector_aggregate_second"
+                + " RENAME TO collector_aggregate_second_slow_base");
+        try {
+            executeSql("""
+                    CREATE OR REPLACE FUNCTION retention_slow_true() RETURNS boolean AS $$
+                    BEGIN
+                        PERFORM pg_sleep(2);
+                        RETURN true;
+                    END; $$ LANGUAGE plpgsql VOLATILE
+                    """);
+            // VOLATILE 条件无法被计划器消除：COUNT(*) 必须逐行求值，计时段必然超过 200ms。
+            executeSql("CREATE VIEW public.collector_aggregate_second AS SELECT * FROM"
+                    + " public.collector_aggregate_second_slow_base WHERE retention_slow_true()");
+            cleanupService.setPreviewStatementTimeout("200ms");
+
+            long begin = System.nanoTime();
+            try {
+                cleanupService.preview();
+                fail("预检应在秒聚合 COUNT 查询上因 statement_timeout 失败");
+            } catch (ServiceException ex) {
+                long elapsedMs = (System.nanoTime() - begin) / 1_000_000;
+                System.out.println("[证据] B1 预检计数超时 elapsedMs=" + elapsedMs
+                        + " message=" + ex.getMessage());
+                assertTrue(ex.getMessage(), ex.getMessage().contains("预检超时"));
+                assertTrue(ex.getMessage(), ex.getMessage().contains("statement_timeout 200ms"));
+                assertTrue("超时发生在计数阶段（应≥200ms 且远小于 pg_sleep 的 2s）",
+                        elapsedMs >= 150 && elapsedMs < 5000);
+            }
+        } finally {
+            if (relationExists("collector_aggregate_second_slow_base")) {
+                executeSql("DROP VIEW IF EXISTS public.collector_aggregate_second");
+                executeSql("ALTER TABLE public.collector_aggregate_second_slow_base"
+                        + " RENAME TO collector_aggregate_second");
+            }
+        }
+    }
+
+    /**
+     * M1：DROP 遇到长事务时按 lock_timeout 放弃，raw 记为 SKIPPED_LOCKED 而不是成功。
+     */
+    @Test(timeout = 20000)
+    public void rawDropLockTimeoutMarksClassSkippedLocked() throws Exception {
+        cleanupService.setDropLockTimeout("200ms");
+        try (Connection holder = DriverManager.getConnection(URL, USER, PASSWORD)) {
+            holder.setAutoCommit(false);
+            try (Statement lock = holder.createStatement()) {
+                // ROW EXCLUSIVE 与 catalog 读取的 ACCESS SHARE 兼容，但足以阻塞 DROP 的 ACCESS EXCLUSIVE。
+                lock.execute("LOCK TABLE public.collector_sample_raw_p20261018 IN ROW EXCLUSIVE MODE");
+            }
+            long begin = System.nanoTime();
+            RetentionCleanupReport report = cleanupService.cleanupAll();
+            long elapsedMs = (System.nanoTime() - begin) / 1_000_000;
+            echoReport("场景17 DROP 锁等待超时", report);
+
+            RetentionClassResult raw = resultOf(report, "sample_raw");
+            assertEquals(RetentionClassOutcome.SKIPPED_LOCKED, raw.outcome());
+            assertEquals(0, raw.droppedPartitions().size());
+            assertTrue(raw.message(), raw.message().contains("等待分区锁超时"));
+            assertTrue("锁等待应按 200ms 放弃，实际 " + elapsedMs + "ms", elapsedMs < 5000);
+            assertTrue(relationExists("collector_sample_raw_p20261018"));
+            assertEquals(0, advisoryLockCount(CollectorRetentionCleanupServiceImpl.CLEANUP_ADVISORY_LOCK_KEY));
+            assertEquals(0, advisoryLockCount(CollectorPartitionDdlSupport.ADVISORY_LOCK_KEY));
+        }
+    }
+
+    /** M1：单批 DELETE 的 statement_timeout 生效，翻译为中文且不死循环。 */
+    @Test
+    public void deleteStatementTimeoutStopsBatchWithChineseError() throws Exception {
+        cleanupService.setDeleteStatementTimeout("200ms");
+        executeSql("""
+                CREATE OR REPLACE FUNCTION retention_slow_delete() RETURNS trigger AS $$
+                BEGIN
+                    PERFORM pg_sleep(2);
+                    RETURN OLD;
+                END; $$ LANGUAGE plpgsql
+                """);
+        executeSql("CREATE TRIGGER trg_retention_slow_delete BEFORE DELETE ON public.collector_heartbeat"
+                + " FOR EACH ROW EXECUTE FUNCTION retention_slow_delete()");
+        insertHeartbeat(1, CUTOFF.minusDays(1));
+
+        RetentionCleanupReport report = cleanupService.cleanupAll();
+        echoReport("场景18 删除语句超时", report);
+
+        RetentionClassResult heartbeat = resultOf(report, "heartbeat");
+        assertEquals(RetentionClassOutcome.FAILED, heartbeat.outcome());
+        assertEquals(0, heartbeat.deletedRows());
+        assertTrue(heartbeat.message(), heartbeat.message().contains("删除超时"));
+        assertTrue(heartbeat.message(), heartbeat.message().contains("statement_timeout 200ms"));
+        assertEquals(1, countRows("collector_heartbeat"));
+    }
+
+    /** M1：单批 DELETE 的 lock_timeout 生效，失败后不重试、不留数据半删。 */
+    @Test
+    public void deleteLockTimeoutStopsBatchWithChineseError() throws Exception {
+        cleanupService.setDeleteLockTimeout("200ms");
+        insertHeartbeat(1, CUTOFF.minusDays(1));
+        RetentionCleanupReport report;
+        try (Connection holder = DriverManager.getConnection(URL, USER, PASSWORD)) {
+            holder.setAutoCommit(false);
+            try (Statement lock = holder.createStatement()) {
+                lock.execute("LOCK TABLE public.collector_heartbeat IN ACCESS EXCLUSIVE MODE");
+            }
+            long begin = System.nanoTime();
+            report = cleanupService.cleanupAll();
+            long elapsedMs = (System.nanoTime() - begin) / 1_000_000;
+            echoReport("场景19 删除锁等待超时", report);
+
+            RetentionClassResult heartbeat = resultOf(report, "heartbeat");
+            assertEquals(RetentionClassOutcome.FAILED, heartbeat.outcome());
+            assertEquals(0, heartbeat.deletedRows());
+            assertTrue(heartbeat.message(), heartbeat.message().contains("等待锁超时"));
+            assertTrue("锁等待应按 200ms 放弃，实际 " + elapsedMs + "ms", elapsedMs < 5000);
+        }
+        assertEquals(1, countRows("collector_heartbeat"));
+    }
+
+    /**
+     * M2：改写后的聚合删除必须让批次选择走时间索引，且不再出现目标表的半连接。
+     *
+     * <p>小数据量下计划器仍可能选 Seq Scan，因此用 {@code SET LOCAL enable_seqscan=off}
+     * 证明时间索引可用；默认计划同时打印在 surefire 报告中，结论不伪造。</p>
+     */
+    @Test
+    public void aggregateDeletePlanUsesTimeIndex() throws Exception {
+        executeSql("""
+                INSERT INTO public.collector_aggregate_second (channel_id, device_id, bucket_time)
+                SELECT (g % 4) + 1, 9, timestamp '2026-11-21 00:00:00' + (g || ' seconds')::interval
+                FROM generate_series(1, 4000) g
+                """);
+        executeSql("ANALYZE public.collector_aggregate_second");
+
+        String sql = cleanupService.deleteSqlOf(CollectorRetentionDataClass.AGGREGATE_SECOND);
+        String natural = explainPlan(sql, Timestamp.valueOf(CUTOFF), 2000, false);
+        String forced = explainPlan(sql, Timestamp.valueOf(CUTOFF), 2000, true);
+        System.out.println("[证据] M2 EXPLAIN 默认计划：\n" + natural);
+        System.out.println("[证据] M2 EXPLAIN enable_seqscan=off：\n" + forced);
+
+        assertTrue(forced, forced.contains("idx_collector_aggregate_second_bucket"));
+        assertTrue(forced, forced.contains("Index Scan") || forced.contains("Bitmap Index Scan"));
+        assertFalse("改写后不应再把目标表放进 Hash Semi Join", forced.contains("Hash Semi Join"));
+    }
+
+    /** M2：改写后四张聚合表仍「等于 cutoff 保留、早于 cutoff 删除」，第二次执行删除 0 行。 */
+    @Test
+    public void aggregateRewriteKeepsCutoffBoundaryAndIsIdempotent() throws Exception {
+        for (String table : List.of("collector_aggregate_second", "collector_aggregate_minute",
+                "collector_aggregate_hour")) {
+            insertAggregate(table, 1, CUTOFF);
+            insertAggregate(table, 1, CUTOFF.minusSeconds(1));
+        }
+        insertAggregateDay(1, CUTOFF_DAY);
+        insertAggregateDay(1, CUTOFF_DAY.minusDays(1));
+
+        RetentionCleanupReport first = cleanupService.cleanupAll();
+        echoReport("场景20 改写 SQL 边界", first);
+        for (String dataClass : List.of("aggregate_second", "aggregate_minute",
+                "aggregate_hour", "aggregate_day")) {
+            assertEquals(dataClass + " 应只删除早于 cutoff 的 1 行",
+                    1, resultOf(first, dataClass).deletedRows());
+        }
+        assertEquals(1, countRows("collector_aggregate_second"));
+        assertEquals(1, countRows("collector_aggregate_minute"));
+        assertEquals(1, countRows("collector_aggregate_hour"));
+        assertEquals(1, countRows("collector_aggregate_day"));
+        assertEquals(1, scalarLong("SELECT COUNT(*) FROM public.collector_aggregate_second"
+                + " WHERE bucket_time = '" + Timestamp.valueOf(CUTOFF) + "'"));
+        assertEquals(1, scalarLong("SELECT COUNT(*) FROM public.collector_aggregate_day"
+                + " WHERE bucket_date = '" + CUTOFF_DAY + "'"));
+
+        RetentionCleanupReport second = cleanupService.cleanupAll();
+        echoReport("场景20 改写 SQL 第二次执行", second);
+        for (String dataClass : List.of("aggregate_second", "aggregate_minute",
+                "aggregate_hour", "aggregate_day")) {
+            assertEquals(dataClass + " 第二次应删除 0 行",
+                    0, resultOf(second, dataClass).deletedRows());
+        }
+    }
+
+    /** 执行 EXPLAIN 并返回计划文本；disableSeqScan=true 时在事务内关闭顺序扫描以证明索引可用。 */
+    private String explainPlan(String sql, Object first, Object second, boolean disableSeqScan)
+            throws Exception {
+        try (Connection connection = DriverManager.getConnection(URL, USER, PASSWORD)) {
+            connection.setAutoCommit(false);
+            if (disableSeqScan) {
+                try (Statement statement = connection.createStatement()) {
+                    statement.execute("SET LOCAL enable_seqscan = off");
+                }
+            }
+            try (PreparedStatement statement = connection.prepareStatement("EXPLAIN " + sql)) {
+                statement.setObject(1, first);
+                statement.setObject(2, second);
+                StringBuilder plan = new StringBuilder();
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    while (resultSet.next()) {
+                        plan.append(resultSet.getString(1)).append('\n');
+                    }
+                }
+                connection.rollback();
+                return plan.toString();
+            }
+        }
     }
 
 }

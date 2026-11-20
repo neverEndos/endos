@@ -119,6 +119,15 @@ abstract class CollectorRetentionPgTestSupport {
             createAggregateTable(statement, "collector_aggregate_minute", "bucket_time timestamp(3)", false);
             createAggregateTable(statement, "collector_aggregate_hour", "bucket_time timestamp(3)", false);
             createAggregateTable(statement, "collector_aggregate_day", "bucket_date date", true);
+            // 与生产 01_schema.sql 一致的批次选择索引：清理 SQL 的批次子查询依赖它。
+            statement.execute("CREATE INDEX idx_collector_aggregate_second_bucket"
+                    + " ON public.collector_aggregate_second (bucket_time)");
+            statement.execute("CREATE INDEX idx_collector_aggregate_minute_bucket"
+                    + " ON public.collector_aggregate_minute (bucket_time)");
+            statement.execute("CREATE INDEX idx_collector_aggregate_hour_bucket"
+                    + " ON public.collector_aggregate_hour (bucket_time)");
+            statement.execute("CREATE INDEX idx_collector_aggregate_day_bucket"
+                    + " ON public.collector_aggregate_day (bucket_date)");
             statement.execute("""
                     CREATE TABLE public.collector_alarm (
                         id bigint NOT NULL,

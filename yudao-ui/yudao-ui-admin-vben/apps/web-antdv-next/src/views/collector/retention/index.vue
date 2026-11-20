@@ -94,7 +94,8 @@ function confirmCleanup(
           `拟 DROP 分区：${summary.candidatePartitions} 个`,
           `跳过数据类：${summary.skippedClasses} 类`,
           '',
-          '清理将立即执行且不可撤销，是否继续？',
+          'cutoff 之前的数据不可恢复；raw 只 DROP 过期日分区，DEFAULT 分区不会删除。',
+          '清理将立即执行，是否继续？',
         ].join('\n'),
       ),
       onOk: () => resolve(true),
@@ -183,6 +184,13 @@ onMounted(() => {
           </Button>
         </div>
       </div>
+
+      <Alert
+        type="warning"
+        show-icon
+        message="清理不可恢复，请先预检并确认 cutoff 与候选量"
+        description="cutoff 之前的数据不可恢复；raw 只 DROP 过期日分区，DEFAULT 分区不会删除。"
+      />
 
       <Alert
         v-if="loadError"

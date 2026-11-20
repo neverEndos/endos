@@ -14,12 +14,14 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.SingleConnectionDataSource;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.sql.Connection;
 import java.sql.Date;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Timestamp;
@@ -68,7 +70,16 @@ public class CollectorRetentionCleanupServiceImpl implements CollectorRetentionC
     public static final long CLEANUP_ADVISORY_LOCK_KEY = 2026112001L;
 
     /** 预检的只读事务超时，防止统计扫表拖垮数据库。 */
-    private static final String PREVIEW_STATEMENT_TIMEOUT = "10s";
+    private static final String DEFAULT_PREVIEW_STATEMENT_TIMEOUT = "10s";
+
+    /** raw 分区 DROP 的锁等待上界，与 PR #29 的分区预建对齐。 */
+    private static final String DEFAULT_DROP_LOCK_TIMEOUT = "5s";
+
+    /** 单批 DELETE 的语句超时，避免单批无限执行。 */
+    private static final String DEFAULT_DELETE_STATEMENT_TIMEOUT = "30s";
+
+    /** 单批 DELETE 的锁等待上界，避免与长事务互相拖死。 */
+    private static final String DEFAULT_DELETE_LOCK_TIMEOUT = "5s";
 
     /** {@code last_run_result} 列宽 255，摘要控制在 200 以内并保留开头结论。 */
     private static final int MAX_RESULT_LENGTH = 200;
@@ -76,14 +87,20 @@ public class CollectorRetentionCleanupServiceImpl implements CollectorRetentionC
     /** 单条告警/失败原因在报告中的最大长度，避免原始 SQL 消息占满摘要。 */
     private static final int MAX_REASON_LENGTH = 120;
 
+    /**
+     * 聚合表分批删除：先用时间索引取一批 (channel_id, 时间列)，再按双键关联删除。
+     *
+     * <p>显式写成「批次子查询 + USING 关联」，不依赖计划器把 IN 子查询改写成半连接；
+     * 批次选择按时间列有序取前 N 行，删除走 (channel_id, 时间列) 主键。</p>
+     */
     private static final String AGGREGATE_DELETE_SQL = """
-            DELETE FROM %s target
-            WHERE (target.channel_id, target.%s) IN (
-                SELECT source.channel_id, source.%s FROM %s source
-                WHERE source.%s < ?
-                ORDER BY source.%s
+            DELETE FROM %s t USING (
+                SELECT channel_id, %s AS ts FROM %s
+                WHERE %s < ?
+                ORDER BY %s, channel_id
                 LIMIT ?
-            )
+            ) b
+            WHERE t.channel_id = b.channel_id AND t.%s = b.ts
             """;
 
     private static final String ALARM_DELETE_SQL = """
@@ -126,6 +143,18 @@ public class CollectorRetentionCleanupServiceImpl implements CollectorRetentionC
     /** 清理时钟；生产使用 Asia/Shanghai 系统时钟，测试可替换以固定 cutoff。 */
     private Clock clock = Clock.system(SHANGHAI_ZONE);
 
+    /** 预检只读事务的语句超时；测试可注入极短值验证 57014 翻译。 */
+    private String previewStatementTimeout = DEFAULT_PREVIEW_STATEMENT_TIMEOUT;
+
+    /** raw DROP 的会话级锁等待上界；测试可注入极短值验证 55P03 翻译。 */
+    private String dropLockTimeout = DEFAULT_DROP_LOCK_TIMEOUT;
+
+    /** 单批 DELETE 的语句超时；测试可注入极短值验证 57014 翻译。 */
+    private String deleteStatementTimeout = DEFAULT_DELETE_STATEMENT_TIMEOUT;
+
+    /** 单批 DELETE 的锁等待上界；测试可注入极短值验证 55P03 翻译。 */
+    private String deleteLockTimeout = DEFAULT_DELETE_LOCK_TIMEOUT;
+
     public CollectorRetentionCleanupServiceImpl(JdbcTemplate jdbcTemplate,
                                                 PlatformTransactionManager transactionManager) {
         this.jdbcTemplate = jdbcTemplate;
@@ -140,6 +169,26 @@ public class CollectorRetentionCleanupServiceImpl implements CollectorRetentionC
     /** 仅供测试覆盖批大小（生产由配置注入）。 */
     void setBatchSize(int batchSize) {
         this.batchSize = batchSize;
+    }
+
+    /** 仅供测试注入极短的预检超时。 */
+    void setPreviewStatementTimeout(String previewStatementTimeout) {
+        this.previewStatementTimeout = previewStatementTimeout;
+    }
+
+    /** 仅供测试注入极短的 raw DROP 锁等待上界。 */
+    void setDropLockTimeout(String dropLockTimeout) {
+        this.dropLockTimeout = dropLockTimeout;
+    }
+
+    /** 仅供测试注入极短的批次删除语句超时。 */
+    void setDeleteStatementTimeout(String deleteStatementTimeout) {
+        this.deleteStatementTimeout = deleteStatementTimeout;
+    }
+
+    /** 仅供测试注入极短的批次删除锁等待上界。 */
+    void setDeleteLockTimeout(String deleteLockTimeout) {
+        this.deleteLockTimeout = deleteLockTimeout;
     }
 
     @Override
@@ -248,6 +297,7 @@ public class CollectorRetentionCleanupServiceImpl implements CollectorRetentionC
                 List<PartitionDrop> dropped = new ArrayList<>();
                 List<String> warnings = new ArrayList<>(scan.warnings());
                 String failure = null;
+                boolean lockTimeout = false;
                 for (PartitionCandidate candidate : scan.candidates()) {
                     try {
                         if (dropPartition(connection, candidate)) {
@@ -257,11 +307,17 @@ public class CollectorRetentionCleanupServiceImpl implements CollectorRetentionC
                             warnings.add(candidate.partitionName() + " DROP 前核验未通过（对象或边界已变化），需人工处理");
                         }
                     } catch (SQLException ex) {
-                        failure = "DROP " + candidate.partitionName() + " 失败：" + sqlMessage(ex);
+                        // 锁等待超时不是普通失败：立即停止本类后续 DROP，待下次调度。
+                        if (isLockNotAvailable(ex)) {
+                            lockTimeout = true;
+                            failure = "等待分区锁超时（lock_timeout " + dropLockTimeout + "），本类跳过，待下次调度";
+                        } else {
+                            failure = "DROP " + candidate.partitionName() + " 失败：" + sqlMessage(ex);
+                        }
                         break;
                     }
                 }
-                return rawResult(dataClass, cutoff, dropped, warnings, failure, scan.notDueCount());
+                return rawResult(dataClass, cutoff, dropped, warnings, failure, lockTimeout, scan.notDueCount());
             } finally {
                 CollectorPartitionDdlSupport.releaseLock(connection);
             }
@@ -272,9 +328,12 @@ public class CollectorRetentionCleanupServiceImpl implements CollectorRetentionC
 
     private RetentionClassResult rawResult(CollectorRetentionDataClass dataClass, LocalDateTime cutoff,
                                            List<PartitionDrop> dropped, List<String> warnings,
-                                           String failure, int notDueCount) {
+                                           String failure, boolean lockTimeout, int notDueCount) {
         RetentionClassOutcome outcome;
-        if (failure != null) {
+        if (lockTimeout && dropped.isEmpty()) {
+            // 锁等待超时且一个分区都没删：明确记为「跳过」，不得静默算成功。
+            outcome = RetentionClassOutcome.SKIPPED_LOCKED;
+        } else if (failure != null) {
             outcome = dropped.isEmpty() ? RetentionClassOutcome.FAILED : RetentionClassOutcome.PARTIAL;
         } else if (!warnings.isEmpty()) {
             outcome = RetentionClassOutcome.PARTIAL;
@@ -282,7 +341,9 @@ public class CollectorRetentionCleanupServiceImpl implements CollectorRetentionC
             outcome = RetentionClassOutcome.SUCCESS;
         }
         StringBuilder message = new StringBuilder();
-        if (outcome == RetentionClassOutcome.FAILED) {
+        if (outcome == RetentionClassOutcome.SKIPPED_LOCKED) {
+            message.append("跳过：").append(failure);
+        } else if (outcome == RetentionClassOutcome.FAILED) {
             message.append("失败：").append(failure);
         } else {
             message.append(outcome == RetentionClassOutcome.SUCCESS ? "成功" : "部分成功")
@@ -318,12 +379,45 @@ public class CollectorRetentionCleanupServiceImpl implements CollectorRetentionC
                 || !parsed.bound().exactly(candidate.from(), candidate.to())) {
             return false;
         }
-        // 禁止 DROP TABLE IF EXISTS：只对刚复核过的具体对象执行 DROP。
-        try (Statement statement = connection.createStatement()) {
-            statement.execute("DROP TABLE " + CollectorPartitionDdlSupport.SCHEMA + "." + name);
+        // DROP 前把本会话的 lock_timeout 收紧到 5s，避免长事务导致无限等待；finally 恢复原值。
+        String previousLockTimeout = currentSetting(connection, "lock_timeout");
+        try {
+            setSessionLockTimeout(connection, dropLockTimeout);
+            // 禁止 DROP TABLE IF EXISTS：只对刚复核过的具体对象执行 DROP。
+            try (Statement statement = connection.createStatement()) {
+                statement.execute("DROP TABLE " + CollectorPartitionDdlSupport.SCHEMA + "." + name);
+            }
+        } finally {
+            restoreSettingQuietly(connection, "lock_timeout", previousLockTimeout);
         }
         log.info("[dropPartition][已 DROP 过期分区 {}，边界 {}~{}]", name, candidate.from(), candidate.to());
         return true;
+    }
+
+    /** 读取当前会话的某个 GUC 值（如 lock_timeout）。 */
+    private String currentSetting(Connection connection, String name) throws SQLException {
+        try (Statement statement = connection.createStatement();
+             ResultSet resultSet = statement.executeQuery("SHOW " + name)) {
+            return resultSet.next() ? resultSet.getString(1) : null;
+        }
+    }
+
+    private void setSessionLockTimeout(Connection connection, String timeout) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.execute("SET lock_timeout = '" + timeout + "'");
+        }
+    }
+
+    /** 恢复 DROP 前的会话级 lock_timeout；失败只记日志，不覆盖业务结论。 */
+    private void restoreSettingQuietly(Connection connection, String name, String value) {
+        if (value == null) {
+            return;
+        }
+        try (Statement statement = connection.createStatement()) {
+            statement.execute("SET " + name + " = '" + value.replace("'", "''") + "'");
+        } catch (SQLException ex) {
+            log.warn("[restoreSettingQuietly][会话参数({}) 恢复失败，原值={}]", name, value, ex);
+        }
     }
 
     /**
@@ -406,12 +500,16 @@ public class CollectorRetentionCleanupServiceImpl implements CollectorRetentionC
         while (true) {
             int affected;
             try {
-                Integer batch = transactionTemplate.execute(status ->
-                        jdbcTemplate.update(sql, cutoffParam, batchSize));
+                Integer batch = transactionTemplate.execute(status -> {
+                    // 每批一个独立事务：SET LOCAL 只作用于当前批次，超时后该批整体回滚。
+                    jdbcTemplate.execute("SET LOCAL statement_timeout = '" + deleteStatementTimeout + "'");
+                    jdbcTemplate.execute("SET LOCAL lock_timeout = '" + deleteLockTimeout + "'");
+                    return jdbcTemplate.update(sql, cutoffParam, batchSize);
+                });
                 affected = batch == null ? 0 : batch;
             } catch (RuntimeException ex) {
                 // 单批失败立即停止该类，避免同一错误无限重试。
-                failure = sqlMessage(ex);
+                failure = translateBatchFailure(ex);
                 break;
             }
             if (affected <= 0) {
@@ -440,10 +538,10 @@ public class CollectorRetentionCleanupServiceImpl implements CollectorRetentionC
                 dataClass.getExpectedAction().getCode(), cutoff, outcome, deleted, List.of(), warnings, message);
     }
 
-    private String deleteSqlOf(CollectorRetentionDataClass dataClass) {
+    String deleteSqlOf(CollectorRetentionDataClass dataClass) {
         return switch (dataClass.getCondition()) {
             case AGGREGATE_TUPLE -> AGGREGATE_DELETE_SQL.formatted(dataClass.getTable(),
-                    dataClass.getTimeColumn(), dataClass.getTimeColumn(), dataClass.getTable(),
+                    dataClass.getTimeColumn(), dataClass.getTable(), dataClass.getTimeColumn(),
                     dataClass.getTimeColumn(), dataClass.getTimeColumn());
             case ALARM_CLEARED_AT -> ALARM_DELETE_SQL;
             case HEARTBEAT_TIME -> HEARTBEAT_DELETE_SQL;
@@ -465,9 +563,12 @@ public class CollectorRetentionCleanupServiceImpl implements CollectorRetentionC
                     try (Statement statement = connection.createStatement()) {
                         // 只读事务 + 语句超时：任何写操作都会被 PostgreSQL 拒绝，超时由上层翻译成中文异常。
                         statement.execute("SET TRANSACTION READ ONLY");
-                        statement.execute("SET LOCAL statement_timeout = '" + PREVIEW_STATEMENT_TIMEOUT + "'");
+                        statement.execute("SET LOCAL statement_timeout = '" + previewStatementTimeout + "'");
                     }
-                    return doPreview(connection, today);
+                    // 所有预检读取（策略行、raw catalog、4 类 COUNT）必须复用同一物理连接，
+                    // 否则 READ ONLY 与 statement_timeout 只作用于没跑查询的那条连接，等于失效。
+                    JdbcTemplate previewJdbc = new JdbcTemplate(new SingleConnectionDataSource(connection, true));
+                    return doPreview(connection, previewJdbc, today);
                 } finally {
                     rollbackQuietly(connection);
                     restoreAutoCommit(connection, autoCommit);
@@ -478,8 +579,8 @@ public class CollectorRetentionCleanupServiceImpl implements CollectorRetentionC
         }
     }
 
-    private RetentionPreview doPreview(Connection connection, LocalDate today) {
-        List<PolicyRow> policyRows = CollectorRetentionPolicyRows.loadAll(jdbcTemplate);
+    private RetentionPreview doPreview(Connection connection, JdbcTemplate previewJdbc, LocalDate today) {
+        List<PolicyRow> policyRows = CollectorRetentionPolicyRows.loadAll(previewJdbc);
         Map<String, List<PolicyRow>> rowsByClass = new LinkedHashMap<>();
         for (PolicyRow row : policyRows) {
             rowsByClass.computeIfAbsent(row.dataClass(), key -> new ArrayList<>()).add(row);
@@ -487,12 +588,12 @@ public class CollectorRetentionCleanupServiceImpl implements CollectorRetentionC
         List<RetentionClassPreview> classes = new ArrayList<>();
         for (CollectorRetentionDataClass dataClass : CollectorRetentionDataClass.values()) {
             List<PolicyRow> rows = rowsByClass.getOrDefault(dataClass.getCode(), List.of());
-            classes.add(previewClass(connection, today, dataClass, rows));
+            classes.add(previewClass(connection, previewJdbc, today, dataClass, rows));
         }
         return new RetentionPreview(today, classes);
     }
 
-    private RetentionClassPreview previewClass(Connection connection, LocalDate today,
+    private RetentionClassPreview previewClass(Connection connection, JdbcTemplate previewJdbc, LocalDate today,
                                                CollectorRetentionDataClass dataClass, List<PolicyRow> rows) {
         List<String> warnings = new ArrayList<>();
         if (rows.isEmpty()) {
@@ -543,7 +644,7 @@ public class CollectorRetentionCleanupServiceImpl implements CollectorRetentionC
         }
         Long count;
         try {
-            count = countCandidates(dataClass, cutoff);
+            count = countCandidates(previewJdbc, dataClass, cutoff);
         } catch (DataAccessException ex) {
             // 绝不允许把统计失败伪装成 0。
             throw exception(RETENTION_PREVIEW_FAILED,
@@ -561,7 +662,8 @@ public class CollectorRetentionCleanupServiceImpl implements CollectorRetentionC
                 null, List.of(), List.of());
     }
 
-    private Long countCandidates(CollectorRetentionDataClass dataClass, LocalDateTime cutoff) {
+    private Long countCandidates(JdbcTemplate previewJdbc, CollectorRetentionDataClass dataClass,
+                                 LocalDateTime cutoff) {
         Object cutoffParam = dataClass.isDateColumn()
                 ? Date.valueOf(cutoff.toLocalDate()) : Timestamp.valueOf(cutoff);
         String sql = switch (dataClass.getCondition()) {
@@ -578,7 +680,7 @@ public class CollectorRetentionCleanupServiceImpl implements CollectorRetentionC
         if (sql == null) {
             throw exception(RETENTION_POLICY_UNSUPPORTED, dataClass.getCode());
         }
-        Long count = jdbcTemplate.queryForObject(sql, Long.class, cutoffParam);
+        Long count = previewJdbc.queryForObject(sql, Long.class, cutoffParam);
         return count == null ? 0L : count;
     }
 
@@ -642,21 +744,44 @@ public class CollectorRetentionCleanupServiceImpl implements CollectorRetentionC
     }
 
     private String describe(DataAccessException ex) {
-        Throwable root = ex;
-        while (root.getCause() != null && root.getCause() != root) {
-            root = root.getCause();
-        }
+        Throwable root = rootCause(ex);
         if (root instanceof SQLException sqlException && "57014".equals(sqlException.getSQLState())) {
-            return "预检超时（statement_timeout " + PREVIEW_STATEMENT_TIMEOUT + "），请缩小数据范围后重试";
+            return "预检超时（statement_timeout " + previewStatementTimeout + "），请缩小数据范围后重试";
         }
         return sqlMessage(root);
     }
 
-    private String sqlMessage(Throwable exception) {
+    /** 批次删除失败翻译：超时/锁等待给出可复核的中文原因，其余保留原 SQL 消息。 */
+    private String translateBatchFailure(Throwable exception) {
+        String sqlState = sqlStateOf(exception);
+        if ("57014".equals(sqlState)) {
+            return "删除超时（statement_timeout " + deleteStatementTimeout + "），本批已回滚，待下次调度";
+        }
+        if ("55P03".equals(sqlState)) {
+            return "等待锁超时（lock_timeout " + deleteLockTimeout + "），本批已回滚，待下次调度";
+        }
+        return sqlMessage(exception);
+    }
+
+    private boolean isLockNotAvailable(SQLException exception) {
+        return "55P03".equals(exception.getSQLState());
+    }
+
+    private String sqlStateOf(Throwable exception) {
+        Throwable root = rootCause(exception);
+        return root instanceof SQLException sqlException ? sqlException.getSQLState() : null;
+    }
+
+    private Throwable rootCause(Throwable exception) {
         Throwable root = exception;
         while (root.getCause() != null && root.getCause() != root) {
             root = root.getCause();
         }
+        return root;
+    }
+
+    private String sqlMessage(Throwable exception) {
+        Throwable root = rootCause(exception);
         return root.getMessage() == null ? root.getClass().getSimpleName() : root.getMessage();
     }
 
