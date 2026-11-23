@@ -434,7 +434,8 @@ WHERE NOT EXISTS (
 -- (hour, channel_id) 与 (day, channel_id) 水位，watermark_time 均为 NULL。
 
 -- ========== 3. Web 端菜单与角色授权（原 collector_web_seed.sql） ==========
--- ========== 本次菜单种子（目录 + 10 个页面 + 19 个按钮） ==========
+-- ========== 本次菜单种子（目录 + 11 个页面 + 19 个按钮） ==========
+-- 809 为 Kiosk 单入口页面（顶级页面菜单，permission 为空，进入后由前端 registry 按 accessCode 过滤模块）。
 -- 803 聚合数据回填、805 聚合强制清空仅为 API 权限点，无页面入口；804 为趋势分析页面；
 -- 请通过 POST /admin-api/collector/aggregate/backfill 使用，forceClean=true 需要 805 权限。
 -- 806 保留策略页面；807/808 为页面内按钮，808「保留策略清理」是唯一会立即删除数据的权限点。
@@ -483,7 +484,8 @@ INSERT INTO collector_menu_seed (
     (806, 780, '保留策略', 'collector:retention:query', 2, 10, 'retention', 'ep:timer', 'collector/retention/index', 'CollectorRetention'),
     (807, 806, '保留策略修改', 'collector:retention:update', 3, 1, '', '', NULL, NULL),
     (808, 806, '保留策略清理', 'collector:retention:cleanup', 3, 2, '', '', NULL, NULL),
-    (813, 802, '采集运行详情', 'collector:health:query', 3, 1, '', '', NULL, NULL);
+    (813, 802, '采集运行详情', 'collector:health:query', 3, 1, '', '', NULL, NULL),
+    (809, 0, '采集器终端', '', 2, 91, 'kiosk', 'ep:monitor', 'kiosk/index', 'KioskIndex');
 
 -- 任何固定 ID 被非本种子菜单占用（包括逻辑删除行）都明确失败，不覆盖、不授权。
 DO $$
