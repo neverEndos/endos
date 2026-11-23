@@ -502,6 +502,63 @@ onBeforeUnmount(() => {
         message="最新采样已超过十倍轮询周期，设备按离线处理；表格中的旧值仅供核对。"
       />
 
+      <!-- 采集运行摘要独立于最新值：最新值接口失败（dashboard 为空）时仍可查看并打开运行详情 -->
+      <Card
+        v-if="hasHealthAccess"
+        data-testid="dashboard-health-card"
+        size="small"
+      >
+        <template #title>
+          <div class="flex flex-wrap items-center gap-2">
+            <span>采集运行摘要</span>
+            <Tag v-if="healthStale" color="warning">运行信息可能已过期</Tag>
+          </div>
+        </template>
+        <template #extra>
+          <Button
+            data-testid="dashboard-health-detail"
+            :disabled="selectedDeviceId === undefined"
+            @click="openHealthDetail"
+          >
+            运行详情
+          </Button>
+        </template>
+        <div
+          class="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-4"
+          data-testid="dashboard-health-summary"
+        >
+          <div data-testid="health-heartbeat-time">
+            <div class="text-xs opacity-60">最新心跳时间</div>
+            <div class="mt-1 font-medium">{{ healthHeartbeatText }}</div>
+          </div>
+          <div data-testid="health-heartbeat-status">
+            <div class="text-xs opacity-60">心跳状态</div>
+            <div class="mt-1">
+              <Tag :color="healthStatusColor">{{ healthStatusText }}</Tag>
+            </div>
+          </div>
+          <div data-testid="health-device-ratio">
+            <div class="text-xs opacity-60">设备在线数 / 总数</div>
+            <div class="mt-1 font-medium">{{ healthDeviceRatio }}</div>
+          </div>
+          <div data-testid="health-active-alarm">
+            <div class="text-xs opacity-60">活动报警数</div>
+            <div class="mt-1 flex flex-wrap items-center gap-2">
+              <span class="font-medium">{{ healthActiveAlarmText }}</span>
+              <Tag
+                v-if="(healthSummary?.alarm.highestLevel ?? 0) > 0"
+                :color="healthHighestLevelColor"
+              >
+                最高 {{ healthSummary?.alarm.highestLevel }} 级
+              </Tag>
+            </div>
+          </div>
+        </div>
+        <div class="mt-3 text-xs opacity-50">
+          运行信息时间按 Asia/Shanghai 展示；健康数据独立于最新值刷新，失败时仅提示可能过期。
+        </div>
+      </Card>
+
       <Spin :spinning="initialLoading && !hasDashboard">
         <Card v-if="dashboard" data-testid="dashboard-device-card">
           <div class="flex flex-wrap items-center justify-between gap-3">
@@ -567,56 +624,6 @@ onBeforeUnmount(() => {
                 {{ formatInterval(dashboard.device.pollIntervalMs) }}
               </div>
             </div>
-            <template v-if="hasHealthAccess">
-              <div data-testid="health-heartbeat-time">
-                <div class="text-xs opacity-60">最新心跳时间</div>
-                <div class="mt-1 font-medium">
-                  {{ healthHeartbeatText }}
-                </div>
-              </div>
-              <div data-testid="health-heartbeat-status">
-                <div class="text-xs opacity-60">心跳状态</div>
-                <div class="mt-1 flex flex-wrap items-center gap-1">
-                  <Tag :color="healthStatusColor">
-                    {{ healthStatusText }}
-                  </Tag>
-                  <Tag v-if="healthStale" color="warning">
-                    运行信息可能已过期
-                  </Tag>
-                </div>
-              </div>
-              <div data-testid="health-device-ratio">
-                <div class="text-xs opacity-60">设备在线数 / 总数</div>
-                <div class="mt-1 font-medium">{{ healthDeviceRatio }}</div>
-              </div>
-              <div data-testid="health-active-alarm">
-                <div class="text-xs opacity-60">活动报警数</div>
-                <div class="mt-1 flex items-center gap-2">
-                  <span class="font-medium">{{ healthActiveAlarmText }}</span>
-                  <Tag
-                    v-if="(healthSummary?.alarm.highestLevel ?? 0) > 0"
-                    :color="healthHighestLevelColor"
-                  >
-                    最高 {{ healthSummary?.alarm.highestLevel }} 级
-                  </Tag>
-                </div>
-              </div>
-              <div class="flex items-end">
-                <Button
-                  data-testid="dashboard-health-detail"
-                  :disabled="selectedDeviceId === undefined"
-                  @click="openHealthDetail"
-                >
-                  运行详情
-                </Button>
-              </div>
-            </template>
-          </div>
-          <div
-            v-if="hasHealthAccess"
-            class="mt-3 text-xs opacity-50"
-          >
-            运行信息时间按 Asia/Shanghai 展示；健康数据独立于最新值刷新，失败时仅提示可能过期。
           </div>
         </Card>
 

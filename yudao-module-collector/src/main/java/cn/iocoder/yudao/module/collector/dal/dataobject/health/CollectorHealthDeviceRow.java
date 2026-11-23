@@ -21,10 +21,6 @@ public class CollectorHealthDeviceRow {
     private Integer pollIntervalMs;
     /** 是否在线：0 否、1 是；无状态行时为 null */
     private Integer online;
-    /** 最近上线时间 */
-    private LocalDateTime lastOnlineAt;
-    /** 最近离线时间 */
-    private LocalDateTime lastOfflineAt;
     /** 最近一次采集成功时间 */
     private LocalDateTime lastSuccessAt;
     /** 最近一次错误信息 */
@@ -33,7 +29,7 @@ public class CollectorHealthDeviceRow {
     private Integer consecutiveFailures;
     /** 最近一次请求耗时（毫秒） */
     private Integer lastLatencyMs;
-    /** 最近一次状态更新时间；无状态行时回落到设备自身 update_time */
+    /** 最近一次状态更新时间；无状态行时为 null（不回落设备配置的 update_time） */
     private LocalDateTime lastPollAt;
 
 }

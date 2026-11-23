@@ -26,12 +26,15 @@ public interface CollectorHealthMapper {
 
     /**
      * 设备与设备状态（可能没有状态行）。
+     *
+     * <p>{@code last_poll_at} 只取状态行的 update_time：无状态行（设备从未轮询）时为 NULL，
+     * 不回落设备配置的 update_time，避免把配置变更时间伪装成轮询时间。</p>
      */
     @Select("""
             SELECT d.id, d.device_name AS name, d.poll_interval_ms,
-                   s.online, s.last_online_at, s.last_offline_at, s.last_success_at,
+                   s.online, s.last_success_at,
                    s.last_error, s.consecutive_failures, s.last_latency_ms,
-                   COALESCE(s.update_time, d.update_time) AS last_poll_at
+                   s.update_time AS last_poll_at
             FROM collector_device d
             LEFT JOIN collector_device_status s ON s.device_id = d.id
             WHERE d.id = #{deviceId} AND d.deleted = 0

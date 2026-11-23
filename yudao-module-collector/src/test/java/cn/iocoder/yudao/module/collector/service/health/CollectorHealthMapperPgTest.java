@@ -85,6 +85,7 @@ public class CollectorHealthMapperPgTest {
         assertNull("无状态行时 online 必须为 null", row.getOnline());
         assertNull(row.getConsecutiveFailures());
         assertNull(row.getLastLatencyMs());
+        assertNull("无状态行时 lastPollAt 必须为 null，不得回落到设备 update_time", row.getLastPollAt());
         assertNull("已删除设备不可见", mapper.selectDevice(8L));
     }
 

@@ -265,9 +265,12 @@ const [Drawer, drawerApi] = useVbenDrawer({
   class: '!w-[840px] !max-w-[96vw]',
   onOpenChange(isOpen: boolean) {
     if (!isOpen) {
-      // 关闭后丢弃一切在途响应，避免请求落地污染状态
+      // 关闭后丢弃一切在途响应，避免请求落地污染状态；
+      // 同时显式复位请求标志，旧请求的 finally 因 seq 已失效不会再复位，否则关闭动画期间重开会永久 loading。
       requestSeq += 1;
       destroyed = true;
+      inFlight = false;
+      loading.value = false;
       return;
     }
     destroyed = false;
@@ -283,6 +286,9 @@ const [Drawer, drawerApi] = useVbenDrawer({
 onBeforeUnmount(() => {
   destroyed = true;
   requestSeq += 1;
+  // 卸载后不会再有请求落地，必须在此复位，避免组件被复用时残留 loading/inFlight
+  inFlight = false;
+  loading.value = false;
 });
 </script>
 
