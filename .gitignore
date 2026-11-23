@@ -59,3 +59,6 @@ application-my.yaml
 /yudao-ui-app/unpackage/
 .DS_Store
 **/.DS_Store
+
+# worktree 内跑 turbo 构建时，turbo 会把仓库根误判为主检出并在此落 .turbo 缓存
+.turbo/
