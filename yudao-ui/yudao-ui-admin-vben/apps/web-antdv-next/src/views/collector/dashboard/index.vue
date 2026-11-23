@@ -3,15 +3,37 @@ import type { CollectorApi } from '#/api/collector';
 
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 
-import { Page } from '@vben/common-ui';
+import { useAccess } from '@vben/access';
+import { Page, useVbenDrawer } from '@vben/common-ui';
 import { ReloadOutlined, WarningOutlined } from '@vben/icons';
 
 import { Alert, Button, Card, Empty, Select, Spin, Tag } from 'antdv-next';
 import dayjs from 'dayjs';
 
-import { getDashboardLatest, getDeviceSimpleList } from '#/api/collector';
+import {
+  getDashboardLatest,
+  getDeviceSimpleList,
+  getHealthSummary,
+} from '#/api/collector';
+
+import HealthDetailDrawer from './modules/health-detail-drawer.vue';
 
 defineOptions({ name: 'CollectorDashboard' });
+
+const { hasAccessByCodes } = useAccess();
+
+const PROCESS_STATUS_TEXT: Record<string, string> = {
+  degraded: '降级运行',
+  running: '运行中',
+  starting: '启动中',
+  stopped: '已停止',
+};
+const PROCESS_STATUS_COLOR: Record<string, string> = {
+  degraded: 'warning',
+  running: 'success',
+  starting: 'processing',
+  stopped: 'error',
+};
 
 const POLL_INTERVAL_OPTIONS = [
   { label: '5秒', value: 5000 },
@@ -49,12 +71,28 @@ const requestFailures = ref(0);
 const nextRetryDelayMs = ref<number>();
 const lastSuccessAt = ref<number>();
 const clockNow = ref(Date.now());
+const healthSummary = ref<CollectorApi.HealthSummary>();
+const healthStale = ref(false);
 
 let pollTimer: ReturnType<typeof setTimeout> | undefined;
 let clockTimer: ReturnType<typeof setInterval> | undefined;
 let inFlight = false;
+let healthInFlight = false;
 let destroyed = false;
 let generation = 0;
+let healthDrawerOpen = false;
+
+const hasHealthAccess = computed(() =>
+  hasAccessByCodes(['collector:health:query']),
+);
+
+const [HealthDrawer, healthDrawerApi] = useVbenDrawer({
+  connectedComponent: HealthDetailDrawer,
+  destroyOnClose: true,
+  onOpenChange(isOpen: boolean) {
+    healthDrawerOpen = isOpen;
+  },
+});
 
 const deviceOptions = computed(() =>
   devices.value.map((device) => ({
@@ -86,6 +124,41 @@ const retryText = computed(() => {
   return nextRetryDelayMs.value
     ? `将在 ${Math.round(nextRetryDelayMs.value / 1000)} 秒后重试`
     : '正在准备重试';
+});
+
+const healthProcess = computed(() => healthSummary.value?.process);
+const healthHeartbeatText = computed(() =>
+  healthProcess.value
+    ? formatDateTime(healthProcess.value.heartbeatTime)
+    : '--',
+);
+const healthStatusText = computed(() => {
+  if (!healthSummary.value) return '--';
+  const process = healthProcess.value;
+  if (!process) return '尚未收到心跳';
+  if (!process.status) return '--';
+  return PROCESS_STATUS_TEXT[process.status] ?? process.status;
+});
+const healthStatusColor = computed(() => {
+  const status = healthProcess.value?.status;
+  if (!status) return 'default';
+  return PROCESS_STATUS_COLOR[status] ?? 'default';
+});
+const healthDeviceRatio = computed(() => {
+  const process = healthProcess.value;
+  // process 为空或配置设备总数为 0 时无法得出在线比例，展示 -- 而不是 0/0
+  if (!process || !process.deviceTotal) return '--';
+  return `${process.deviceOnline ?? '--'}/${process.deviceTotal}`;
+});
+const healthActiveAlarmText = computed(() => {
+  const alarm = healthSummary.value?.alarm;
+  return alarm ? String(alarm.activeCount) : '--';
+});
+const healthHighestLevelColor = computed(() => {
+  const level = healthSummary.value?.alarm.highestLevel ?? 0;
+  if (level >= 3) return 'error';
+  if (level === 2) return 'warning';
+  return 'default';
 });
 
 function formatDateTime(value?: null | number) {
@@ -199,6 +272,45 @@ function scheduleNext() {
   pollTimer = setTimeout(() => void refresh(false), delay);
 }
 
+/**
+ * 采集运行摘要使用独立的 in-flight 标志与独立 ref：
+ * 健康请求不论快慢、成败，都不参与最新值刷新的串行与退避逻辑。
+ */
+async function refreshHealth(deviceId: number, currentGeneration: number) {
+  if (!hasHealthAccess.value || healthInFlight) return;
+  healthInFlight = true;
+  try {
+    const body = await getHealthSummary(deviceId);
+    if (
+      destroyed ||
+      currentGeneration !== generation ||
+      selectedDeviceId.value !== deviceId
+    ) {
+      return;
+    }
+    if (!body) {
+      throw new Error('运行摘要接口返回为空');
+    }
+    healthSummary.value = body;
+    healthStale.value = false;
+  } catch {
+    if (
+      destroyed ||
+      currentGeneration !== generation ||
+      selectedDeviceId.value !== deviceId
+    ) {
+      return;
+    }
+    // 健康失败只标记「可能已过期」，绝不清空最新值，也不伪造健康成功。
+    healthStale.value = true;
+  } finally {
+    // 设备已切换 / 页面已卸载时不清理新一代请求的标志位
+    if (currentGeneration === generation && !destroyed) {
+      healthInFlight = false;
+    }
+  }
+}
+
 /** 串行拉取；旧设备或已卸载页面的迟到响应会被丢弃。 */
 async function refresh(manual: boolean) {
   const deviceId = selectedDeviceId.value;
@@ -208,6 +320,8 @@ async function refresh(manual: boolean) {
   clearPollTimer();
   const currentGeneration = generation;
   inFlight = true;
+  // 与最新值并发发起，但不 await：健康请求失败或变慢不影响最新值刷新。
+  void refreshHealth(deviceId, currentGeneration);
   if (manual) manualLoading.value = true;
   if (!hasDashboard.value) initialLoading.value = true;
   try {
@@ -251,15 +365,29 @@ function handleIntervalChange(value: number) {
 function handleDeviceChange(value: number) {
   generation += 1;
   inFlight = false;
+  healthInFlight = false;
   selectedDeviceId.value = value;
   dashboard.value = undefined;
+  healthSummary.value = undefined;
+  healthStale.value = false;
   requestFailures.value = 0;
   connectionError.value = false;
   lastSuccessAt.value = undefined;
+  // 切换设备时直接关闭详情抽屉，避免旧设备数据串入新设备视图
+  if (healthDrawerOpen) {
+    void healthDrawerApi.close();
+  }
   // 关闭自动刷新时，切换设备也不自动请求；用户需点击手动刷新。
   if (pollInterval.value !== 0) {
     void refresh(false);
   }
+}
+
+/** 详情抽屉只在打开时请求 overview，不跟随看板轮询 */
+function openHealthDetail() {
+  const deviceId = selectedDeviceId.value;
+  if (!hasHealthAccess.value || deviceId === undefined) return;
+  healthDrawerApi.setData({ deviceId }).open();
 }
 
 function handleVisibilityChange() {
@@ -315,6 +443,7 @@ onBeforeUnmount(() => {
 
 <template>
   <Page auto-content-height>
+    <HealthDrawer />
     <div class="flex h-full flex-col gap-4 overflow-auto">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -438,6 +567,56 @@ onBeforeUnmount(() => {
                 {{ formatInterval(dashboard.device.pollIntervalMs) }}
               </div>
             </div>
+            <template v-if="hasHealthAccess">
+              <div data-testid="health-heartbeat-time">
+                <div class="text-xs opacity-60">最新心跳时间</div>
+                <div class="mt-1 font-medium">
+                  {{ healthHeartbeatText }}
+                </div>
+              </div>
+              <div data-testid="health-heartbeat-status">
+                <div class="text-xs opacity-60">心跳状态</div>
+                <div class="mt-1 flex flex-wrap items-center gap-1">
+                  <Tag :color="healthStatusColor">
+                    {{ healthStatusText }}
+                  </Tag>
+                  <Tag v-if="healthStale" color="warning">
+                    运行信息可能已过期
+                  </Tag>
+                </div>
+              </div>
+              <div data-testid="health-device-ratio">
+                <div class="text-xs opacity-60">设备在线数 / 总数</div>
+                <div class="mt-1 font-medium">{{ healthDeviceRatio }}</div>
+              </div>
+              <div data-testid="health-active-alarm">
+                <div class="text-xs opacity-60">活动报警数</div>
+                <div class="mt-1 flex items-center gap-2">
+                  <span class="font-medium">{{ healthActiveAlarmText }}</span>
+                  <Tag
+                    v-if="(healthSummary?.alarm.highestLevel ?? 0) > 0"
+                    :color="healthHighestLevelColor"
+                  >
+                    最高 {{ healthSummary?.alarm.highestLevel }} 级
+                  </Tag>
+                </div>
+              </div>
+              <div class="flex items-end">
+                <Button
+                  data-testid="dashboard-health-detail"
+                  :disabled="selectedDeviceId === undefined"
+                  @click="openHealthDetail"
+                >
+                  运行详情
+                </Button>
+              </div>
+            </template>
+          </div>
+          <div
+            v-if="hasHealthAccess"
+            class="mt-3 text-xs opacity-50"
+          >
+            运行信息时间按 Asia/Shanghai 展示；健康数据独立于最新值刷新，失败时仅提示可能过期。
           </div>
         </Card>
 
