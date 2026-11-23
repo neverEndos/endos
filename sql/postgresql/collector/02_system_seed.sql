@@ -3,7 +3,7 @@
 -- 内容（仅平台级配置数据，可在任何已初始化库上重复执行）：
 --   1. 协议注册行：modbus_rtu / modbus_tcp / hsi_rs485（按 protocol_code 判重，已存在则跳过）
 --   2. 保留策略初始建议：8 条（按 data_class 判重，不覆盖人工调整）
---   3. 采集器 Web 端菜单与角色授权（固定 ID 780~808，冲突预检，不覆盖他人菜单）
+--   3. 采集器 Web 端菜单与角色授权（固定 ID 780~813，冲突预检，不覆盖他人菜单）
 --   4. 报警判定定时任务（infra_job，按 handler_name 判重）
 --   5. 秒/分/小时/天聚合定时任务（infra_job，按 handler_name 判重）
 --   6. raw 日分区预建定时任务（infra_job，按 handler_name 判重）
@@ -434,7 +434,7 @@ WHERE NOT EXISTS (
 -- (hour, channel_id) 与 (day, channel_id) 水位，watermark_time 均为 NULL。
 
 -- ========== 3. Web 端菜单与角色授权（原 collector_web_seed.sql） ==========
--- ========== 本次菜单种子（目录 + 10 个页面 + 18 个按钮） ==========
+-- ========== 本次菜单种子（目录 + 10 个页面 + 19 个按钮） ==========
 -- 803 聚合数据回填、805 聚合强制清空仅为 API 权限点，无页面入口；804 为趋势分析页面；
 -- 请通过 POST /admin-api/collector/aggregate/backfill 使用，forceClean=true 需要 805 权限。
 -- 806 保留策略页面；807/808 为页面内按钮，808「保留策略清理」是唯一会立即删除数据的权限点。
@@ -482,7 +482,8 @@ INSERT INTO collector_menu_seed (
     (805, 780, '聚合强制清空', 'collector:aggregate:force-clean', 3, 9, '', '', NULL, NULL),
     (806, 780, '保留策略', 'collector:retention:query', 2, 10, 'retention', 'ep:timer', 'collector/retention/index', 'CollectorRetention'),
     (807, 806, '保留策略修改', 'collector:retention:update', 3, 1, '', '', NULL, NULL),
-    (808, 806, '保留策略清理', 'collector:retention:cleanup', 3, 2, '', '', NULL, NULL);
+    (808, 806, '保留策略清理', 'collector:retention:cleanup', 3, 2, '', '', NULL, NULL),
+    (813, 802, '采集运行详情', 'collector:health:query', 3, 1, '', '', NULL, NULL);
 
 -- 任何固定 ID 被非本种子菜单占用（包括逻辑删除行）都明确失败，不覆盖、不授权。
 DO $$
