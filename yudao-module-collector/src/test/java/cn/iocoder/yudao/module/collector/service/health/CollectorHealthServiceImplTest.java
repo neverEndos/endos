@@ -14,6 +14,8 @@ import cn.iocoder.yudao.module.collector.dal.dataobject.health.CollectorHealthRa
 import cn.iocoder.yudao.module.collector.dal.mysql.health.CollectorHealthMapper;
 import cn.iocoder.yudao.module.collector.service.retention.CollectorRetentionPolicyService;
 import cn.iocoder.yudao.module.collector.service.retention.CollectorRetentionCleanupService;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -24,6 +26,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.TimeZone;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -36,6 +39,7 @@ import static org.junit.Assert.assertTrue;
  */
 public class CollectorHealthServiceImplTest {
 
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper().findAndRegisterModules();
     private static final ZoneId SHANGHAI = ZoneId.of("Asia/Shanghai");
     /** 2026-11-23 10:00 Asia/Shanghai。 */
     private static final Instant FIXED_INSTANT = Instant.parse("2026-11-23T02:00:00Z");
@@ -69,7 +73,7 @@ public class CollectorHealthServiceImplTest {
         assertNull(summary.getDevice().getLastSuccessAt());
         assertEquals(Integer.valueOf(0), summary.getAlarm().getActiveCount());
         assertEquals("无活动报警时 highestLevel 取 0", Integer.valueOf(0), summary.getAlarm().getHighestLevel());
-        assertEquals(LocalDateTime.of(2026, 11, 23, 10, 0), summary.getServerTime());
+        assertEquals(FIXED_INSTANT.toEpochMilli(), summary.getServerTime().longValue());
         assertEquals("summary 固定 3 条 SQL", 3, mapper.sqlCount);
         assertEquals("summary 不应读取保留策略", 0, retentionService.sqlCount);
     }
@@ -92,6 +96,7 @@ public class CollectorHealthServiceImplTest {
 
         assertEquals("collector-1", summary.getProcess().getInstanceId());
         assertEquals("degraded", summary.getProcess().getStatus());
+        assertEpoch("2026-11-23T01:59:30Z", summary.getProcess().getHeartbeatTime());
         assertEquals(Integer.valueOf(8), summary.getProcess().getWriteLagMs());
         assertEquals(Integer.valueOf(1), summary.getProcess().getDeviceTotal());
         assertEquals(Integer.valueOf(0), summary.getProcess().getDeviceOnline());
@@ -99,6 +104,8 @@ public class CollectorHealthServiceImplTest {
         assertTrue(summary.getDevice().getOnline());
         assertEquals(Integer.valueOf(12_000), summary.getDevice().getPollIntervalMs());
         assertEquals(Integer.valueOf(42), summary.getDevice().getLastLatencyMs());
+        assertEpoch("2026-11-23T01:59:00Z", summary.getDevice().getLastPollAt());
+        assertEpoch("2026-11-23T01:58:00Z", summary.getDevice().getLastSuccessAt());
         assertEquals(Integer.valueOf(2), summary.getAlarm().getActiveCount());
         assertEquals(Integer.valueOf(3), summary.getAlarm().getHighestLevel());
     }
@@ -191,6 +198,61 @@ public class CollectorHealthServiceImplTest {
     }
 
     @Test
+    public void overview_timeFieldsUseShanghaiEpochAndStableJsonWhenJvmDefaultsToUtc() throws Exception {
+        TimeZone previous = TimeZone.getDefault();
+        try {
+            TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+            mapper.device = deviceRow(1, 5_000, LocalDateTime.of(2026, 11, 23, 9, 59),
+                    LocalDateTime.of(2026, 11, 23, 9, 58), 42);
+            mapper.heartbeat = heartbeat("collector-1", "running", 8);
+            mapper.alarms = List.of(alarmRow(101L, 2, "channel-a"));
+
+            CollectorHealthAggregateSummaryRow aggregate = aggregateSummary("second", 1, 0, 0);
+            aggregate.setLastSuccessTime(LocalDateTime.of(2026, 11, 23, 9, 30));
+            aggregate.setMinWatermarkTime(LocalDateTime.of(2026, 11, 23, 8, 0));
+            aggregate.setMaxWatermarkTime(LocalDateTime.of(2026, 11, 23, 9, 0));
+            mapper.aggregate = List.of(aggregate);
+            CollectorHealthAggregateAbnormalRow abnormal = new CollectorHealthAggregateAbnormalRow();
+            abnormal.setAggType("second");
+            abnormal.setChannelId(101L);
+            abnormal.setDeviceId(7L);
+            abnormal.setWatermarkTime(LocalDateTime.of(2026, 11, 23, 9, 15));
+            mapper.aggregateAbnormal = List.of(abnormal);
+            retentionService.lastRunAt = LocalDateTime.of(2026, 11, 23, 9, 45);
+
+            CollectorHealthOverviewRespVO overview = service.getOverview(7L);
+
+            assertEpoch("2026-11-23T02:00:00Z", overview.getServerTime());
+            assertEpoch("2026-11-23T01:59:30Z", overview.getProcess().getHeartbeatTime());
+            assertEpoch("2026-11-23T01:59:00Z", overview.getDevice().getLastPollAt());
+            assertEpoch("2026-11-23T01:58:00Z", overview.getDevice().getLastSuccessAt());
+            assertEpoch("2026-11-23T00:00:00Z", overview.getAlarms().get(0).getSince());
+            assertEpoch("2026-11-23T01:59:00Z", overview.getAlarms().get(0).getLastSampleTime());
+            assertEpoch("2026-11-23T01:30:00Z", overview.getAggregate().get(0).getLastSuccessTime());
+            assertEpoch("2026-11-23T00:00:00Z", overview.getAggregate().get(0).getMinWatermarkTime());
+            assertEpoch("2026-11-23T01:00:00Z", overview.getAggregate().get(0).getMaxWatermarkTime());
+            assertEpoch("2026-11-23T01:15:00Z", overview.getAggregateAbnormal().get(0).getWatermarkTime());
+            assertEpoch("2026-11-23T01:45:00Z", overview.getRetention().get(0).getLastRunAt());
+
+            // 序列化结果同样是固定数字，不再经过依赖 JVM 默认时区的 LocalDateTime 序列化器。
+            JsonNode json = OBJECT_MAPPER.readTree(OBJECT_MAPPER.writeValueAsString(overview));
+            assertJsonEpoch(json, "/serverTime", "2026-11-23T02:00:00Z");
+            assertJsonEpoch(json, "/process/heartbeatTime", "2026-11-23T01:59:30Z");
+            assertJsonEpoch(json, "/device/lastPollAt", "2026-11-23T01:59:00Z");
+            assertJsonEpoch(json, "/device/lastSuccessAt", "2026-11-23T01:58:00Z");
+            assertJsonEpoch(json, "/alarms/0/since", "2026-11-23T00:00:00Z");
+            assertJsonEpoch(json, "/alarms/0/lastSampleTime", "2026-11-23T01:59:00Z");
+            assertJsonEpoch(json, "/aggregate/0/lastSuccessTime", "2026-11-23T01:30:00Z");
+            assertJsonEpoch(json, "/aggregate/0/minWatermarkTime", "2026-11-23T00:00:00Z");
+            assertJsonEpoch(json, "/aggregate/0/maxWatermarkTime", "2026-11-23T01:00:00Z");
+            assertJsonEpoch(json, "/aggregateAbnormal/0/watermarkTime", "2026-11-23T01:15:00Z");
+            assertJsonEpoch(json, "/retention/0/lastRunAt", "2026-11-23T01:45:00Z");
+        } finally {
+            TimeZone.setDefault(previous);
+        }
+    }
+
+    @Test
     public void overview_rawPartition_duplicatePolicyIsExplicit() {
         mapper.device = deviceRow(1, null, null, null, null);
         mapper.rawPolicies = List.of(rawPolicy(1L, 2), rawPolicy(2L, 3));
@@ -259,6 +321,16 @@ public class CollectorHealthServiceImplTest {
         assertNull("从未执行过的策略 lastRunAt 必须为 null", raw.getLastRunAt());
         assertNull(raw.getLastRunResult());
         assertEquals("command", overview.getRetention().get(7).getDataClass());
+    }
+
+    private static void assertEpoch(String expectedInstant, Long actual) {
+        assertEquals(Instant.parse(expectedInstant).toEpochMilli(), actual.longValue());
+    }
+
+    private static void assertJsonEpoch(JsonNode json, String pointer, String expectedInstant) {
+        JsonNode value = json.at(pointer);
+        assertTrue(pointer + " 必须是 JSON 数字", value.isIntegralNumber());
+        assertEquals(pointer, Instant.parse(expectedInstant).toEpochMilli(), value.asLong());
     }
 
     private static CollectorHealthDeviceRow deviceRow(Integer online, Integer pollIntervalMs,
@@ -417,6 +489,7 @@ public class CollectorHealthServiceImplTest {
                 "小时聚合数据", "天聚合数据", "报警事件", "采集器心跳", "采集命令记录"};
 
         private int sqlCount;
+        private LocalDateTime lastRunAt;
 
         @Override
         public List<RetentionPolicySnapshot> getPolicyList() {
@@ -425,7 +498,7 @@ public class CollectorHealthServiceImplTest {
             for (int i = 0; i < DATA_CLASSES.length; i++) {
                 snapshots.add(new RetentionPolicySnapshot((long) (i + 1), DATA_CLASSES[i], DISPLAY_NAMES[i],
                         7 * (i + 1), 2, "sample_raw".equals(DATA_CLASSES[i]) ? "drop_partition" : "delete_rows",
-                        true, null, null, null));
+                        true, null, lastRunAt, null));
             }
             return snapshots;
         }

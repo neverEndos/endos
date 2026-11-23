@@ -3,20 +3,19 @@ package cn.iocoder.yudao.module.collector.controller.admin.health.vo;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
-import java.time.LocalDateTime;
-
 /**
  * 管理后台 - 采集运行摘要 Response VO。
  *
- * <p>所有 {@link LocalDateTime} 字段沿用项目统一的 epoch millis 序列化；
+ * <p>时间字段均由后端按 Asia/Shanghai 墙钟显式转换为 epoch millis；
  * 缺失的心跳 / 状态 / 报警信息一律返回 null 或 0，不伪造「运行正常」。</p>
  */
 @Schema(description = "管理后台 - 采集运行摘要 Response VO")
 @Data
 public class CollectorHealthSummaryRespVO {
 
-    @Schema(description = "后端服务器时间（Asia/Shanghai）", requiredMode = Schema.RequiredMode.REQUIRED)
-    private LocalDateTime serverTime;
+    @Schema(description = "后端服务器时间（epoch millis，按 Asia/Shanghai 墙钟转换）",
+            requiredMode = Schema.RequiredMode.REQUIRED)
+    private Long serverTime;
 
     @Schema(description = "采集器进程心跳摘要；从未收到心跳时为 null")
     private Process process;
@@ -37,8 +36,8 @@ public class CollectorHealthSummaryRespVO {
         @Schema(description = "心跳状态：starting / running / degraded / stopped")
         private String status;
 
-        @Schema(description = "心跳时间")
-        private LocalDateTime heartbeatTime;
+        @Schema(description = "心跳时间（epoch millis，按 Asia/Shanghai 墙钟转换）")
+        private Long heartbeatTime;
 
         @Schema(description = "最近一次数据库写入延迟（毫秒）")
         private Integer writeLagMs;
@@ -67,11 +66,11 @@ public class CollectorHealthSummaryRespVO {
         @Schema(description = "是否在线；设备从未上报状态行时为 null（未知），不伪造在线")
         private Boolean online;
 
-        @Schema(description = "最近一次状态更新时间")
-        private LocalDateTime lastPollAt;
+        @Schema(description = "最近一次状态更新时间（epoch millis，按 Asia/Shanghai 墙钟转换）")
+        private Long lastPollAt;
 
-        @Schema(description = "最近一次采集成功时间")
-        private LocalDateTime lastSuccessAt;
+        @Schema(description = "最近一次采集成功时间（epoch millis，按 Asia/Shanghai 墙钟转换）")
+        private Long lastSuccessAt;
 
         @Schema(description = "最近一次请求耗时（毫秒）")
         private Integer lastLatencyMs;

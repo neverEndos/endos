@@ -6,13 +6,13 @@ import lombok.EqualsAndHashCode;
 import lombok.ToString;
 
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.util.List;
 
 /**
  * 管理后台 - 采集运行详情 Response VO。
  *
- * <p>在摘要之上补充活动报警明细、聚合水位、保留策略与 raw 分区预建情况；全部为只读查询结果。</p>
+ * <p>在摘要之上补充活动报警明细、聚合水位、保留策略与 raw 分区预建情况；全部为只读查询结果。
+ * 时间字段均由后端按 Asia/Shanghai 墙钟显式转换为 epoch millis，日期字段保留 yyyy-MM-dd 语义。</p>
  */
 @Schema(description = "管理后台 - 采集运行详情 Response VO")
 @Data
@@ -66,8 +66,8 @@ public class CollectorHealthOverviewRespVO extends CollectorHealthSummaryRespVO 
         @Schema(description = "当前命中的阈值类型")
         private String thresholdType;
 
-        @Schema(description = "当前级别开始时间")
-        private LocalDateTime since;
+        @Schema(description = "当前级别开始时间（epoch millis，按 Asia/Shanghai 墙钟转换）")
+        private Long since;
 
         @Schema(description = "最近参与判定的工程值")
         private Double lastValue;
@@ -75,8 +75,8 @@ public class CollectorHealthOverviewRespVO extends CollectorHealthSummaryRespVO 
         @Schema(description = "最近判定使用的阈值")
         private Double lastThreshold;
 
-        @Schema(description = "最近参与判定的采样时间")
-        private LocalDateTime lastSampleTime;
+        @Schema(description = "最近参与判定的采样时间（epoch millis，按 Asia/Shanghai 墙钟转换）")
+        private Long lastSampleTime;
 
     }
 
@@ -96,14 +96,14 @@ public class CollectorHealthOverviewRespVO extends CollectorHealthSummaryRespVO 
         @Schema(description = "最大重试次数；retry_count 为预留字段，当前恒为 0，前端应展示 --")
         private Integer maxRetryCount;
 
-        @Schema(description = "最近一次成功时间")
-        private LocalDateTime lastSuccessTime;
+        @Schema(description = "最近一次成功时间（epoch millis，按 Asia/Shanghai 墙钟转换）")
+        private Long lastSuccessTime;
 
-        @Schema(description = "最小水位时间")
-        private LocalDateTime minWatermarkTime;
+        @Schema(description = "最小水位时间（epoch millis，按 Asia/Shanghai 墙钟转换）")
+        private Long minWatermarkTime;
 
-        @Schema(description = "最大水位时间")
-        private LocalDateTime maxWatermarkTime;
+        @Schema(description = "最大水位时间（epoch millis，按 Asia/Shanghai 墙钟转换）")
+        private Long maxWatermarkTime;
 
         @Schema(description = "是否存在水位行；false 表示尚未初始化，不能展示为「全部正常」")
         private Boolean initialized;
@@ -138,8 +138,8 @@ public class CollectorHealthOverviewRespVO extends CollectorHealthSummaryRespVO 
         @Schema(description = "最近一次错误信息（预留，当前未写入，不做任何补写）")
         private String lastError;
 
-        @Schema(description = "最新已成功提交桶的结束时间")
-        private LocalDateTime watermarkTime;
+        @Schema(description = "最新已成功提交桶的结束时间（epoch millis，按 Asia/Shanghai 墙钟转换）")
+        private Long watermarkTime;
 
     }
 
@@ -162,8 +162,8 @@ public class CollectorHealthOverviewRespVO extends CollectorHealthSummaryRespVO 
         @Schema(description = "是否启用过期清理")
         private Boolean enabled;
 
-        @Schema(description = "最近执行时间；从未执行为 null")
-        private LocalDateTime lastRunAt;
+        @Schema(description = "最近执行时间（epoch millis，按 Asia/Shanghai 墙钟转换）；从未执行为 null")
+        private Long lastRunAt;
 
         @Schema(description = "最近执行结果摘要；从未执行为 null")
         private String lastRunResult;

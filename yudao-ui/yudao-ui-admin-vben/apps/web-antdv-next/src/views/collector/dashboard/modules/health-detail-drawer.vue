@@ -6,9 +6,10 @@ import { computed, onBeforeUnmount, ref } from 'vue';
 import { useVbenDrawer } from '@vben/common-ui';
 
 import { Alert, Button, Card, Empty, Spin, Table, Tag } from 'antdv-next';
-import dayjs from 'dayjs';
 
 import { getHealthOverview } from '#/api/collector';
+
+import { formatShanghaiDateTime } from '../time';
 
 interface HealthDrawerData {
   deviceId: number;
@@ -134,9 +135,7 @@ const retentions = computed(() => overview.value?.retention ?? []);
 const rawPartition = computed(() => overview.value?.rawPartition);
 const rawStatus = computed(() => rawStatusMeta(rawPartition.value?.status));
 const lastSuccessText = computed(() =>
-  lastSuccessAt.value
-    ? dayjs(lastSuccessAt.value).format('YYYY-MM-DD HH:mm:ss')
-    : '--',
+  formatShanghaiDateTime(lastSuccessAt.value),
 );
 const deviceOnlineText = computed(() => {
   const online = device.value?.online;
@@ -150,7 +149,7 @@ const deviceOnlineColor = computed(() => {
 });
 
 function formatDateTime(value?: null | number) {
-  return value ? dayjs(value).format('YYYY-MM-DD HH:mm:ss') : '--';
+  return formatShanghaiDateTime(value);
 }
 
 function formatDate(value?: null | string) {

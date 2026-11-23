@@ -8,7 +8,6 @@ import { Page, useVbenDrawer } from '@vben/common-ui';
 import { ReloadOutlined, WarningOutlined } from '@vben/icons';
 
 import { Alert, Button, Card, Empty, Select, Spin, Tag } from 'antdv-next';
-import dayjs from 'dayjs';
 
 import {
   getDashboardLatest,
@@ -17,6 +16,7 @@ import {
 } from '#/api/collector';
 
 import HealthDetailDrawer from './modules/health-detail-drawer.vue';
+import { formatShanghaiDateTime } from './time';
 
 defineOptions({ name: 'CollectorDashboard' });
 
@@ -102,16 +102,14 @@ const deviceOptions = computed(() =>
 );
 const hasDashboard = computed(() => dashboard.value !== undefined);
 const lastSuccessText = computed(() =>
-  lastSuccessAt.value
-    ? dayjs(lastSuccessAt.value).format('YYYY-MM-DD HH:mm:ss')
-    : '--',
+  formatShanghaiDateTime(lastSuccessAt.value),
 );
 const latestSampleTime = computed(() => {
   let latest: number | undefined;
   for (const sensor of dashboard.value?.sensors ?? []) {
     for (const channel of sensor.channels) {
       if (!channel.sampleTime) continue;
-      const value = dayjs(channel.sampleTime).valueOf();
+      const value = channel.sampleTime;
       if (Number.isFinite(value) && (latest === undefined || value > latest)) {
         latest = value;
       }
@@ -162,7 +160,7 @@ const healthHighestLevelColor = computed(() => {
 });
 
 function formatDateTime(value?: null | number) {
-  return value ? dayjs(value).format('YYYY-MM-DD HH:mm:ss') : '--';
+  return formatShanghaiDateTime(value);
 }
 
 function formatInterval(value?: number) {
@@ -180,7 +178,7 @@ function isChannelStale(channel: CollectorApi.DashboardChannel) {
   if (channel.stale) return true;
   if (!channel.sampleTime) return false;
   const interval = dashboard.value?.device.pollIntervalMs ?? 60000;
-  const age = clockNow.value - dayjs(channel.sampleTime).valueOf();
+  const age = clockNow.value - channel.sampleTime;
   return Number.isFinite(age) && age > interval * 3;
 }
 

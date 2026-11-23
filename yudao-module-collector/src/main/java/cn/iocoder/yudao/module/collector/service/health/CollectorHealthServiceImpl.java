@@ -119,7 +119,7 @@ public class CollectorHealthServiceImpl implements CollectorHealthService {
             throw exception(DEVICE_NOT_EXISTS);
         }
         CollectorHealthSummaryRespVO summary = new CollectorHealthSummaryRespVO();
-        summary.setServerTime(serverTime);
+        summary.setServerTime(CollectorDashboardUtils.toEpochMilli(serverTime));
         summary.setProcess(buildProcess(healthMapper.selectLatestHeartbeat()));
         summary.setDevice(buildDevice(deviceRow));
         summary.setAlarm(buildAlarm(healthMapper.selectAlarmSummary(deviceId)));
@@ -134,7 +134,7 @@ public class CollectorHealthServiceImpl implements CollectorHealthService {
         CollectorHealthSummaryRespVO.Process process = new CollectorHealthSummaryRespVO.Process();
         process.setInstanceId(row.getInstanceId());
         process.setStatus(row.getStatus());
-        process.setHeartbeatTime(row.getHeartbeatTime());
+        process.setHeartbeatTime(CollectorDashboardUtils.toEpochMilli(row.getHeartbeatTime()));
         process.setWriteLagMs(row.getWriteLagMs());
         process.setDeviceTotal(row.getDeviceTotal());
         process.setDeviceOnline(row.getDeviceOnline());
@@ -148,8 +148,8 @@ public class CollectorHealthServiceImpl implements CollectorHealthService {
         device.setDeviceName(row.getName());
         // 无设备状态行时 online 为 null（未知），不伪造在线。
         device.setOnline(row.getOnline() == null ? null : Integer.valueOf(1).equals(row.getOnline()));
-        device.setLastPollAt(row.getLastPollAt());
-        device.setLastSuccessAt(row.getLastSuccessAt());
+        device.setLastPollAt(CollectorDashboardUtils.toEpochMilli(row.getLastPollAt()));
+        device.setLastSuccessAt(CollectorDashboardUtils.toEpochMilli(row.getLastSuccessAt()));
         device.setLastLatencyMs(row.getLastLatencyMs());
         device.setLastError(row.getLastError());
         device.setConsecutiveFailures(row.getConsecutiveFailures());
@@ -178,10 +178,10 @@ public class CollectorHealthServiceImpl implements CollectorHealthService {
             detail.setChannelName(row.getChannelName());
             detail.setLevel(row.getLevel());
             detail.setThresholdType(row.getThresholdType());
-            detail.setSince(row.getSince());
+            detail.setSince(CollectorDashboardUtils.toEpochMilli(row.getSince()));
             detail.setLastValue(row.getLastValue());
             detail.setLastThreshold(row.getLastThreshold());
-            detail.setLastSampleTime(row.getLastSampleTime());
+            detail.setLastSampleTime(CollectorDashboardUtils.toEpochMilli(row.getLastSampleTime()));
             details.add(detail);
         }
         return details;
@@ -211,9 +211,9 @@ public class CollectorHealthServiceImpl implements CollectorHealthService {
                 summary.setRowCount(row.getRowCount() != null ? row.getRowCount() : 0);
                 summary.setAbnormalCount(row.getAbnormalCount() != null ? row.getAbnormalCount() : 0);
                 summary.setMaxRetryCount(row.getMaxRetryCount());
-                summary.setLastSuccessTime(row.getLastSuccessTime());
-                summary.setMinWatermarkTime(row.getMinWatermarkTime());
-                summary.setMaxWatermarkTime(row.getMaxWatermarkTime());
+                summary.setLastSuccessTime(CollectorDashboardUtils.toEpochMilli(row.getLastSuccessTime()));
+                summary.setMinWatermarkTime(CollectorDashboardUtils.toEpochMilli(row.getMinWatermarkTime()));
+                summary.setMaxWatermarkTime(CollectorDashboardUtils.toEpochMilli(row.getMaxWatermarkTime()));
                 summary.setInitialized(Boolean.TRUE);
             }
             summaries.add(summary);
@@ -236,7 +236,7 @@ public class CollectorHealthServiceImpl implements CollectorHealthService {
             item.setStatus(row.getStatus());
             item.setRetryCount(row.getRetryCount());
             item.setLastError(row.getLastError());
-            item.setWatermarkTime(row.getWatermarkTime());
+            item.setWatermarkTime(CollectorDashboardUtils.toEpochMilli(row.getWatermarkTime()));
             items.add(item);
         }
         return items;
@@ -251,7 +251,7 @@ public class CollectorHealthServiceImpl implements CollectorHealthService {
             item.setDisplayName(snapshot.displayName());
             item.setRetentionDays(snapshot.retentionDays());
             item.setEnabled(snapshot.enabled());
-            item.setLastRunAt(snapshot.lastRunAt());
+            item.setLastRunAt(CollectorDashboardUtils.toEpochMilli(snapshot.lastRunAt()));
             item.setLastRunResult(snapshot.lastRunResult());
             items.add(item);
         }
