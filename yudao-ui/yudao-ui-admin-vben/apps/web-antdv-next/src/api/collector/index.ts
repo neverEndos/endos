@@ -289,6 +289,134 @@ export namespace CollectorApi {
     serverTime: number;
   }
 
+  /** 采集运行摘要 · 进程心跳；从未收到心跳时为 null */
+  export interface HealthProcess {
+    instanceId?: null | string;
+    /** starting / running / degraded / stopped */
+    status?: null | string;
+    /** 后端序列化为 epoch millis */
+    heartbeatTime?: null | number;
+    writeLagMs?: null | number;
+    deviceTotal?: null | number;
+    deviceOnline?: null | number;
+    collectorVersion?: null | string;
+  }
+
+  /** 采集运行摘要 · 当前设备 */
+  export interface HealthDevice {
+    deviceId: number;
+    deviceName: string;
+    /** null 表示设备从未上报状态行（未知），不代表离线 */
+    online?: boolean | null;
+    /** 后端序列化为 epoch millis */
+    lastPollAt?: null | number;
+    /** 后端序列化为 epoch millis */
+    lastSuccessAt?: null | number;
+    lastLatencyMs?: null | number;
+    lastError?: null | string;
+    consecutiveFailures?: null | number;
+    pollIntervalMs?: null | number;
+  }
+
+  /** 采集运行摘要 · 活动报警数量 */
+  export interface HealthAlarm {
+    activeCount: number;
+    /** 0 表示无活动报警，级别仅 0/2/3 */
+    highestLevel: number;
+  }
+
+  /** 采集运行摘要；全部只读 */
+  export interface HealthSummary {
+    /** 后端序列化为 epoch millis */
+    serverTime: number;
+    process?: HealthProcess | null;
+    device: HealthDevice;
+    alarm: HealthAlarm;
+  }
+
+  /** 采集运行详情 · 活动报警明细 */
+  export interface HealthAlarmDetail {
+    deviceId?: null | number;
+    deviceName?: null | string;
+    sensorId?: null | number;
+    sensorName?: null | string;
+    channelId?: null | number;
+    channelName?: null | string;
+    level?: null | number;
+    thresholdType?: null | string;
+    /** 后端序列化为 epoch millis */
+    since?: null | number;
+    lastValue?: null | number;
+    lastThreshold?: null | number;
+    /** 后端序列化为 epoch millis */
+    lastSampleTime?: null | number;
+  }
+
+  /** 采集运行详情 · 聚合水位分组汇总 */
+  export interface HealthAggregateSummary {
+    aggType?: string;
+    rowCount?: null | number;
+    abnormalCount?: null | number;
+    /** 预留字段，当前恒为 0，前端展示为 -- */
+    maxRetryCount?: null | number;
+    lastSuccessTime?: null | number;
+    minWatermarkTime?: null | number;
+    maxWatermarkTime?: null | number;
+    /** false 表示尚未初始化，不能展示为「全部正常」 */
+    initialized?: boolean;
+  }
+
+  /** 采集运行详情 · 聚合水位异常明细 */
+  export interface HealthAggregateAbnormal {
+    aggType?: null | string;
+    channelId?: null | number;
+    deviceId?: null | number;
+    deviceName?: null | string;
+    channelName?: null | string;
+    status?: null | number;
+    retryCount?: null | number;
+    lastError?: null | string;
+    watermarkTime?: null | number;
+  }
+
+  /** 采集运行详情 · 保留策略 */
+  export interface HealthRetention {
+    id?: number;
+    dataClass?: string;
+    displayName?: string;
+    /** 0 表示永久保留 */
+    retentionDays?: null | number;
+    enabled?: boolean | null;
+    lastRunAt?: null | number;
+    lastRunResult?: null | string;
+  }
+
+  /** 采集运行详情 · raw 日分区预建情况 */
+  export interface HealthRawPartition {
+    /** ok / policy_missing / policy_duplicate / policy_invalid */
+    status: string;
+    /** 策略缺失或重复、非法时为 null，绝不套用默认值 */
+    leadDays?: null | number;
+    /** yyyy-MM-dd */
+    expectedFrom?: null | string;
+    /** yyyy-MM-dd；策略异常时为 null */
+    expectedTo?: null | string;
+    expectedCount?: null | number;
+    existingCount?: null | number;
+    missingDates?: null | string[];
+  }
+
+  /** 采集运行详情；摘要字段 + 报警 / 聚合 / 保留 / 分区明细，全部只读 */
+  export interface HealthOverview extends HealthSummary {
+    alarms?: HealthAlarmDetail[];
+    /** 活动报警全量计数；alarms 仅返回前 20 条 */
+    alarmTotal?: null | number;
+    aggregate?: HealthAggregateSummary[];
+    aggregateAbnormal?: HealthAggregateAbnormal[];
+    retention?: HealthRetention[];
+    rawPartition?: HealthRawPartition;
+  }
+
   /** 趋势查询数据点 */
   export interface TrendPoint {
     /** 桶起点或抽样点时间（epoch millis） */
@@ -792,6 +920,24 @@ export function getAlarmStateList(params?: { deviceId?: number }) {
 export function getDashboardLatest(deviceId: number) {
   return requestClient.get<CollectorApi.DashboardLatest>(
     '/collector/dashboard/latest',
+    { params: { deviceId } },
+  );
+}
+
+// ==================== 采集运行详情 ====================
+
+/** 查询采集运行摘要；心跳 / 设备状态 / 活动报警数量，全部只读 */
+export function getHealthSummary(deviceId: number) {
+  return requestClient.get<CollectorApi.HealthSummary>(
+    '/collector/health/summary',
+    { params: { deviceId } },
+  );
+}
+
+/** 查询采集运行详情；仅打开详情抽屉与手动刷新时调用，不跟随看板轮询 */
+export function getHealthOverview(deviceId: number) {
+  return requestClient.get<CollectorApi.HealthOverview>(
+    '/collector/health/overview',
     { params: { deviceId } },
   );
 }
