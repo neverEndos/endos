@@ -11,7 +11,6 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -21,7 +20,6 @@ import java.io.IOException;
 
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 
-@Slf4j
 @Tag(name = "管理后台 - 采集通道历史数据")
 @RestController
 @RequestMapping("/collector/history")
@@ -48,17 +46,10 @@ public class CollectorHistoryController {
     @PreAuthorize("@ss.hasPermission('collector:history:export')")
     public void exportHistoryCsv(@Valid CollectorHistoryExportReqVO reqVO,
                                  HttpServletResponse response) throws IOException {
-        try {
-            historyService.exportHistoryCsv(reqVO, response);
-        } catch (IOException | RuntimeException ex) {
-            // 响应已开始写出时无法再返回 CommonResult JSON，记录日志并向上抛出由容器中断连接。
-            if (response.isCommitted()) {
-                log.error("[exportHistoryCsv][响应已提交，中止连接，避免输出半截 JSON] channelId={}, "
-                        + "granularity={}, from={}, to={}",
-                        reqVO.getChannelId(), reqVO.getGranularity(), reqVO.getFrom(), reqVO.getTo(), ex);
-            }
-            throw ex;
-        }
+        // 校验阶段（权限、范围、粒度、行数）失败时响应尚未写出，由全局异常处理器返回 CommonResult JSON；
+        // 一旦进入流式写出阶段，失败只由 Service 记录日志后抛出，由容器中断连接，绝不在此再写 JSON。
+        // 日志统一在 Service 内记录（含已写行数），此处不重复打点。
+        historyService.exportHistoryCsv(reqVO, response);
     }
 
 }

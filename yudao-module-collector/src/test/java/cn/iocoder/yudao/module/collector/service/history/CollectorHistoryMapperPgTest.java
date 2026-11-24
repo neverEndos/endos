@@ -177,7 +177,7 @@ public class CollectorHistoryMapperPgTest {
     }
 
     @Test
-    public void aggregateDaysBoundary_excludesNonMidnightUpperBound() throws SQLException {
+    public void aggregateDaysBoundary_excludesMidnightUpperBound() throws SQLException {
         // bucket_date=2026-01-02 的行在 to=2026-01-02 00:00 时不应出现（区间 [from, to)）
         insertAggregate("collector_aggregate_day", BASE_TIME, 20D);
         insertAggregate("collector_aggregate_day", BASE_TIME.plusDays(1), 21D);

@@ -5,7 +5,7 @@ import type { TableColumnsType } from 'antdv-next';
 
 import type { CollectorApi } from '#/api/collector';
 
-import { computed, ref, watch } from 'vue';
+import { computed, ref } from 'vue';
 import { useRouter } from 'vue-router';
 
 import { useAccess } from '@vben/access';
@@ -125,9 +125,12 @@ const preset = ref<PresetValue>('1h');
 const customRange = ref<[Dayjs, Dayjs] | null>(null);
 const resolution = ref<ResolutionValue>('auto');
 
-/** 用户正在编辑的筛选条件；只在点击「查询」后复制为 appliedQuery */
-const draftQuery = ref<AppliedQuery>();
-/** 已生效条件：数据表、趋势、导出统一使用它，避免改了筛选但没查询就导出 */
+/**
+ * 已生效条件：数据表、趋势、导出统一使用它。
+ * 顶部筛选控件（preset/customRange/resolution）本身即「草稿」，
+ * 只有点击「查询」时才由 buildQueryFromControls() 固化为 appliedQuery，
+ * 因此改了筛选但没点查询时，导出仍按上一次生效条件执行。
+ */
 const appliedQuery = ref<AppliedQuery>();
 
 const trendResult = ref<CollectorApi.TrendSeriesResult>();
@@ -325,12 +328,6 @@ function buildQueryFromControls(): AppliedQuery | undefined {
   return { from, rangeSeconds, resolution: resolution.value, to };
 }
 
-function syncDraftQuery() {
-  draftQuery.value = buildQueryFromControls();
-}
-
-watch([preset, customRange, resolution], syncDraftQuery, { immediate: true });
-
 /** 应用一次查询：数据表与趋势各自独立刷新，互不影响 */
 function applyQuery(query: AppliedQuery) {
   appliedQuery.value = query;
@@ -345,7 +342,6 @@ function handleQuery() {
     message.warning('请选择有效的时间范围（开始早于结束，且不超过 365 天）');
     return;
   }
-  draftQuery.value = next;
   applyQuery(next);
 }
 
@@ -389,11 +385,15 @@ async function loadTrend(query: AppliedQuery) {
   const granularity = toTrendGranularity(query.resolution);
   const maxSeconds = TREND_GRANULARITY_MAX_SECONDS[query.resolution];
   if (query.rangeSeconds > maxSeconds) {
-    // 与趋势页一致：显式粒度承载不了该范围时只提示并保留上次结果，改用自动即可
+    // 与趋势页一致：显式粒度承载不了该范围时不清空图表，但必须明确告知图表是上一次的结果，
+    // 否则会出现「筛选是 365 天、图仍是上次 1 小时数据」的误导
     trendLoading.value = false;
-    trendError.value = `趋势接口的「${
+    const base = `趋势接口的「${
       RESOLUTION_LABEL[query.resolution]
     }」粒度最多支持 ${formatRangeLimit(maxSeconds)}，请改用自动或缩短时间范围`;
+    trendError.value = trendResult.value
+      ? `${base}（图表仍显示上一次成功查询的结果）`
+      : base;
     return;
   }
   trendLoading.value = true;
@@ -449,10 +449,11 @@ async function handleExport() {
     });
     const compact = (value: number) =>
       formatShanghaiDateTime(value).replace(/[-: ]/g, '');
+    // 与后端 sanitizeFileName 保持一致：去掉多数文件系统非法字符，
+    // 否则通道名含 : / 等字符时浏览器会自行截断或下载失败
+    const safeName = current.channelName.replace(/[\\/:*?"<>|\r\n]/g, '_');
     downloadFileFromBlobPart({
-      fileName: `${current.channelName}_${compact(query.from)}_${compact(
-        query.to,
-      )}.csv`,
+      fileName: `${safeName}_${compact(query.from)}_${compact(query.to)}.csv`,
       source: blob,
     });
   } catch (error) {
@@ -482,7 +483,6 @@ function resetState() {
   preset.value = '1h';
   customRange.value = null;
   resolution.value = 'auto';
-  draftQuery.value = undefined;
   appliedQuery.value = undefined;
   trendResult.value = undefined;
   trendQuery.value = undefined;
@@ -508,7 +508,6 @@ const [Modal, modalApi] = useVbenModal({
     }
     channel.value = modalApi.getData() as ChannelHistoryData;
     resetState();
-    syncDraftQuery();
     // 打开即按默认 1 小时 / 自动触发一次查询，两个 Tab 各自加载
     const initial = buildQueryFromControls();
     if (initial) applyQuery(initial);

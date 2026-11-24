@@ -164,6 +164,7 @@ public class CollectorHistoryServiceImpl implements CollectorHistoryService {
     /**
      * 键集分页的通用写出循环：每批最多 {@link #EXPORT_BATCH_SIZE} 行，
      * 以上一批最后一行的时间作为下一批游标，SQL 语句数只随批次数增长，不随行数线性增长。
+     * 逐行守住 {@link #MAX_EXPORT_ROWS} 上限，超限抛业务异常由上层中断连接。
      */
     private <T> long writeBatched(Writer writer, RowAdapter<T> adapter, BatchFetcher<T> fetcher)
             throws IOException {
@@ -175,10 +176,15 @@ public class CollectorHistoryServiceImpl implements CollectorHistoryService {
                 return written;
             }
             for (T row : batch) {
+                // 兜底：前置 count 与分批取数之间存在并发写入窗口，这里逐行守住上限，
+                // 保证实际写出行数永不超过 MAX_EXPORT_ROWS（此时响应体已开始写出，由上层中断连接）
+                if (written >= MAX_EXPORT_ROWS) {
+                    throw exception(HISTORY_EXPORT_ROW_LIMIT_EXCEEDED, written + 1, MAX_EXPORT_ROWS);
+                }
                 writer.write(adapter.toCsvLine(row));
                 writer.write(CSV_LINE_SEPARATOR);
+                written++;
             }
-            written += batch.size();
             if (batch.size() < EXPORT_BATCH_SIZE) {
                 return written;
             }
