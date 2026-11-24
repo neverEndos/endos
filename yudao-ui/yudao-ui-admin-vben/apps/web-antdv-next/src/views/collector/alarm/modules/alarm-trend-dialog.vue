@@ -172,11 +172,48 @@ const rawDegradedWarning = computed(() =>
     : undefined,
 );
 
-/** 报警本身携带的标线，不请求通道详情，也不依赖通道查询权限 */
-const markLines = computed(() => {
+/** 时刻标线与窗口边界的容差：边界本身（如触发时刻恰好等于左边界）允许落入 */
+const MARK_TIME_EPSILON_MS = 1000;
+
+/** 当前图表真实数据的 y 范围（主序列与原始叠加的全部点值）；无有效数据时为 null */
+const dataValueRange = computed((): { max: number; min: number } | null => {
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  for (const series of chartSeries.value) {
+    for (const point of series.points) {
+      for (const candidate of [point.avg, point.value, point.min, point.max]) {
+        if (
+          candidate === null ||
+          candidate === undefined ||
+          !Number.isFinite(candidate)
+        ) {
+          continue;
+        }
+        min = Math.min(min, candidate);
+        max = Math.max(max, candidate);
+      }
+    }
+  }
+  return Number.isFinite(min) && Number.isFinite(max) ? { min, max } : null;
+});
+
+/** 报警携带的阈值；无阈值或非数值时返回 undefined */
+const alarmThreshold = computed(() => {
   const threshold = alarm.value?.thresholdValue;
-  if (threshold === null || threshold === undefined) return [];
-  if (!Number.isFinite(threshold)) return [];
+  if (threshold === null || threshold === undefined) return undefined;
+  return Number.isFinite(threshold) ? threshold : undefined;
+});
+
+/**
+ * 阈值标线只在阈值处于当前窗口真实数据 y 范围内时绘制；
+ * 越界不画（图表组件侧也会兜底过滤），避免把 y 轴拉大、曲线压平。
+ * 标线取自报警行本身，不请求通道详情，也不依赖通道查询权限。
+ */
+const markLines = computed(() => {
+  const threshold = alarmThreshold.value;
+  const range = dataValueRange.value;
+  if (threshold === undefined || !range) return [];
+  if (threshold < range.min || threshold > range.max) return [];
   return [
     {
       value: threshold,
@@ -187,22 +224,47 @@ const markLines = computed(() => {
   ];
 });
 
+/** 阈值落在当前窗口数据范围外时给出明确提示，避免标线静默消失 */
+const thresholdOutOfRangeNotice = computed(() => {
+  const threshold = alarmThreshold.value;
+  const range = dataValueRange.value;
+  if (threshold === undefined || !range) return '';
+  if (threshold >= range.min && threshold <= range.max) return '';
+  return `阈值 ${formatTrendValue(threshold)} 不在当前窗口数据范围（${formatTrendValue(
+    range.min,
+  )} ~ ${formatTrendValue(range.max)}）内，未绘制阈值标线`;
+});
+
+/**
+ * 时刻标线只保留落在已应用查询窗口内的触发/恢复时刻；
+ * 窗口外的时刻不画，也不夹紧到边界，避免 x 轴被扩到窗口之外。
+ */
 const markTimes = computed(() => {
   const current = alarm.value;
-  if (!current) return [];
+  const query = applied.value;
+  if (!current || !query) return [];
+  const inWindow = (t: number) =>
+    Number.isFinite(t) &&
+    t >= query.from - MARK_TIME_EPSILON_MS &&
+    t <= query.to + MARK_TIME_EPSILON_MS;
+  const marks: Array<{
+    color: string;
+    dashed: boolean;
+    label: string;
+    t: number;
+  }> = [];
   const triggered = dayjs(current.triggeredAt).valueOf();
-  if (!Number.isFinite(triggered)) return [];
-  const marks = [
-    {
+  if (inWindow(triggered)) {
+    marks.push({
       t: triggered,
       label: '触发',
       color: '#fa541c',
       dashed: false,
-    },
-  ];
+    });
+  }
   if (current.clearedAt) {
     const cleared = dayjs(current.clearedAt).valueOf();
-    if (Number.isFinite(cleared)) {
+    if (inWindow(cleared)) {
       marks.push({
         t: cleared,
         label: '恢复',
@@ -592,6 +654,12 @@ onBeforeUnmount(() => {
           <Tag v-if="applied?.includeRaw" color="orange">含原始点</Tag>
         </div>
 
+        <Alert
+          v-if="thresholdOutOfRangeNotice"
+          type="warning"
+          show-icon
+          :message="thresholdOutOfRangeNotice"
+        />
         <Alert
           v-if="resolutionFallback"
           type="warning"
