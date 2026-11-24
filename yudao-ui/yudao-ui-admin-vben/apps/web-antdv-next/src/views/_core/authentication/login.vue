@@ -87,9 +87,12 @@ async function handleThirdLogin(type: number) {
 let forgetPasswordEl: HTMLElement | null = null;
 
 function handleForgetPasswordKeydown(event: KeyboardEvent) {
-  if (event.key !== 'Enter' && event.key !== ' ') {
+  // 仅 Enter 激活（ARIA link 惯例），Space 保持默认行为
+  if (event.key !== 'Enter') {
     return;
   }
+  // 阻止冒泡，避免通用登录组件根节点的 @keydown.enter 处理触发表单提交/登录
+  event.stopPropagation();
   event.preventDefault();
   (event.currentTarget as HTMLElement | null)?.click();
 }
