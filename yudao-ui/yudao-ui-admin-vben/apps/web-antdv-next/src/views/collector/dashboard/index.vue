@@ -4,7 +4,7 @@ import type { CollectorApi } from '#/api/collector';
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 
 import { useAccess } from '@vben/access';
-import { Page, useVbenDrawer } from '@vben/common-ui';
+import { Page, useVbenDrawer, useVbenModal } from '@vben/common-ui';
 import { ReloadOutlined, WarningOutlined } from '@vben/icons';
 
 import { Alert, Button, Card, Empty, Select, Spin, Tag } from 'antdv-next';
@@ -15,6 +15,7 @@ import {
   getHealthSummary,
 } from '#/api/collector';
 
+import ChannelHistoryDialog from './modules/channel-history-dialog.vue';
 import HealthDetailDrawer from './modules/health-detail-drawer.vue';
 import { formatShanghaiDateTime } from './time';
 
@@ -85,6 +86,10 @@ let healthDrawerOpen = false;
 const hasHealthAccess = computed(() =>
   hasAccessByCodes(['collector:health:query']),
 );
+/** 趋势列与历史弹窗共用 collector:trend:query；无该权限时不渲染操作列 */
+const hasTrendAccess = computed(() =>
+  hasAccessByCodes(['collector:trend:query']),
+);
 
 const [HealthDrawer, healthDrawerApi] = useVbenDrawer({
   connectedComponent: HealthDetailDrawer,
@@ -94,6 +99,11 @@ const [HealthDrawer, healthDrawerApi] = useVbenDrawer({
   },
 });
 
+const [HistoryModal, historyModalApi] = useVbenModal({
+  connectedComponent: ChannelHistoryDialog,
+  destroyOnClose: true,
+});
+
 const deviceOptions = computed(() =>
   devices.value.map((device) => ({
     label: device.deviceName,
@@ -101,6 +111,10 @@ const deviceOptions = computed(() =>
   })),
 );
 const hasDashboard = computed(() => dashboard.value !== undefined);
+/** 最新值接口失败时仍展示所选设备名，避免合并卡卡头变成空白 */
+const selectedDeviceName = computed(
+  () => devices.value.find((device) => device.id === selectedDeviceId.value)?.deviceName,
+);
 const lastSuccessText = computed(() =>
   formatShanghaiDateTime(lastSuccessAt.value),
 );
@@ -388,6 +402,24 @@ function openHealthDetail() {
   healthDrawerApi.setData({ deviceId }).open();
 }
 
+/** 打开通道历史弹窗；最新值/质量/采样时间直接取看板已有数据，不额外请求 */
+function openChannelHistory(channel: CollectorApi.DashboardChannel) {
+  const device = dashboard.value?.device;
+  if (!device) return;
+  historyModalApi
+    .setData({
+      channelId: channel.id,
+      channelName: channel.name,
+      deviceId: device.id,
+      deviceName: device.name,
+      latestValueText: String(formatValue(channel)),
+      quality: channel.quality,
+      sampleTime: channel.sampleTime,
+      unit: channel.unit,
+    })
+    .open();
+}
+
 function handleVisibilityChange() {
   clockNow.value = Date.now();
   if (document.hidden) {
@@ -442,6 +474,7 @@ onBeforeUnmount(() => {
 <template>
   <Page auto-content-height>
     <HealthDrawer />
+    <HistoryModal />
     <div class="flex h-full flex-col gap-4 overflow-auto">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -500,98 +533,70 @@ onBeforeUnmount(() => {
         message="最新采样已超过十倍轮询周期，设备按离线处理；表格中的旧值仅供核对。"
       />
 
-      <!-- 采集运行摘要独立于最新值：最新值接口失败（dashboard 为空）时仍可查看并打开运行详情 -->
+      <!--
+        设备运行 + 采集健康合并为一张卡：两个数据源独立刷新，
+        任一段无数据时该段显示 --，不整卡消失；dashboard 为空时健康段与运行详情仍可用。
+      -->
       <Card
-        v-if="hasHealthAccess"
-        data-testid="dashboard-health-card"
+        v-if="hasHealthAccess || hasDashboard"
+        data-testid="dashboard-device-card"
         size="small"
       >
         <template #title>
-          <div class="flex flex-wrap items-center gap-2">
-            <span>采集运行摘要</span>
-            <Tag v-if="healthStale" color="warning">运行信息可能已过期</Tag>
+          <div class="flex min-w-0 flex-wrap items-center gap-2">
+            <span class="truncate text-base font-semibold">
+              {{ dashboard?.device.name ?? selectedDeviceName ?? '采集设备' }}
+            </span>
+            <Tag
+              v-if="dashboard"
+              :color="dashboard.device.online ? 'success' : 'error'"
+            >
+              <template #icon>
+                <span aria-hidden="true">●</span>
+              </template>
+              {{ dashboard.device.online ? '在线' : '离线' }}
+            </Tag>
+            <Tag v-if="dashboard?.device.staleOffline" color="warning">
+              <template #icon>
+                <WarningOutlined />
+              </template>
+              采样超时
+            </Tag>
+            <Tag v-if="hasHealthAccess && healthStale" color="warning">
+              运行信息可能已过期
+            </Tag>
           </div>
         </template>
         <template #extra>
-          <Button
-            data-testid="dashboard-health-detail"
-            :disabled="selectedDeviceId === undefined"
-            @click="openHealthDetail"
-          >
-            运行详情
-          </Button>
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-xs opacity-60" data-testid="last-success-time">
+              最后成功请求：{{ lastSuccessText }}
+            </span>
+            <Button
+              v-if="hasHealthAccess"
+              data-testid="dashboard-health-detail"
+              :disabled="selectedDeviceId === undefined"
+              @click="openHealthDetail"
+            >
+              运行详情
+            </Button>
+          </div>
         </template>
-        <div
-          class="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-4"
-          data-testid="dashboard-health-summary"
-        >
-          <div data-testid="health-heartbeat-time">
-            <div class="text-xs opacity-60">最新心跳时间</div>
-            <div class="mt-1 font-medium">{{ healthHeartbeatText }}</div>
-          </div>
-          <div data-testid="health-heartbeat-status">
-            <div class="text-xs opacity-60">心跳状态</div>
-            <div class="mt-1">
-              <Tag :color="healthStatusColor">{{ healthStatusText }}</Tag>
-            </div>
-          </div>
-          <div data-testid="health-device-ratio">
-            <div class="text-xs opacity-60">设备在线数 / 总数</div>
-            <div class="mt-1 font-medium">{{ healthDeviceRatio }}</div>
-          </div>
-          <div data-testid="health-active-alarm">
-            <div class="text-xs opacity-60">活动报警数</div>
-            <div class="mt-1 flex flex-wrap items-center gap-2">
-              <span class="font-medium">{{ healthActiveAlarmText }}</span>
-              <Tag
-                v-if="(healthSummary?.alarm.highestLevel ?? 0) > 0"
-                :color="healthHighestLevelColor"
-              >
-                最高 {{ healthSummary?.alarm.highestLevel }} 级
-              </Tag>
-            </div>
-          </div>
-        </div>
-        <div class="mt-3 text-xs opacity-50">
-          运行信息时间按 Asia/Shanghai 展示；健康数据独立于最新值刷新，失败时仅提示可能过期。
-        </div>
-      </Card>
 
-      <Spin :spinning="initialLoading && !hasDashboard">
-        <Card v-if="dashboard" data-testid="dashboard-device-card">
-          <div class="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <div class="flex flex-wrap items-center gap-2">
-                <span class="text-lg font-semibold">
-                  {{ dashboard.device.name }}
-                </span>
-                <Tag :color="dashboard.device.online ? 'success' : 'error'">
-                  <template #icon>
-                    <span aria-hidden="true">●</span>
-                  </template>
-                  {{ dashboard.device.online ? '在线' : '离线' }}
-                </Tag>
-                <Tag v-if="dashboard.device.staleOffline" color="warning">
-                  <template #icon>
-                    <WarningOutlined />
-                  </template>
-                  采样超时
-                </Tag>
-              </div>
-              <div
-                class="mt-1 text-xs opacity-60"
-                data-testid="last-success-time"
-              >
-                最后成功请求：{{ lastSuccessText }}
-              </div>
-            </div>
-            <div class="text-xs opacity-60">
-              {{ pollInterval === 0 ? '自动刷新已关闭' : '页面隐藏时暂停轮询' }}
-            </div>
-          </div>
+        <!-- 设备段：最新值接口失败时保留字段骨架并展示 -- -->
+        <section>
           <div
-            class="mt-5 grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5"
+            class="mb-2 flex flex-wrap items-center gap-2 text-xs font-medium opacity-60"
           >
+            <span>设备运行</span>
+            <span v-if="!dashboard" class="opacity-80">
+              最新值暂不可用，展示 --
+            </span>
+            <span v-else>
+              {{ pollInterval === 0 ? '自动刷新已关闭' : '页面隐藏时暂停轮询' }}
+            </span>
+          </div>
+          <div class="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
             <div>
               <div class="text-xs opacity-60">最后数据更新</div>
               <div class="mt-1 font-medium" data-testid="last-sample-time">
@@ -601,32 +606,76 @@ onBeforeUnmount(() => {
             <div>
               <div class="text-xs opacity-60">最后轮询时间</div>
               <div class="mt-1 font-medium">
-                {{ formatDateTime(dashboard.device.lastPollAt) }}
+                {{ formatDateTime(dashboard?.device.lastPollAt) }}
               </div>
             </div>
             <div>
               <div class="text-xs opacity-60">采集器写入延迟（进程级）</div>
               <div class="mt-1 font-medium">
-                {{ dashboard.device.lastWriteLagMs ?? '--' }} ms
+                {{ dashboard?.device.lastWriteLagMs ?? '--' }} ms
               </div>
             </div>
             <div>
               <div class="text-xs opacity-60">连续失败次数</div>
               <div class="mt-1 font-medium">
-                {{ dashboard.device.consecutiveFailures }}
+                {{ dashboard?.device.consecutiveFailures ?? '--' }}
               </div>
             </div>
             <div>
               <div class="text-xs opacity-60">当前采集间隔</div>
               <div class="mt-1 font-medium">
-                {{ formatInterval(dashboard.device.pollIntervalMs) }}
+                {{ formatInterval(dashboard?.device.pollIntervalMs) }}
               </div>
             </div>
           </div>
-        </Card>
+        </section>
 
+        <template v-if="hasHealthAccess">
+          <div class="my-4 border-t border-border"></div>
+          <!-- 健康段：与最新值完全独立，最新值失败不会清空这里 -->
+          <section>
+            <div class="mb-2 text-xs font-medium opacity-60">采集健康</div>
+            <div
+              class="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-4"
+              data-testid="dashboard-health-summary"
+            >
+              <div data-testid="health-heartbeat-time">
+                <div class="text-xs opacity-60">最新心跳时间</div>
+                <div class="mt-1 font-medium">{{ healthHeartbeatText }}</div>
+              </div>
+              <div data-testid="health-heartbeat-status">
+                <div class="text-xs opacity-60">心跳状态</div>
+                <div class="mt-1">
+                  <Tag :color="healthStatusColor">{{ healthStatusText }}</Tag>
+                </div>
+              </div>
+              <div data-testid="health-device-ratio">
+                <div class="text-xs opacity-60">设备在线数 / 总数</div>
+                <div class="mt-1 font-medium">{{ healthDeviceRatio }}</div>
+              </div>
+              <div data-testid="health-active-alarm">
+                <div class="text-xs opacity-60">活动报警数</div>
+                <div class="mt-1 flex flex-wrap items-center gap-2">
+                  <span class="font-medium">{{ healthActiveAlarmText }}</span>
+                  <Tag
+                    v-if="(healthSummary?.alarm.highestLevel ?? 0) > 0"
+                    :color="healthHighestLevelColor"
+                  >
+                    最高 {{ healthSummary?.alarm.highestLevel }} 级
+                  </Tag>
+                </div>
+              </div>
+            </div>
+            <div class="mt-3 text-xs opacity-50">
+              运行信息时间按 Asia/Shanghai 展示；健康数据独立于最新值刷新，失败时仅提示可能已过期。
+            </div>
+          </section>
+        </template>
+      </Card>
+
+      <Spin :spinning="initialLoading && !hasDashboard">
         <Empty
-          v-if="!initialLoading && !dashboard"
+          v-if="!initialLoading && !hasDashboard && !hasHealthAccess"
           class="py-20"
           description="暂无可用设备或看板数据，请检查设备配置与连接"
         />
@@ -668,6 +717,7 @@ onBeforeUnmount(() => {
                     <th>当前值</th>
                     <th>采样时间</th>
                     <th>状态</th>
+                    <th v-if="hasTrendAccess">操作</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -724,6 +774,16 @@ onBeforeUnmount(() => {
                       >
                         最后成功值
                       </div>
+                    </td>
+                    <td v-if="hasTrendAccess">
+                      <Button
+                        type="link"
+                        size="small"
+                        :data-testid="`channel-trend-${channel.id}`"
+                        @click="openChannelHistory(channel)"
+                      >
+                        趋势
+                      </Button>
                     </td>
                   </tr>
                 </tbody>
