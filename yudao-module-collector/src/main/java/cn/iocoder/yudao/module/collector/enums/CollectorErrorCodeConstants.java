@@ -86,4 +86,14 @@ public interface CollectorErrorCodeConstants {
     ErrorCode RETENTION_PREVIEW_FAILED = new ErrorCode(1_023_009_005, "保留策略预检失败：{}");
     ErrorCode RETENTION_CLEANUP_FAILED = new ErrorCode(1_023_009_006, "数据保留清理失败：{}");
 
+    // ========== 通道历史数据查询与导出 1-023-010-000 ==========
+    ErrorCode HISTORY_QUERY_INVALID = new ErrorCode(1_023_010_000, "历史查询参数不合法：{}");
+    ErrorCode HISTORY_RANGE_EXCEEDED = new ErrorCode(1_023_010_001,
+            "历史查询时间范围不能超过 365 天，请缩小时间范围");
+    ErrorCode HISTORY_GRANULARITY_INVALID = new ErrorCode(1_023_010_002,
+            "历史查询粒度({})不合法，仅支持 raw、second、minute、hour、day");
+    ErrorCode HISTORY_EXPORT_ROW_LIMIT_EXCEEDED = new ErrorCode(1_023_010_003,
+            "导出行数({})超过上限 {} 行，请缩小时间范围或提高聚合分辨率");
+    ErrorCode HISTORY_CHANNEL_NOT_EXISTS = new ErrorCode(1_023_010_004, "历史查询通道({})不存在");
+
 }
