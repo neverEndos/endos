@@ -43,6 +43,7 @@ import {
   MAX_CHANNELS_TOTAL,
   MAX_RAW_OVERLAY_RANGE_SECONDS,
   MAX_TOTAL_RANGE_SECONDS,
+  shouldShowTrendBand,
   sourceLabel,
   TREND_PRESETS,
 } from './data';
@@ -92,6 +93,8 @@ const preset = ref<TrendPresetValue>('1h');
 const customRange = ref<[Dayjs, Dayjs] | null>(null);
 const granularity = ref<TrendGranularityValue>('auto');
 const includeRaw = ref(false);
+/** 波动区间手动开关；undefined 表示跟随当前通道数的自动策略 */
+const bandManual = ref<boolean>();
 const compareMode = ref(true);
 const syncZoom = ref(true);
 
@@ -186,6 +189,35 @@ const channelColors = computed(() =>
   buildChannelColors(displayedChannelIds.value),
 );
 
+/** 自动策略只认展示快照；首次成功查询前按草稿默认通道数判断 */
+const autoShowBand = computed(() =>
+  shouldShowTrendBand(
+    displayed.value?.query ?? {
+      compareMode: compareMode.value,
+      leftChannelIds: leftChannelIds.value,
+      rightChannelIds: rightChannelIds.value,
+      singleChannelIds: singleChannelIds.value,
+    },
+  ),
+);
+
+/** 手动开关优先；未手动切换时跟随自动策略 */
+const showBand = computed(() => bandManual.value ?? autoShowBand.value);
+
+function handleShowBandChange(checked: boolean) {
+  bandManual.value = checked;
+}
+
+/** 通道集合签名：用于判断波动区间开关是否需要重置回自动策略 */
+function channelSignature(query: AppliedQuery): string {
+  return [
+    query.compareMode ? 'compare' : 'single',
+    query.leftChannelIds.join(','),
+    query.rightChannelIds.join(','),
+    query.singleChannelIds.join(','),
+  ].join('|');
+}
+
 const appliedRangeText = computed(() =>
   displayed.value
     ? `${dayjs(displayed.value.query.from).format('YYYY-MM-DD HH:mm')} ~ ${dayjs(
@@ -247,6 +279,8 @@ function handleDeviceChange(value: number) {
   // 切换设备后旧通道选择与新设备无关：清空草稿与展示快照，按明确空态处理，不保留旧图
   displayed.value = undefined;
   queryError.value = undefined;
+  // 设备变化后波动区间开关回到自动策略
+  bandManual.value = undefined;
   leftChannelIds.value = [];
   rightChannelIds.value = [];
   singleChannelIds.value = [];
@@ -510,6 +544,13 @@ async function query() {
     if (!body) {
       throw new Error('趋势接口返回为空');
     }
+    // 通道集合或设备变化后手动开关失效；仅修改时间范围/粒度时保留用户的选择
+    if (
+      displayed.value &&
+      channelSignature(displayed.value.query) !== channelSignature(snapshot)
+    ) {
+      bandManual.value = undefined;
+    }
     // 只有成功响应才原子替换展示快照；失败时保留上一次成功结果
     displayed.value = { query: snapshot, result: body };
   } catch (error) {
@@ -636,6 +677,14 @@ onMounted(() => {
               v-model:checked="includeRaw"
               data-testid="trend-include-raw"
               :disabled="!canIncludeRaw"
+            />
+          </label>
+          <label class="flex items-center gap-1 text-sm">
+            波动区间
+            <Switch
+              :checked="showBand"
+              data-testid="trend-show-band"
+              @change="handleShowBandChange"
             />
           </label>
           <Button
@@ -774,6 +823,7 @@ onMounted(() => {
                     :colors="channelColors"
                     :range-seconds="displayed?.query.rangeSeconds ?? 3600"
                     :series="leftSeries"
+                    :show-band="showBand"
                     :sync-enabled="syncZoom"
                     @zoom="handleLeftZoom"
                   />
@@ -805,6 +855,7 @@ onMounted(() => {
                     :colors="channelColors"
                     :range-seconds="displayed?.query.rangeSeconds ?? 3600"
                     :series="rightSeries"
+                    :show-band="showBand"
                     :sync-enabled="syncZoom"
                     @zoom="handleRightZoom"
                   />
@@ -836,6 +887,7 @@ onMounted(() => {
                   :colors="channelColors"
                   :range-seconds="displayed?.query.rangeSeconds ?? 3600"
                   :series="singleSeries"
+                  :show-band="showBand"
                 />
                 <div
                   v-else

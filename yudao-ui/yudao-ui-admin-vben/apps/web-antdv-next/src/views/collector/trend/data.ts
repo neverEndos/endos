@@ -32,6 +32,25 @@ export const MAX_CHANNELS_PER_CHART = 6;
 export const MAX_TOTAL_RANGE_SECONDS = 365 * 24 * 60 * 60;
 export const MAX_RAW_OVERLAY_RANGE_SECONDS = 2 * 60 * 60;
 
+/** 波动区间（min~max 阴影）最多承受的通道数；超过后多种颜色叠加难以区分 */
+export const TREND_BAND_MAX_CHANNELS = 2;
+
+/**
+ * 波动区间默认显示策略：单图通道数不超过 2 条时显示 min~max 阴影，3 条及以上隐藏。
+ * 对比模式左右图各自绘制，取两侧通道数的较大值判断。
+ */
+export function shouldShowTrendBand(input: {
+  compareMode: boolean;
+  leftChannelIds: readonly number[];
+  rightChannelIds: readonly number[];
+  singleChannelIds: readonly number[];
+}): boolean {
+  const count = input.compareMode
+    ? Math.max(input.leftChannelIds.length, input.rightChannelIds.length)
+    : input.singleChannelIds.length;
+  return count <= TREND_BAND_MAX_CHANNELS;
+}
+
 /** 通道配色；按通道在请求列表中的顺序稳定分配，左右两图同一通道颜色一致 */
 export const TREND_CHART_COLORS = [
   '#1677ff',

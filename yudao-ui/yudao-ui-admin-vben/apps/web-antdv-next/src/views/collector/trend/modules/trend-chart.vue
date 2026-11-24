@@ -38,9 +38,11 @@ const props = withDefaults(
     /** 查询时间范围秒数，用于选择时间轴标签格式 */
     rangeSeconds: number;
     series: CollectorApi.TrendSeries[];
+    /** 是否绘制 min~max 波动区间阴影；关闭时直接不生成阴影系列，避免无谓绘制开销 */
+    showBand?: boolean;
     syncEnabled?: boolean;
   }>(),
-  { syncEnabled: true },
+  { showBand: true, syncEnabled: true },
 );
 
 const emit = defineEmits<{
@@ -142,7 +144,8 @@ function buildSeries(): SeriesItem[] {
     const hasRange = series.points.some(
       (point) => finite(point.min) && finite(point.max),
     );
-    if (hasRange) {
+    // 波动区间关闭时不生成阴影系列（而不是生成后透明），减少系列数量与绘制开销
+    if (hasRange && props.showBand) {
       // 两个同名系列用同一 stack 形成 min~max 阴影带；图例只列出主序列名。
       result.push(
         {
@@ -371,7 +374,12 @@ function applyZoom(start: number, end: number) {
 }
 
 watch(
-  [() => props.series, () => props.colors, () => props.rangeSeconds],
+  [
+    () => props.series,
+    () => props.colors,
+    () => props.rangeSeconds,
+    () => props.showBand,
+  ],
   () => {
     void renderChart();
   },
