@@ -15,6 +15,22 @@ type ChartOption = EChartsOption;
 /** 只声明本组件实际构造的字段，最终整体交给 ECharts 渲染 */
 type SeriesItem = Record<string, unknown> & { name?: string };
 
+/** 水平标线：按 y 轴数值绘制，用于事发阈值等 */
+export interface TrendMarkLine {
+  value: number;
+  label: string;
+  color?: string;
+  dashed?: boolean;
+}
+
+/** 垂直标线：按时间轴时刻绘制，用于触发/恢复时刻等 */
+export interface TrendMarkTime {
+  t: number;
+  label: string;
+  color?: string;
+  dashed?: boolean;
+}
+
 interface ChartEventInstance {
   dispatchAction: (action: Record<string, unknown>) => void;
   getOption: () => {
@@ -35,12 +51,20 @@ defineOptions({ name: 'CollectorTrendChart' });
 const props = withDefaults(
   defineProps<{
     colors: Record<number, string>;
+    /** 水平标线：默认空数组，趋势分析页不传时行为与旧版一致 */
+    markLines?: TrendMarkLine[];
+    /** 垂直标线：默认空数组，用于触发/恢复时刻 */
+    markTimes?: TrendMarkTime[];
     /** 查询时间范围秒数，用于选择时间轴标签格式 */
     rangeSeconds: number;
     series: CollectorApi.TrendSeries[];
     syncEnabled?: boolean;
   }>(),
-  { syncEnabled: true },
+  {
+    markLines: () => [],
+    markTimes: () => [],
+    syncEnabled: true,
+  },
 );
 
 const emit = defineEmits<{
@@ -85,6 +109,148 @@ function displayName(
   return (counts.get(base) ?? 0) > 1
     ? `${base}（通道 ${series.channelId}）`
     : base;
+}
+
+/**
+ * 标线系列名统一前缀：图例与 tooltip 都据此过滤，保证标线不进入图例/提示。
+ * 共享 ECharts 未注册 MarkLineComponent（packages 不在本功能改动范围），
+ * 因此用两点普通折线模拟标线：水平线固定 y、垂直线固定 x，样式与 markLine 等价。
+ */
+const MARKER_SERIES_PREFIX = '__trend-marker__';
+
+interface MarkerBounds {
+  xMax: number;
+  xMin: number;
+  yMax: number;
+  yMin: number;
+}
+
+/** 汇总绘制标线所需的坐标范围；阈值和触发时刻也计入，避免标线落在轴范围外 */
+function collectMarkerBounds(): MarkerBounds | undefined {
+  let xMax = Number.NEGATIVE_INFINITY;
+  let xMin = Number.POSITIVE_INFINITY;
+  let yMax = Number.NEGATIVE_INFINITY;
+  let yMin = Number.POSITIVE_INFINITY;
+  const useX = (value?: null | number) => {
+    if (!finite(value)) return;
+    xMin = Math.min(xMin, value);
+    xMax = Math.max(xMax, value);
+  };
+  const useY = (value?: null | number) => {
+    if (!finite(value)) return;
+    yMin = Math.min(yMin, value);
+    yMax = Math.max(yMax, value);
+  };
+
+  for (const series of props.series) {
+    for (const point of series.points) {
+      useX(point.t);
+      useY(point.avg);
+      useY(point.value);
+      useY(point.min);
+      useY(point.max);
+    }
+  }
+  for (const item of props.markLines) useY(item.value);
+  for (const item of props.markTimes) useX(item.t);
+
+  if (
+    !finite(xMin) ||
+    !finite(xMax) ||
+    !finite(yMin) ||
+    !finite(yMax)
+  ) {
+    return undefined;
+  }
+  // 单点或水平直线时人为撑开范围，避免坐标轴退化为零跨度
+  if (xMax === xMin) {
+    xMin -= 1000;
+    xMax += 1000;
+  }
+  if (yMax === yMin) {
+    yMin -= 1;
+    yMax += 1;
+  }
+  const yPadding = (yMax - yMin) * 0.06;
+  return {
+    xMax,
+    xMin,
+    yMax: yMax + yPadding,
+    yMin: yMin - yPadding,
+  };
+}
+
+function markerLabel(label: string, color: string) {
+  return {
+    show: true,
+    formatter: () => label,
+    color,
+    fontSize: 11,
+    backgroundColor: 'rgba(255, 255, 255, 0.85)',
+    padding: [2, 4],
+  };
+}
+
+/** 生成标线模拟系列；默认 markLines/markTimes 为空时不追加任何系列 */
+function buildMarkerSeries(): SeriesItem[] {
+  if (props.markLines.length === 0 && props.markTimes.length === 0) {
+    return [];
+  }
+  const bounds = collectMarkerBounds();
+  if (!bounds) return [];
+
+  const markers: SeriesItem[] = [];
+  props.markLines.forEach((item, index) => {
+    const color = item.color ?? '#fa8c16';
+    markers.push({
+      name: `${MARKER_SERIES_PREFIX}line-${index}`,
+      type: 'line',
+      yAxisIndex: 0,
+      showSymbol: false,
+      connectNulls: false,
+      silent: true,
+      legendHoverLink: false,
+      tooltip: { show: false },
+      lineStyle: {
+        color,
+        type: item.dashed ? 'dashed' : 'solid',
+        width: 1.5,
+      },
+      itemStyle: { color },
+      endLabel: markerLabel(item.label, color),
+      data: [
+        [bounds.xMin, item.value],
+        [bounds.xMax, item.value],
+      ],
+      z: 10,
+    } as SeriesItem);
+  });
+  props.markTimes.forEach((item, index) => {
+    const color = item.color ?? '#fa541c';
+    markers.push({
+      name: `${MARKER_SERIES_PREFIX}time-${index}`,
+      type: 'line',
+      yAxisIndex: 0,
+      showSymbol: false,
+      connectNulls: false,
+      silent: true,
+      legendHoverLink: false,
+      tooltip: { show: false },
+      lineStyle: {
+        color,
+        type: item.dashed ? 'dashed' : 'solid',
+        width: 1.5,
+      },
+      itemStyle: { color },
+      endLabel: markerLabel(item.label, color),
+      data: [
+        [item.t, bounds.yMin],
+        [item.t, bounds.yMax],
+      ],
+      z: 11,
+    } as SeriesItem);
+  });
+  return markers;
 }
 
 /** 聚合线 + min/max 阴影带；includeRaw 时叠加同通道的原始抽样线 */
@@ -186,6 +352,9 @@ function buildSeries(): SeriesItem[] {
       );
     }
   }
+
+  // 标线追加在真实序列之后；默认空数组时不会追加任何系列
+  result.push(...buildMarkerSeries());
   return result;
 }
 
@@ -247,6 +416,7 @@ function buildTooltip(): ChartOption['tooltip'] {
           !!item &&
           typeof item === 'object' &&
           !(item as TooltipParam).seriesName?.endsWith('·范围') &&
+          !(item as TooltipParam).seriesName?.startsWith(MARKER_SERIES_PREFIX) &&
           Array.isArray((item as TooltipParam).value) &&
           (item as TooltipParam).value?.[1] !== null &&
           (item as TooltipParam).value?.[1] !== undefined,
@@ -294,12 +464,21 @@ function buildOption(): ChartOption {
     .map((item) => item.name)
     .filter(
       (name): name is string =>
-        typeof name === 'string' && !name.endsWith('·范围'),
+        typeof name === 'string' &&
+        !name.endsWith('·范围') &&
+        !name.startsWith(MARKER_SERIES_PREFIX),
     );
   return {
     animation: false,
     color: Object.values(props.colors),
-    grid: { bottom: 76, containLabel: true, left: 12, right: 12, top: 42 },
+    // 有水平标线时右侧留出标签空间，避免“事发阈值”等标签贴边被裁剪
+    grid: {
+      bottom: 76,
+      containLabel: true,
+      left: 12,
+      right: props.markLines.length > 0 ? 76 : 12,
+      top: 42,
+    },
     legend: {
       data: legendData,
       type: 'scroll',
@@ -371,7 +550,13 @@ function applyZoom(start: number, end: number) {
 }
 
 watch(
-  [() => props.series, () => props.colors, () => props.rangeSeconds],
+  [
+    () => props.series,
+    () => props.colors,
+    () => props.rangeSeconds,
+    () => props.markLines,
+    () => props.markTimes,
+  ],
   () => {
     void renderChart();
   },
