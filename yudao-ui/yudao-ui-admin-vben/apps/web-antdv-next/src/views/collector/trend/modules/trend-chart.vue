@@ -38,9 +38,11 @@ const props = withDefaults(
     /** 查询时间范围秒数，用于选择时间轴标签格式 */
     rangeSeconds: number;
     series: CollectorApi.TrendSeries[];
+    /** 是否绘制 min~max 波动区间阴影；关闭时直接不生成阴影系列，避免无谓绘制开销 */
+    showBand?: boolean;
     syncEnabled?: boolean;
   }>(),
-  { syncEnabled: true },
+  { showBand: true, syncEnabled: true },
 );
 
 const emit = defineEmits<{
@@ -51,6 +53,13 @@ const chartRef = ref<EchartsUIType>();
 const { renderEcharts, getChartInstance } = useEcharts(chartRef);
 let listenerInstance: ChartEventInstance | null = null;
 let applyingExternal = false;
+/** 渲染序号：异步渲染期间若有更新，丢弃旧渲染的缩放恢复动作 */
+let renderToken = 0;
+/** 上一次渲染依赖的快照，用于区分“仅波动区间变化”和“数据变化” */
+let lastSeries = props.series;
+let lastColors = props.colors;
+let lastRangeSeconds = props.rangeSeconds;
+let lastShowBand = props.showBand;
 
 function finite(value?: null | number): value is number {
   return value !== null && value !== undefined && Number.isFinite(value);
@@ -142,7 +151,8 @@ function buildSeries(): SeriesItem[] {
     const hasRange = series.points.some(
       (point) => finite(point.min) && finite(point.max),
     );
-    if (hasRange) {
+    // 波动区间关闭时不生成阴影系列（而不是生成后透明），减少系列数量与绘制开销
+    if (hasRange && props.showBand) {
       // 两个同名系列用同一 stack 形成 min~max 阴影带；图例只列出主序列名。
       result.push(
         {
@@ -332,18 +342,47 @@ function buildOption(): ChartOption {
   } as ChartOption;
 }
 
-async function renderChart() {
+/** 读取当前缩放视窗；图表未初始化或没有 dataZoom 时返回 null */
+function currentZoom(
+  instance: ChartEventInstance | null,
+): null | { end: number; start: number } {
+  const zoom = instance?.getOption().dataZoom?.[0];
+  if (!zoom || !Number.isFinite(zoom.start) || !Number.isFinite(zoom.end)) {
+    return null;
+  }
+  return { end: zoom.end ?? 100, start: zoom.start ?? 0 };
+}
+
+async function renderChart(preserveZoom = false) {
+  const token = ++renderToken;
+  // 只有切换波动区间导致的整图重渲染才保留当前视窗；数据/时间范围变化仍重置
+  const zoom = preserveZoom
+    ? currentZoom(getChartInstance() as ChartEventInstance | null)
+    : null;
   const instance = (await renderEcharts(buildOption())) as
     | ChartEventInstance
     | null
     | undefined;
-  if (!instance) {
+  // 渲染已过期（期间有新查询或新开关变化）时不要恢复旧视窗
+  if (!instance || token !== renderToken) {
     return;
   }
   if (listenerInstance !== instance) {
     listenerInstance?.off('datazoom');
     instance.on('datazoom', handleZoom);
     listenerInstance = instance;
+  }
+  if (zoom) {
+    // 抑制恢复动作触发的 datazoom 事件，避免把本地恢复误当作新缩放广播给另一张图
+    applyingExternal = true;
+    instance.dispatchAction({
+      type: 'dataZoom',
+      start: zoom.start,
+      end: zoom.end,
+    });
+    setTimeout(() => {
+      applyingExternal = false;
+    }, 150);
   }
 }
 
@@ -371,9 +410,24 @@ function applyZoom(start: number, end: number) {
 }
 
 watch(
-  [() => props.series, () => props.colors, () => props.rangeSeconds],
+  [
+    () => props.series,
+    () => props.colors,
+    () => props.rangeSeconds,
+    () => props.showBand,
+  ],
   () => {
-    void renderChart();
+    // 仅“波动区间”变化时保留缩放视窗；只要数据相关输入有变化就按原行为重置
+    const onlyShowBandChanged =
+      props.series === lastSeries &&
+      props.colors === lastColors &&
+      props.rangeSeconds === lastRangeSeconds &&
+      props.showBand !== lastShowBand;
+    lastSeries = props.series;
+    lastColors = props.colors;
+    lastRangeSeconds = props.rangeSeconds;
+    lastShowBand = props.showBand;
+    void renderChart(onlyShowBandChanged);
   },
   { deep: true },
 );
