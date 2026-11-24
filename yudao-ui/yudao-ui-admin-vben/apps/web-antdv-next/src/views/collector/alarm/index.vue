@@ -2,12 +2,15 @@
 import type { VxeTableGridOptions } from '#/adapter/vxe-table';
 import type { CollectorApi } from '#/api/collector';
 
-import { Page } from '@vben/common-ui';
+import { computed } from 'vue';
+
+import { useAccess } from '@vben/access';
+import { Page, useVbenModal } from '@vben/common-ui';
 import { formatDateTime } from '@vben/utils';
 
 import { Tag } from 'antdv-next';
 
-import { useVbenVxeGrid } from '#/adapter/vxe-table';
+import { TableAction, useVbenVxeGrid } from '#/adapter/vxe-table';
 import { getAlarmPage } from '#/api/collector';
 
 import {
@@ -18,13 +21,31 @@ import {
   useGridColumns,
   useGridFormSchema,
 } from './data';
+import AlarmTrendDialog from './modules/alarm-trend-dialog.vue';
+
+const { hasAccessByCodes } = useAccess();
+
+/** 查看时刻趋势复用趋势接口权限；无权限时不渲染操作列，避免点击后才 403 */
+const hasTrendAccess = computed(() =>
+  hasAccessByCodes(['collector:trend:query']),
+);
+
+const [TrendModal, trendModalApi] = useVbenModal({
+  connectedComponent: AlarmTrendDialog,
+  destroyOnClose: true,
+});
+
+/** 以当前报警行打开时刻趋势弹窗 */
+function handleViewTrend(row: CollectorApi.Alarm) {
+  trendModalApi.setData(row).open();
+}
 
 const [Grid] = useVbenVxeGrid({
   formOptions: {
     schema: useGridFormSchema(),
   },
   gridOptions: {
-    columns: useGridColumns(),
+    columns: useGridColumns(hasTrendAccess.value),
     height: 'auto',
     keepSource: true,
     proxyConfig: {
@@ -52,6 +73,7 @@ const [Grid] = useVbenVxeGrid({
 
 <template>
   <Page auto-content-height>
+    <TrendModal />
     <Grid table-title="报警记录">
       <template #level="{ row }">
         <Tag :color="getAlarmLevelConfig(row.level).color">
@@ -82,6 +104,20 @@ const [Grid] = useVbenVxeGrid({
           {{ formatDateTime(row.clearedAt) }}
         </span>
         <span v-else>-</span>
+      </template>
+      <template #actions="{ row }">
+        <TableAction
+          :actions="[
+            {
+              label: '查看时刻趋势',
+              type: 'link',
+              auth: ['collector:trend:query'],
+              disabled: !row.channelId,
+              tooltip: row.channelId ? undefined : '该报警没有关联通道',
+              onClick: handleViewTrend.bind(null, row),
+            },
+          ]"
+        />
       </template>
     </Grid>
   </Page>

@@ -15,6 +15,22 @@ type ChartOption = EChartsOption;
 /** 只声明本组件实际构造的字段，最终整体交给 ECharts 渲染 */
 type SeriesItem = Record<string, unknown> & { name?: string };
 
+/** 水平标线：按 y 轴数值绘制，用于事发阈值等 */
+export interface TrendMarkLine {
+  value: number;
+  label: string;
+  color?: string;
+  dashed?: boolean;
+}
+
+/** 垂直标线：按时间轴时刻绘制，用于触发/恢复时刻等 */
+export interface TrendMarkTime {
+  t: number;
+  label: string;
+  color?: string;
+  dashed?: boolean;
+}
+
 interface ChartEventInstance {
   dispatchAction: (action: Record<string, unknown>) => void;
   getOption: () => {
@@ -35,6 +51,10 @@ defineOptions({ name: 'CollectorTrendChart' });
 const props = withDefaults(
   defineProps<{
     colors: Record<number, string>;
+    /** 水平标线：默认空数组，趋势分析页不传时行为与旧版一致 */
+    markLines?: TrendMarkLine[];
+    /** 垂直标线：默认空数组，用于触发/恢复时刻 */
+    markTimes?: TrendMarkTime[];
     /** 查询时间范围秒数，用于选择时间轴标签格式 */
     rangeSeconds: number;
     series: CollectorApi.TrendSeries[];
@@ -42,7 +62,12 @@ const props = withDefaults(
     showBand?: boolean;
     syncEnabled?: boolean;
   }>(),
-  { showBand: true, syncEnabled: true },
+  {
+    markLines: () => [],
+    markTimes: () => [],
+    showBand: true,
+    syncEnabled: true,
+  },
 );
 
 const emit = defineEmits<{
@@ -96,8 +121,152 @@ function displayName(
     : base;
 }
 
+/**
+ * 标线系列名统一前缀：图例与 tooltip 都据此过滤，保证标线不进入图例/提示。
+ * 共享 ECharts 未注册 MarkLineComponent（packages 不在本功能改动范围），
+ * 因此用两点普通折线模拟标线：水平线固定 y、垂直线固定 x，样式与 markLine 等价。
+ */
+const MARKER_SERIES_PREFIX = '__trend-marker__';
+
+interface DataDomain {
+  xMax: number;
+  xMin: number;
+  yMax: number;
+  yMin: number;
+}
+
+/**
+ * 真实数据坐标域：只统计 props.series 各点（含 min/max 与原始叠加），
+ * 标线值绝不参与。标线坐标只能取域内极值，从而保证“标线绝不扩大坐标轴范围”。
+ */
+function collectDataDomain(): DataDomain | undefined {
+  let xMax = Number.NEGATIVE_INFINITY;
+  let xMin = Number.POSITIVE_INFINITY;
+  let yMax = Number.NEGATIVE_INFINITY;
+  let yMin = Number.POSITIVE_INFINITY;
+  const useX = (value?: null | number) => {
+    if (!finite(value)) return;
+    xMin = Math.min(xMin, value);
+    xMax = Math.max(xMax, value);
+  };
+  const useY = (value?: null | number) => {
+    if (!finite(value)) return;
+    yMin = Math.min(yMin, value);
+    yMax = Math.max(yMax, value);
+  };
+
+  for (const series of props.series) {
+    for (const point of series.points) {
+      useX(point.t);
+      useY(point.avg);
+      useY(point.value);
+      useY(point.min);
+      useY(point.max);
+    }
+  }
+
+  if (!finite(xMin) || !finite(xMax) || !finite(yMin) || !finite(yMax)) {
+    return undefined;
+  }
+  // 不做任何 padding：标线只复用真实数据已有的极值坐标，轴范围与无标线时完全一致
+  return { xMax, xMin, yMax, yMin };
+}
+
+/** 过滤掉落在真实数据域之外的标线；越界标线不画、不夹紧，避免拉大坐标轴 */
+function filterVisibleMarkers(domain: DataDomain) {
+  return {
+    lines: props.markLines.filter(
+      (item) =>
+        finite(item.value) &&
+        item.value >= domain.yMin &&
+        item.value <= domain.yMax,
+    ),
+    times: props.markTimes.filter(
+      (item) =>
+        finite(item.t) && item.t >= domain.xMin && item.t <= domain.xMax,
+    ),
+  };
+}
+
+function markerLabel(label: string, color: string) {
+  return {
+    show: true,
+    formatter: () => label,
+    color,
+    fontSize: 11,
+    backgroundColor: 'rgba(255, 255, 255, 0.85)',
+    padding: [2, 4],
+  };
+}
+
+/**
+ * 生成标线模拟系列；默认 markLines/markTimes 为空时不追加任何系列。
+ * 所有坐标均取自真实数据域内的极值或域内时刻/阈值，
+ * 越界标线在 filterVisibleMarkers 中被剔除，因此本系列不可能扩大坐标轴范围。
+ */
+function buildMarkerSeries(domain: DataDomain | undefined): SeriesItem[] {
+  if (props.markLines.length === 0 && props.markTimes.length === 0) {
+    return [];
+  }
+  if (!domain) return [];
+  const { lines, times } = filterVisibleMarkers(domain);
+
+  const markers: SeriesItem[] = [];
+  lines.forEach((item, index) => {
+    const color = item.color ?? '#fa8c16';
+    markers.push({
+      name: `${MARKER_SERIES_PREFIX}line-${index}`,
+      type: 'line',
+      yAxisIndex: 0,
+      showSymbol: false,
+      connectNulls: false,
+      silent: true,
+      legendHoverLink: false,
+      tooltip: { show: false },
+      lineStyle: {
+        color,
+        type: item.dashed ? 'dashed' : 'solid',
+        width: 1.5,
+      },
+      itemStyle: { color },
+      endLabel: markerLabel(item.label, color),
+      data: [
+        [domain.xMin, item.value],
+        [domain.xMax, item.value],
+      ],
+      z: 10,
+    } as SeriesItem);
+  });
+  times.forEach((item, index) => {
+    const color = item.color ?? '#fa541c';
+    markers.push({
+      name: `${MARKER_SERIES_PREFIX}time-${index}`,
+      type: 'line',
+      yAxisIndex: 0,
+      showSymbol: false,
+      connectNulls: false,
+      silent: true,
+      legendHoverLink: false,
+      tooltip: { show: false },
+      lineStyle: {
+        color,
+        type: item.dashed ? 'dashed' : 'solid',
+        width: 1.5,
+      },
+      itemStyle: { color },
+      endLabel: markerLabel(item.label, color),
+      data: [
+        [item.t, domain.yMin],
+        [item.t, domain.yMax],
+      ],
+      z: 11,
+    } as SeriesItem);
+  });
+  return markers;
+}
+
 /** 聚合线 + min/max 阴影带；includeRaw 时叠加同通道的原始抽样线 */
-function buildSeries(): SeriesItem[] {
+function buildSeries(domain: DataDomain | undefined): SeriesItem[] {
   const unitIndex = new Map<string, number>();
   for (const series of props.series) {
     if (!unitIndex.has(unitKey(series))) {
@@ -196,6 +365,9 @@ function buildSeries(): SeriesItem[] {
       );
     }
   }
+
+  // 标线追加在真实序列之后；默认空数组时不会追加任何系列
+  result.push(...buildMarkerSeries(domain));
   return result;
 }
 
@@ -257,6 +429,7 @@ function buildTooltip(): ChartOption['tooltip'] {
           !!item &&
           typeof item === 'object' &&
           !(item as TooltipParam).seriesName?.endsWith('·范围') &&
+          !(item as TooltipParam).seriesName?.startsWith(MARKER_SERIES_PREFIX) &&
           Array.isArray((item as TooltipParam).value) &&
           (item as TooltipParam).value?.[1] !== null &&
           (item as TooltipParam).value?.[1] !== undefined,
@@ -299,17 +472,31 @@ function axisLabelFormat(): string {
 }
 
 function buildOption(): ChartOption {
-  const series = buildSeries();
+  const domain = collectDataDomain();
+  const series = buildSeries(domain);
+  // 越界阈值标线已被过滤，只按实际绘制的水平标线预留右侧标签空间
+  const visibleMarkLineCount = domain
+    ? filterVisibleMarkers(domain).lines.length
+    : 0;
   const legendData = series
     .map((item) => item.name)
     .filter(
       (name): name is string =>
-        typeof name === 'string' && !name.endsWith('·范围'),
+        typeof name === 'string' &&
+        !name.endsWith('·范围') &&
+        !name.startsWith(MARKER_SERIES_PREFIX),
     );
   return {
     animation: false,
     color: Object.values(props.colors),
-    grid: { bottom: 76, containLabel: true, left: 12, right: 12, top: 42 },
+    // 有水平标线时右侧留出标签空间，避免“事发阈值”等标签贴边被裁剪
+    grid: {
+      bottom: 76,
+      containLabel: true,
+      left: 12,
+      right: visibleMarkLineCount > 0 ? 76 : 12,
+      top: 42,
+    },
     legend: {
       data: legendData,
       type: 'scroll',
@@ -414,6 +601,8 @@ watch(
     () => props.series,
     () => props.colors,
     () => props.rangeSeconds,
+    () => props.markLines,
+    () => props.markTimes,
     () => props.showBand,
   ],
   () => {

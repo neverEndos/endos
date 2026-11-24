@@ -1,5 +1,6 @@
 import type { VbenFormSchema } from '#/adapter/form';
 import type { VxeTableGridOptions } from '#/adapter/vxe-table';
+import type { CollectorApi } from '#/api/collector';
 
 import { getRangePickerDefaultProps } from '#/utils';
 
@@ -33,6 +34,19 @@ export function getAlarmLevelConfig(level?: number) {
 
 export function formatAlarmType(type?: string) {
   return ALARM_TYPE_NAMES[type || ''] || type || '-';
+}
+
+/**
+ * 当前版本只有数值通道的阈值报警，可以按报警类型或触发/阈值数值判断是否支持趋势。
+ * 判断不了时返回 true，交给趋势接口结果决定，避免误伤未来的报警类型。
+ */
+export function isNumericTrendAlarm(alarm: CollectorApi.Alarm): boolean {
+  if (ALARM_TYPE_NAMES[alarm.alarmType]) {
+    return true;
+  }
+  return (
+    Number.isFinite(alarm.triggerValue) || Number.isFinite(alarm.thresholdValue)
+  );
 }
 
 export function getAlarmEventTypeConfig(type?: string) {
@@ -135,8 +149,13 @@ export function useGridFormSchema(): VbenFormSchema[] {
   ];
 }
 
-/** 列表的字段 */
-export function useGridColumns(): VxeTableGridOptions['columns'] {
+/**
+ * 列表的字段。
+ * showTrendAction 由页面根据 collector:trend:query 权限传入，无权限时不渲染操作列。
+ */
+export function useGridColumns(
+  showTrendAction = true,
+): VxeTableGridOptions['columns'] {
   return [
     {
       field: 'triggeredAt',
@@ -196,5 +215,15 @@ export function useGridColumns(): VxeTableGridOptions['columns'] {
       slots: { default: 'recoveryTime' },
     },
     { field: 'message', title: '报警内容', minWidth: 200 },
+    ...(showTrendAction
+      ? [
+          {
+            title: '操作',
+            width: 140,
+            fixed: 'right' as const,
+            slots: { default: 'actions' },
+          },
+        ]
+      : []),
   ];
 }
