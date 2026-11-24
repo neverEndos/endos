@@ -210,11 +210,15 @@ function handleShowBandChange(checked: boolean) {
 
 /** 通道集合签名：用于判断波动区间开关是否需要重置回自动策略 */
 function channelSignature(query: AppliedQuery): string {
+  // 通道 ID 按数值排序，避免移除后重新添加同一通道导致的顺序变化被误判为集合变化；
+  // 模式与左右图归属仍各自占位，左右通道互换不会被误认为同一集合。
+  const sortedIds = (ids: readonly number[]) =>
+    [...ids].sort((a, b) => a - b).join(',');
   return [
     query.compareMode ? 'compare' : 'single',
-    query.leftChannelIds.join(','),
-    query.rightChannelIds.join(','),
-    query.singleChannelIds.join(','),
+    sortedIds(query.leftChannelIds),
+    sortedIds(query.rightChannelIds),
+    sortedIds(query.singleChannelIds),
   ].join('|');
 }
 
