@@ -492,6 +492,70 @@ export namespace CollectorApi {
     pageSize: number;
   }
 
+  /**
+   * 通道历史数据粒度：raw / second / minute / hour / day。
+   * 注意：趋势接口的粒度为 auto / raw / 1s / 1m / 1h / 1d，两套枚举不可混用。
+   */
+  export type HistoryGranularity =
+    | 'day'
+    | 'hour'
+    | 'minute'
+    | 'raw'
+    | 'second';
+
+  /** 通道历史数据分页参数 */
+  export interface HistoryPageParams {
+    channelId: number;
+    /** epoch 毫秒，包含 */
+    from: number;
+    /** epoch 毫秒，不包含 */
+    to: number;
+    granularity: HistoryGranularity;
+    /** 默认 1 */
+    pageNo?: number;
+    /** 默认 20；后端会把超过 100 的值收敛为 100 */
+    pageSize?: number;
+  }
+
+  /** 通道历史数据导出参数；无分页参数 */
+  export interface HistoryExportParams {
+    channelId: number;
+    /** epoch 毫秒，包含 */
+    from: number;
+    /** epoch 毫秒，不包含 */
+    to: number;
+    granularity: HistoryGranularity;
+  }
+
+  /**
+   * 通道历史数据行：raw 与聚合层共用同一结构，互斥字段为 null。
+   * raw 只填 value / rawValue / quality；聚合只填 sampleCount 等统计列。
+   */
+  export interface HistoryRow {
+    /** 桶时间（epoch 毫秒）；raw 为采样时间，day 为当天 00:00 上海时间 */
+    bucketTime: number;
+    unit: string;
+    channelName: string;
+    /** raw 专有：工程值 */
+    value: null | number;
+    /** raw 专有：原始整数 */
+    rawValue: null | number;
+    /** raw 专有：0 正常 / 1 不确定 / 2 坏 */
+    quality: null | number;
+    /** 聚合专有：桶内全部采样数 */
+    sampleCount: null | number;
+    goodCount: null | number;
+    badCount: null | number;
+    valueAvg: null | number;
+    valueMin: null | number;
+    valueMax: null | number;
+    valueFirst: null | number;
+    valueLast: null | number;
+  }
+
+  /** 通道历史数据分页结果；JSON 字段为 list 与 total，不是 rows */
+  export type HistoryPageResult = PageResult<HistoryRow>;
+
   /** 通道阈值批量更新项 */
   export interface ChannelThresholdBatchItem {
     channelId: number;
@@ -967,4 +1031,22 @@ export function getTrendChannelPage(
     '/collector/trend/channels',
     { params },
   );
+}
+
+// ==================== 通道历史数据 ====================
+
+/** 查询通道历史数据分页；固定按时间升序，pageSize 后端上限 100 */
+export function getHistoryPage(params: CollectorApi.HistoryPageParams) {
+  return requestClient.get<CollectorApi.HistoryPageResult>(
+    '/collector/history/page',
+    { params },
+  );
+}
+
+/**
+ * 导出通道历史 CSV；后端直接返回文件流（UTF-8 BOM）。
+ * 范围超限、行数超限等业务错误以 JSON 抛出，由响应拦截器转成异常。
+ */
+export function exportHistory(params: CollectorApi.HistoryExportParams) {
+  return requestClient.download<Blob>('/collector/history/export', { params });
 }
