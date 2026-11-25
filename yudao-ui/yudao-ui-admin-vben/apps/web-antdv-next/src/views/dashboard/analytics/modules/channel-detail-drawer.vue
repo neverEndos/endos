@@ -327,14 +327,14 @@ function closeDrawer() {
       body: {
         background: '#070C18',
         overflowY: 'auto',
-        padding: '14px 18px 20px',
+        padding: '12px 18px 16px',
       },
       header: {
         background: '#0B1222',
         borderBottom: '1px solid rgba(72, 104, 158, 0.32)',
       },
     }"
-    :width="680"
+    width="min(720px, 92vw)"
   >
     <template #title>
       <div class="drawer-title">
@@ -543,7 +543,7 @@ function closeDrawer() {
 
 .drawer-code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 9px;
+  font-size: 10px;
   color: #22d3ee;
   letter-spacing: 1.2px;
 }
@@ -558,14 +558,14 @@ function closeDrawer() {
 }
 
 .drawer-meta {
-  font-size: 10px;
-  color: #64748b;
+  font-size: 11px;
+  color: #94a3b8;
 }
 
 .drawer-body {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 8px;
 }
 
 .badge-row {
@@ -579,7 +579,7 @@ function closeDrawer() {
   gap: 5px;
   align-items: center;
   padding: 2px 7px;
-  font-size: 10px;
+  font-size: 11px;
   color: #b7c6dd;
   background: rgb(148 163 184 / 8%);
   border: 1px solid rgb(72 104 158 / 30%);
@@ -607,7 +607,7 @@ function closeDrawer() {
   flex-wrap: wrap;
   gap: 6px;
   align-items: baseline;
-  padding: 10px 12px;
+  padding: 8px 12px;
   background: linear-gradient(
     120deg,
     rgb(34 211 238 / 8%),
@@ -618,7 +618,7 @@ function closeDrawer() {
 }
 
 .hero-number {
-  font-size: 40px;
+  font-size: 34px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: #f1f5f9;
@@ -627,20 +627,20 @@ function closeDrawer() {
 
 .hero-unit {
   font-size: 13px;
-  color: #64748b;
+  color: #94a3b8;
 }
 
 .hero-time {
   margin-left: auto;
-  font-size: 10px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
-  color: #64748b;
+  color: #94a3b8;
 }
 
 .drawer-section {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 5px;
 }
 
 .drawer-section-head {
@@ -653,14 +653,14 @@ function closeDrawer() {
 
 .drawer-section-title {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 10px;
+  font-size: 11px;
   color: #94a3b8;
   letter-spacing: 1.6px;
 }
 
 .drawer-section-sub {
-  font-size: 9px;
-  color: #64748b;
+  font-size: 10px;
+  color: #94a3b8;
 }
 
 .drawer-note {
@@ -704,8 +704,8 @@ function closeDrawer() {
 .window-btn {
   padding: 2px 10px;
   font: inherit;
-  font-size: 10px;
-  color: #64748b;
+  font-size: 11px;
+  color: #94a3b8;
   cursor: pointer;
   background: transparent;
   border: 1px solid rgb(72 104 158 / 28%);
@@ -740,7 +740,7 @@ function closeDrawer() {
 
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
 }
 
@@ -749,21 +749,21 @@ function closeDrawer() {
   flex-direction: column;
   gap: 2px;
   min-width: 0;
-  padding: 7px 9px;
+  padding: 6px 9px;
   background: rgb(17 28 50 / 55%);
   border: 1px solid rgb(72 104 158 / 20%);
   border-radius: 5px;
 }
 
 .stat-label {
-  font-size: 9px;
-  color: #64748b;
+  font-size: 12px;
+  color: #94a3b8;
 }
 
 .stat-value {
   overflow: hidden;
   text-overflow: ellipsis;
-  font-size: 12px;
+  font-size: 13px;
   color: #e2e8f0;
   white-space: nowrap;
 }
@@ -778,7 +778,7 @@ function closeDrawer() {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 7px 8px;
+  padding: 6px 8px;
   background: rgb(17 28 50 / 55%);
   border: 1px solid rgb(72 104 158 / 20%);
   border-radius: 5px;
@@ -789,19 +789,27 @@ function closeDrawer() {
 }
 
 .threshold-label {
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .threshold-value {
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: #e2e8f0;
 }
 
 .threshold-flag {
-  font-size: 8px;
-  color: #64748b;
+  font-size: 10px;
+  color: #94a3b8;
+}
+
+/* 窄视口（抽屉按 92vw 收缩）时读数与阈值降为 2 列，避免横向挤压 */
+@media (max-width: 640px) {
+  .stat-grid,
+  .threshold-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .drawer-actions {
