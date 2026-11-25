@@ -30,6 +30,14 @@ public interface CollectorAlarmService {
     List<CollectorAlarmStateRespVO> getAlarmStateList(Long deviceId);
 
     /**
+     * 确认一条活动报警事件：将状态置为已确认，保留级别、不写恢复时间。
+     *
+     * @param id     报警事件编号
+     * @param userId 当前登录用户编号
+     */
+    void acknowledgeAlarm(Long id, Long userId);
+
+    /**
      * 一次作业执行的统计。
      */
     record EvaluationResult(long processedCount, long transitionCount, int batchCount, boolean initialized) {

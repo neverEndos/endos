@@ -28,7 +28,7 @@ const routes: RouteRecordRaw[] = [
         component: () => import('#/views/dashboard/analytics/index.vue'),
         meta: {
           icon: 'lucide:area-chart',
-          title: $t('page.dashboard.analytics'),
+          title: '采集大屏',
         },
       },
     ],

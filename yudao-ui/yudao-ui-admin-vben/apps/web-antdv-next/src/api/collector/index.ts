@@ -665,6 +665,12 @@ export namespace CollectorApi {
 
   /** 通道当前报警状态 */
   export interface AlarmState {
+    /** 当前活动报警事件编号；无活动事件时为空，用于确认操作 */
+    activeAlarmId?: null | number;
+    /** 当前活动报警是否已确认 */
+    acknowledged?: boolean;
+    /** 当前活动报警确认时间；未确认时为空 */
+    acknowledgedAt?: Date;
     deviceId: number;
     deviceName?: string;
     sensorId: number;
@@ -678,6 +684,50 @@ export namespace CollectorApi {
     lastThreshold?: number;
     lastSampleTime?: Date;
     updatedTime?: Date;
+  }
+
+  /** 聚合粒度：与后端 collector_aggregate_type 一致 */
+  export type AggregateType = 'second' | 'minute' | 'hour' | 'day';
+
+  /** 聚合回填参数；from/to 为 Asia/Shanghai 墙钟 ISO 8601 */
+  export interface AggregateBackfillParams {
+    aggType: AggregateType;
+    /** 开始时间（含） */
+    from: string;
+    /** 结束时间（不含） */
+    to: string;
+    /** 通道编号；缺省或空数组表示全部，最多 50 个 */
+    channelIds?: number[];
+    /** 绕过下层聚合直接从 raw 重算 */
+    fromRaw?: boolean;
+    /** 按 second→minute→hour→day 级联重建上层 */
+    cascade?: boolean;
+    /** 按区间整段清空目标；需要 collector:aggregate:force-clean 权限 */
+    forceClean?: boolean;
+  }
+
+  /** 聚合回填单层结果 */
+  export interface AggregateBackfillLevel {
+    aggType?: string;
+    channelCount?: number;
+    bucketCount?: number;
+    rowCount?: number;
+    skippedEmptyBatches?: number;
+    preservedBuckets?: number;
+    durationMillis?: number;
+  }
+
+  /** 聚合回填结果；同步执行，板端可能超时 */
+  export interface AggregateBackfillResult {
+    aggType?: string;
+    channelCount?: number;
+    bucketCount?: number;
+    rowCount?: number;
+    skippedEmptyBatches?: number;
+    preservedBuckets?: number;
+    durationMillis?: number;
+    /** 各层结果；首项为根层，cascade 时依次为上层 */
+    levels?: AggregateBackfillLevel[];
   }
 
   /** 传感器保存参数 */
@@ -975,6 +1025,21 @@ export function getAlarmStateList(params?: { deviceId?: number }) {
   return requestClient.get<CollectorApi.AlarmState[]>(
     '/collector/alarm/state/list',
     { params },
+  );
+}
+
+/** 确认活动报警；仅活动事件可确认，成功后状态置为已确认 */
+export function acknowledgeAlarm(id: number) {
+  return requestClient.post<boolean>(`/collector/alarm/acknowledge?id=${id}`);
+}
+
+// ==================== 聚合数据 ====================
+
+/** 同步回填聚合数据；请求可能因板端处理较慢而超时，请缩小范围或分批 */
+export function backfillAggregate(params: CollectorApi.AggregateBackfillParams) {
+  return requestClient.post<CollectorApi.AggregateBackfillResult>(
+    '/collector/aggregate/backfill',
+    params,
   );
 }
 

@@ -19,6 +19,7 @@ import cn.iocoder.yudao.module.collector.dal.mysql.channel.CollectorChannelMappe
 import cn.iocoder.yudao.module.collector.dal.mysql.device.CollectorDeviceMapper;
 import cn.iocoder.yudao.module.collector.dal.mysql.sample.CollectorSampleRawMapper;
 import cn.iocoder.yudao.module.collector.dal.mysql.sensor.CollectorSensorMapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -34,6 +35,12 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+
+import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
+import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.ALARM_ACKNOWLEDGE_STATUS_INVALID;
+import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.ALARM_ALREADY_ACKNOWLEDGED;
+import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.ALARM_CLEARED_EVENT_NOT_ACKNOWLEDGEABLE;
+import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.ALARM_NOT_EXISTS;
 
 /**
  * 采集报警引擎：游标扫描、阈值判定、状态机与事件持久化。
@@ -93,8 +100,62 @@ public class CollectorAlarmServiceImpl implements CollectorAlarmService {
             state.setDeviceName(names.deviceName(state.getDeviceId()));
             state.setSensorName(names.sensorName(state.getSensorId()));
             state.setChannelName(names.channelName(state.getChannelId()));
+            // 默认未确认；仅活动事件 status=1 时置为已确认。
+            state.setAcknowledged(Boolean.FALSE);
         });
+        // 只为仍有报警级别的通道装配活动事件编号，供前端确认操作使用；通道无活动事件时保持为空。
+        Set<Long> positiveChannelIds = result.stream()
+                .filter(state -> state.getLevel() != null && state.getLevel() > 0)
+                .map(CollectorAlarmStateRespVO::getChannelId)
+                .collect(Collectors.toSet());
+        if (!positiveChannelIds.isEmpty()) {
+            Map<Long, CollectorAlarmDO> activeAlarmMap = alarmMapper
+                    .selectActiveListByChannelIds(positiveChannelIds).stream()
+                    .collect(Collectors.toMap(CollectorAlarmDO::getChannelId, Function.identity(),
+                            (left, right) -> left.getId() > right.getId() ? left : right));
+            result.stream()
+                    .filter(state -> state.getLevel() != null && state.getLevel() > 0)
+                    .forEach(state -> {
+                        CollectorAlarmDO activeAlarm = activeAlarmMap.get(state.getChannelId());
+                        if (activeAlarm != null) {
+                            state.setActiveAlarmId(activeAlarm.getId());
+                            state.setAcknowledged(Integer.valueOf(1).equals(activeAlarm.getStatus()));
+                            state.setAcknowledgedAt(activeAlarm.getAcknowledgedAt());
+                        }
+                    });
+        }
         return result;
+    }
+
+    @Override
+    public void acknowledgeAlarm(Long id, Long userId) {
+        // 条件更新是唯一写路径：只有仍活动且未清除的事件才能被确认。
+        // 避免“先查后整行更新”与报警引擎并发时把引擎刚写入的 status/cleared_at 覆盖回旧值。
+        int updated = alarmMapper.update(null, new UpdateWrapper<CollectorAlarmDO>()
+                .eq("id", id)
+                .eq("status", 0)
+                .isNull("cleared_at")
+                .ne("event_type", "cleared")
+                .set("status", 1)
+                .set("acknowledged_at", LocalDateTime.now())
+                .set("acknowledged_by", userId));
+        if (updated > 0) {
+            return;
+        }
+        // 条件更新未命中时再查询，仅用于区分错误原因；不在这里执行任何写入。
+        CollectorAlarmDO alarm = alarmMapper.selectById(id);
+        if (alarm == null) {
+            throw exception(ALARM_NOT_EXISTS);
+        }
+        // 恢复事件表达“已恢复”，与确认语义互斥；已确认再次点击给出明确错误而不是静默成功。
+        if ("cleared".equals(alarm.getEventType())) {
+            throw exception(ALARM_CLEARED_EVENT_NOT_ACKNOWLEDGEABLE);
+        }
+        if (Integer.valueOf(1).equals(alarm.getStatus())) {
+            throw exception(ALARM_ALREADY_ACKNOWLEDGED);
+        }
+        // 已被引擎关闭（status=2 或存在 cleared_at）在条件更新中无法命中，统一返回已结束。
+        throw exception(ALARM_ACKNOWLEDGE_STATUS_INVALID);
     }
 
     /**
@@ -240,10 +301,21 @@ public class CollectorAlarmServiceImpl implements CollectorAlarmService {
                 transitionCount++;
             } else if (decision.level() > 0 && activeAlarm != null) {
                 // 同一级别且同一阈值持续命中：只刷新活动事件，不追加事件行。
-                activeAlarm.setLastSeenAt(sample.getCollectTime());
-                activeAlarm.setOccurrenceCount(activeAlarm.getOccurrenceCount() == null
-                        ? 2 : activeAlarm.getOccurrenceCount() + 1);
-                alarmMapper.updateById(activeAlarm);
+                // 窄更新 + status=0/cleared_at 为空条件，避免把批次开始时读到的旧 status=0
+                // 整行写回，覆盖并发确认写入的 status=1 与确认人/时间。
+                // affected=0 说明该行已被确认或关闭，直接跳过，不回退到整行更新。
+                int occurrenceCount = activeAlarm.getOccurrenceCount() == null
+                        ? 2 : activeAlarm.getOccurrenceCount() + 1;
+                int updated = alarmMapper.update(null, new UpdateWrapper<CollectorAlarmDO>()
+                        .eq("id", activeAlarm.getId())
+                        .eq("status", 0)
+                        .isNull("cleared_at")
+                        .set("last_seen_at", sample.getCollectTime())
+                        .set("occurrence_count", occurrenceCount));
+                if (updated > 0) {
+                    activeAlarm.setLastSeenAt(sample.getCollectTime());
+                    activeAlarm.setOccurrenceCount(occurrenceCount);
+                }
             }
             updateState(state, sample, decision, previousLevel, previousThresholdType, updatedTime);
             saveState(state, insertState);

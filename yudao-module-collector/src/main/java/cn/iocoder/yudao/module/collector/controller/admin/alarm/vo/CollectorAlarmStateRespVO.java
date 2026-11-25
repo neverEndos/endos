@@ -9,6 +9,12 @@ import java.time.LocalDateTime;
 @Data
 public class CollectorAlarmStateRespVO {
 
+    @Schema(description = "当前活动报警事件编号；无活动事件时为空", example = "1024")
+    private Long activeAlarmId;
+    @Schema(description = "当前活动报警是否已确认", example = "true")
+    private Boolean acknowledged;
+    @Schema(description = "当前活动报警确认时间；未确认时为空")
+    private LocalDateTime acknowledgedAt;
     @Schema(description = "通道编号", example = "3")
     private Long channelId;
     @Schema(description = "通道名称", example = "油液温度")
