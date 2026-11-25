@@ -37,6 +37,7 @@ import {
   computeQualityStats,
   distinctTrendUnits,
   formatShanghaiHms,
+  hasAnyPoint,
   isFiniteNumber,
   MAX_TREND_CHANNELS,
   SCREEN_COLORS,
@@ -461,6 +462,9 @@ const trendDeviceChannels = computed(() =>
   ),
 );
 
+/** 后端为每个请求通道都返回序列，必须看有效点而不是 series 数组长度 */
+const trendHasData = computed(() => hasAnyPoint(trendSeries.value));
+
 const trendStatusTone = computed<'error' | 'muted' | 'ok' | 'warn'>(() => {
   if (
     !hasTrendAccess.value ||
@@ -471,7 +475,7 @@ const trendStatusTone = computed<'error' | 'muted' | 'ok' | 'warn'>(() => {
   }
   if (trendError.value) return 'error';
   if (trendLoading.value) return 'warn';
-  if (trendSeries.value.length > 0) return 'ok';
+  if (trendHasData.value) return 'ok';
   return 'muted';
 });
 const trendStatusText = computed(() => {
@@ -480,12 +484,13 @@ const trendStatusText = computed(() => {
   if (!hasDeviceAccess.value) return '缺少设备权限';
   if (trendError.value) return '查询失败';
   if (trendLoading.value) return '查询中';
-  if (trendSeries.value.length > 0) {
+  if (trendSelectedIds.value.length === 0) return '待选择通道';
+  if (trendHasData.value) {
     return `${trendSeries.value.length} 通道 · ${trendSourceLabel(
       trendSourceSummary.value,
     )}`;
   }
-  return '待选择通道';
+  return `${trendSelectedIds.value.length} 通道 · 无有效数据`;
 });
 
 // ---------------- 通道详情抽屉 ----------------
@@ -1158,10 +1163,7 @@ onBeforeUnmount(() => {
               </button>
             </div>
 
-            <div
-              v-if="trendError && trendSeries.length > 0"
-              class="trend-alert"
-            >
+            <div v-if="trendError && trendHasData" class="trend-alert">
               <span>{{ trendError }}（保留上次曲线）</span>
               <button type="button" class="inline-btn" @click="retryTrend">
                 重试
@@ -1195,7 +1197,7 @@ onBeforeUnmount(() => {
                 请选择 1–{{ MAX_TREND_CHANNELS }} 个同单位通道叠加显示。
               </div>
               <div
-                v-else-if="trendError && trendSeries.length === 0"
+                v-else-if="trendError && !trendHasData"
                 class="panel-note panel-note--center panel-note--error"
               >
                 <span>{{ trendError }}</span>
@@ -1204,13 +1206,13 @@ onBeforeUnmount(() => {
                 </button>
               </div>
               <div
-                v-else-if="trendLoading && trendSeries.length === 0"
+                v-else-if="trendLoading && !trendHasData"
                 class="panel-note panel-note--center"
               >
                 <Spin size="small" />
                 正在查询趋势…
               </div>
-              <template v-else-if="trendSeries.length > 0">
+              <template v-else-if="trendHasData">
                 <TrendChart
                   :colors="trendColorMap"
                   :range-seconds="trendWindowSeconds"
@@ -1221,7 +1223,7 @@ onBeforeUnmount(() => {
                 </span>
               </template>
               <div v-else class="panel-note panel-note--center">
-                所选通道在当前时间窗内没有趋势数据。
+                所选通道在当前时间窗内没有有效数据。
               </div>
             </div>
           </template>

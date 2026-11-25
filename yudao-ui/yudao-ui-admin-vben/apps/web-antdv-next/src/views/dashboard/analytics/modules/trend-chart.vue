@@ -44,6 +44,40 @@ function unitOf(series: CollectorApi.TrendSeries): string {
   return series.unit?.trim() || '';
 }
 
+/**
+ * 同设备不同传感器可能存在同名同单位通道（例如两颗温度探头）。
+ * ECharts 按 series.name 合并图例、联动显隐并覆盖 tooltip 查表，
+ * 因此重名时统一追加通道编号，保证 series/legend/endLabel/tooltip 一一对应。
+ */
+function displayNames(): Map<number, string> {
+  const counts = new Map<string, number>();
+  const seen = new Set<number>();
+  for (const series of props.series) {
+    if (seen.has(series.channelId)) continue;
+    seen.add(series.channelId);
+    const base = seriesName(series);
+    counts.set(base, (counts.get(base) ?? 0) + 1);
+  }
+  const names = new Map<number, string>();
+  for (const series of props.series) {
+    const base = seriesName(series);
+    names.set(
+      series.channelId,
+      (counts.get(base) ?? 0) > 1
+        ? `${base}（通道 ${series.channelId}）`
+        : base,
+    );
+  }
+  return names;
+}
+
+function displayNameOf(
+  names: Map<number, string>,
+  series: CollectorApi.TrendSeries,
+): string {
+  return names.get(series.channelId) ?? seriesName(series);
+}
+
 /** 单序列时显示末端数值标签；多序列末端避免互相压字，交由图例与提示承担 */
 function endLabelOf(name: string) {
   return {
@@ -58,10 +92,11 @@ function endLabelOf(name: string) {
   };
 }
 
-function buildSeries(): SeriesItem[] {
+function buildSeries(names: Map<number, string>): SeriesItem[] {
   const single = props.series.length === 1;
   return props.series.map((series) => {
     const color = props.colors[series.channelId] ?? '#3987e5';
+    const name = displayNameOf(names, series);
     const points = series.points.map((point) => [
       point.t,
       isFiniteNumber(point.avg) ? point.avg : null,
@@ -104,23 +139,23 @@ function buildSeries(): SeriesItem[] {
         cap: 'round',
         width: 2,
       },
-      name: seriesName(series),
+      name,
       showSymbol: false,
       smooth: false,
       type: 'line',
       z: 3,
     };
     if (single) {
-      item.endLabel = endLabelOf(seriesName(series));
+      item.endLabel = endLabelOf(name);
     }
     return item;
   });
 }
 
-function buildTooltip(): EChartsOption['tooltip'] {
+function buildTooltip(names: Map<number, string>): EChartsOption['tooltip'] {
   const lookup = new Map<string, { color: string; unit: string }>();
   for (const series of props.series) {
-    lookup.set(seriesName(series), {
+    lookup.set(displayNameOf(names, series), {
       color: props.colors[series.channelId] ?? '',
       unit: unitOf(series),
     });
@@ -161,6 +196,7 @@ function buildTooltip(): EChartsOption['tooltip'] {
 
 function buildOption(): EChartsOption {
   const hasMultiple = props.series.length > 1;
+  const names = displayNames();
   const units = [
     ...new Set(props.series.map((series) => unitKey(series.unit))),
   ];
@@ -177,7 +213,7 @@ function buildOption(): EChartsOption {
     },
     legend: hasMultiple
       ? {
-          data: props.series.map((series) => seriesName(series)),
+          data: props.series.map((series) => displayNameOf(names, series)),
           icon: 'roundRect',
           itemHeight: 4,
           itemWidth: 14,
@@ -186,8 +222,8 @@ function buildOption(): EChartsOption {
           type: 'scroll',
         }
       : undefined,
-    series: buildSeries() as unknown as EChartsOption['series'],
-    tooltip: buildTooltip(),
+    series: buildSeries(names) as unknown as EChartsOption['series'],
+    tooltip: buildTooltip(names),
     xAxis: {
       axisLabel: {
         color: '#7c8db5',

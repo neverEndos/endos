@@ -530,6 +530,21 @@ export function extractRangePoints(
   return points;
 }
 
+/**
+ * 序列是否含有可绘制的有效点：后端对每个请求通道都会返回序列，
+ * 时间窗内无数据时 points 为空；不能只看数组长度，否则会误判为成功。
+ */
+export function hasAnyPoint(
+  series: readonly CollectorApi.TrendSeries[],
+): boolean {
+  return series.some((item) =>
+    item.points.some((point) => {
+      const value = isFiniteNumber(point.avg) ? point.avg : point.value;
+      return isFiniteNumber(value);
+    }),
+  );
+}
+
 export function seriesName(series?: CollectorApi.TrendSeries): string {
   if (!series) return '--';
   return series.channelName?.trim() || `通道 ${series.channelId}`;
