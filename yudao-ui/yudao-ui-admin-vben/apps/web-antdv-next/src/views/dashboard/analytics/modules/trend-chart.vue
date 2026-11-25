@@ -243,7 +243,7 @@ function buildOption(): EChartsOption {
       axisLine: { show: false },
       axisTick: { show: false },
       name: yName === '未指定单位' ? '' : yName,
-      nameTextStyle: { color: '#64748b', fontSize: 10, padding: [0, 0, 0, 4] },
+      nameTextStyle: { color: '#94a3b8', fontSize: 10, padding: [0, 0, 0, 4] },
       scale: true,
       splitLine: {
         lineStyle: { color: 'rgba(148, 163, 184, 0.12)', type: 'solid' },

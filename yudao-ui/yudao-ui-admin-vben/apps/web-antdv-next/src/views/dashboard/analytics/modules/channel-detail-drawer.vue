@@ -42,8 +42,6 @@ const props = defineProps<{
   /** 设备轮询周期，用于展示采样节奏 */
   devicePollIntervalMs?: number;
   hasTrendAccess: boolean;
-  /** 与主趋势图一致的时间窗，保证两处读数口径相同 */
-  rangeSeconds: number;
   target?: ChannelSelection;
   /** 通道阈值矩阵；无 collector:channel:query 权限时为空 */
   threshold?: CollectorApi.ThresholdMatrixChannel;
@@ -58,7 +56,7 @@ const trendError = ref<string>();
 const appliedRangeText = ref('--');
 let querySeq = 0;
 
-/** 区间分析时间窗：默认 24 小时，抽屉内独立于主趋势时间窗 */
+/** 抽屉统一时间窗：大趋势图与区间分析共用（单一数据源），默认 24 小时，独立于主趋势时间窗 */
 const ANALYSIS_WINDOWS = [
   { label: '1 小时', seconds: 60 * 60, value: '1h' },
   { label: '24 小时', seconds: 24 * 60 * 60, value: '24h' },
@@ -114,6 +112,14 @@ const alarmMeta = computed(() => alarmLevelMeta(props.alarm?.level));
 const hasAlarm = computed(() => (props.alarm?.level ?? 0) > 0);
 
 const channelCode = computed(() => `CHANNEL-${channel.value?.id ?? '--'}`);
+
+/** 趋势加载失败提示；保留旧曲线时额外说明，避免用户误读为最新窗口数据 */
+const trendErrorText = computed(() => {
+  if (!trendError.value) return '';
+  return trendSeries.value
+    ? `${trendError.value}；已保留上一次成功加载的曲线`
+    : trendError.value;
+});
 
 /** 四档阈值全部展示：未配置的显示 --，未启用的明确标注，不静默隐藏 */
 const thresholdItems = computed(() => {
@@ -198,8 +204,13 @@ const stats = computed(() => [
 ]);
 
 watch(
-  [open, () => props.target?.channel.id, () => props.rangeSeconds],
-  () => {
+  [open, () => props.target?.channel.id, analysisWindow],
+  ([, channelId], [, previousChannelId]) => {
+    // 切换通道时清空旧曲线：加载失败不能残留其他通道的数据；
+    // 仅切换时间窗时保留旧曲线，失败时仍可回看（见 loadTrend）
+    if (channelId !== previousChannelId) {
+      trendSeries.value = undefined;
+    }
     void loadTrend();
   },
   { immediate: true },
@@ -216,14 +227,13 @@ watch(
 async function loadTrend() {
   querySeq += 1;
   const seq = querySeq;
-  trendSeries.value = undefined;
   trendError.value = undefined;
   if (!open.value || !props.target || !props.hasTrendAccess || isEnum.value) {
     trendLoading.value = false;
     return;
   }
   const to = Date.now();
-  const from = to - props.rangeSeconds * 1000;
+  const from = to - analysisWindowSeconds.value * 1000;
   appliedRangeText.value = `${formatShanghaiMdHm(from)} ~ ${formatShanghaiMdHm(to)}`;
   trendLoading.value = true;
   try {
@@ -243,6 +253,7 @@ async function loadTrend() {
     }
   } catch (error) {
     if (seq !== querySeq) return;
+    // 失败保留旧曲线，由模板在错误提示旁继续渲染 trendSeries
     trendError.value = resolveApiErrorMessage(error, '趋势加载失败');
   } finally {
     if (seq === querySeq) {
@@ -327,14 +338,14 @@ function closeDrawer() {
       body: {
         background: '#070C18',
         overflowY: 'auto',
-        padding: '14px 18px 20px',
+        padding: '12px 18px 16px',
       },
       header: {
         background: '#0B1222',
         borderBottom: '1px solid rgba(72, 104, 158, 0.32)',
       },
     }"
-    :width="680"
+    width="min(720px, 92vw)"
   >
     <template #title>
       <div class="drawer-title">
@@ -396,16 +407,20 @@ function closeDrawer() {
             <Spin size="small" />
             <span>正在加载趋势…</span>
           </div>
-          <div v-else-if="trendError" class="drawer-note drawer-note--error">
-            {{ trendError }}
-          </div>
-          <LargeTrend
-            v-else-if="trendSeries"
-            :range-seconds="rangeSeconds"
-            :series="trendSeries"
-            :thresholds="enabledThresholdLines"
-          />
-          <div v-else class="drawer-note">该通道没有可用趋势数据。</div>
+          <template v-else>
+            <div v-if="trendError" class="drawer-note drawer-note--error">
+              {{ trendErrorText }}
+            </div>
+            <LargeTrend
+              v-if="trendSeries"
+              :range-seconds="analysisWindowSeconds"
+              :series="trendSeries"
+              :thresholds="enabledThresholdLines"
+            />
+            <div v-else-if="!trendError" class="drawer-note">
+              该通道没有可用趋势数据。
+            </div>
+          </template>
         </div>
       </section>
 
@@ -543,7 +558,7 @@ function closeDrawer() {
 
 .drawer-code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 9px;
+  font-size: 10px;
   color: #22d3ee;
   letter-spacing: 1.2px;
 }
@@ -558,14 +573,14 @@ function closeDrawer() {
 }
 
 .drawer-meta {
-  font-size: 10px;
-  color: #64748b;
+  font-size: 11px;
+  color: #94a3b8;
 }
 
 .drawer-body {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 8px;
 }
 
 .badge-row {
@@ -579,7 +594,7 @@ function closeDrawer() {
   gap: 5px;
   align-items: center;
   padding: 2px 7px;
-  font-size: 10px;
+  font-size: 11px;
   color: #b7c6dd;
   background: rgb(148 163 184 / 8%);
   border: 1px solid rgb(72 104 158 / 30%);
@@ -607,7 +622,7 @@ function closeDrawer() {
   flex-wrap: wrap;
   gap: 6px;
   align-items: baseline;
-  padding: 10px 12px;
+  padding: 8px 12px;
   background: linear-gradient(
     120deg,
     rgb(34 211 238 / 8%),
@@ -618,7 +633,7 @@ function closeDrawer() {
 }
 
 .hero-number {
-  font-size: 40px;
+  font-size: 34px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: #f1f5f9;
@@ -627,20 +642,20 @@ function closeDrawer() {
 
 .hero-unit {
   font-size: 13px;
-  color: #64748b;
+  color: #94a3b8;
 }
 
 .hero-time {
   margin-left: auto;
-  font-size: 10px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
-  color: #64748b;
+  color: #94a3b8;
 }
 
 .drawer-section {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 5px;
 }
 
 .drawer-section-head {
@@ -653,14 +668,14 @@ function closeDrawer() {
 
 .drawer-section-title {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 10px;
+  font-size: 11px;
   color: #94a3b8;
   letter-spacing: 1.6px;
 }
 
 .drawer-section-sub {
-  font-size: 9px;
-  color: #64748b;
+  font-size: 10px;
+  color: #94a3b8;
 }
 
 .drawer-note {
@@ -704,8 +719,8 @@ function closeDrawer() {
 .window-btn {
   padding: 2px 10px;
   font: inherit;
-  font-size: 10px;
-  color: #64748b;
+  font-size: 11px;
+  color: #94a3b8;
   cursor: pointer;
   background: transparent;
   border: 1px solid rgb(72 104 158 / 28%);
@@ -740,7 +755,7 @@ function closeDrawer() {
 
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
 }
 
@@ -749,21 +764,21 @@ function closeDrawer() {
   flex-direction: column;
   gap: 2px;
   min-width: 0;
-  padding: 7px 9px;
+  padding: 6px 9px;
   background: rgb(17 28 50 / 55%);
   border: 1px solid rgb(72 104 158 / 20%);
   border-radius: 5px;
 }
 
 .stat-label {
-  font-size: 9px;
-  color: #64748b;
+  font-size: 12px;
+  color: #94a3b8;
 }
 
 .stat-value {
   overflow: hidden;
   text-overflow: ellipsis;
-  font-size: 12px;
+  font-size: 13px;
   color: #e2e8f0;
   white-space: nowrap;
 }
@@ -778,7 +793,7 @@ function closeDrawer() {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 7px 8px;
+  padding: 6px 8px;
   background: rgb(17 28 50 / 55%);
   border: 1px solid rgb(72 104 158 / 20%);
   border-radius: 5px;
@@ -789,19 +804,27 @@ function closeDrawer() {
 }
 
 .threshold-label {
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .threshold-value {
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: #e2e8f0;
 }
 
 .threshold-flag {
-  font-size: 8px;
-  color: #64748b;
+  font-size: 10px;
+  color: #94a3b8;
+}
+
+/* 窄视口（抽屉按 92vw 收缩）时读数与阈值降为 2 列，避免横向挤压 */
+@media (max-width: 640px) {
+  .stat-grid,
+  .threshold-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .drawer-actions {

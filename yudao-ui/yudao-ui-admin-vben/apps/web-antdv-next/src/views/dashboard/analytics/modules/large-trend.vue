@@ -44,7 +44,7 @@ const props = withDefaults(
 );
 
 const VIEW_WIDTH = 1000;
-const VIEW_HEIGHT = 240;
+const VIEW_HEIGHT = 216;
 const PLOT = {
   bottom: 28,
   left: 58,
@@ -436,14 +436,15 @@ const chartLabel = computed(() => {
   stroke-width: 2;
 }
 
+/* 坐标轴文字固定用高对比灰蓝：--scr-muted(#64748B) 在深色底上不足 4.5:1 */
 .axis-labels text {
-  font-size: 10px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
-  fill: var(--scr-muted, #64748b);
+  fill: #94a3b8;
 }
 
 .threshold-label {
-  font-size: 9px;
+  font-size: 10px;
   stroke: #070c18;
   stroke-width: 3px;
   paint-order: stroke;
@@ -466,8 +467,8 @@ const chartLabel = computed(() => {
 }
 
 .tooltip-time {
-  font-size: 9px;
-  color: var(--scr-muted, #64748b);
+  font-size: 10px;
+  color: #94a3b8;
 }
 
 .tooltip-value {
@@ -478,9 +479,9 @@ const chartLabel = computed(() => {
 
 .tooltip-unit {
   margin-left: 3px;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 400;
-  color: var(--scr-muted, #64748b);
+  color: #94a3b8;
 }
 
 .trend-empty {
@@ -489,7 +490,7 @@ const chartLabel = computed(() => {
   display: grid;
   place-items: center;
   font-size: 12px;
-  color: var(--scr-muted, #64748b);
+  color: #94a3b8;
   pointer-events: none;
 }
 

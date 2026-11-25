@@ -429,25 +429,25 @@ const hasEnabledThresholds = computed(() =>
 .interval-analysis {
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: 7px;
 }
 
 .bucket-note {
   font-size: 10px;
   line-height: 1.5;
-  color: #64748b;
+  color: #94a3b8;
 }
 
 .metric-block,
 .enum-block {
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: 7px;
 }
 
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 5px;
 }
 
@@ -456,21 +456,21 @@ const hasEnabledThresholds = computed(() =>
   flex-direction: column;
   gap: 1px;
   min-width: 0;
-  padding: 6px 8px;
+  padding: 5px 8px;
   background: rgb(17 28 50 / 55%);
   border: 1px solid rgb(72 104 158 / 20%);
   border-radius: 5px;
 }
 
 .metric-label {
-  font-size: 9px;
-  color: #64748b;
+  font-size: 12px;
+  color: #94a3b8;
 }
 
 .metric-value {
   overflow: hidden;
   text-overflow: ellipsis;
-  font-size: 14px;
+  font-size: 18px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: #e2e8f0;
@@ -480,8 +480,8 @@ const hasEnabledThresholds = computed(() =>
 .metric-hint {
   overflow: hidden;
   text-overflow: ellipsis;
-  font-size: 9px;
-  color: #64748b;
+  font-size: 10px;
+  color: #94a3b8;
   white-space: nowrap;
 }
 
@@ -492,9 +492,9 @@ const hasEnabledThresholds = computed(() =>
   flex-wrap: wrap;
   gap: 4px 10px;
   align-items: baseline;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.5;
-  color: #64748b;
+  color: #94a3b8;
 }
 
 .trend-chip {
@@ -522,29 +522,31 @@ const hasEnabledThresholds = computed(() =>
 
 .threshold-title {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 10px;
+  font-size: 11px;
   color: #94a3b8;
   letter-spacing: 1.4px;
 }
 
 .threshold-note {
-  font-size: 9px;
-  color: #64748b;
+  font-size: 10px;
+  color: #94a3b8;
 }
 
+/* 2×2 网格：四档阈值两列排布，压缩纵向占用 */
 .threshold-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 8px;
 }
 
 .threshold-row {
   display: grid;
   grid-template-columns:
-    minmax(88px, 1.1fr) minmax(60px, 2fr)
-    minmax(150px, 2.6fr);
-  gap: 8px;
+    minmax(64px, 1.1fr) minmax(40px, 1.4fr)
+    minmax(110px, 2.4fr);
+  gap: 6px;
   align-items: center;
+  min-width: 0;
   padding: 4px 6px;
   background: rgb(17 28 50 / 42%);
   border: 1px solid rgb(72 104 158 / 16%);
@@ -556,18 +558,20 @@ const hasEnabledThresholds = computed(() =>
 }
 
 .threshold-label {
-  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
   white-space: nowrap;
 }
 
 .threshold-label small {
   margin-left: 3px;
-  font-size: 9px;
+  font-size: 10px;
   color: #94a3b8;
 }
 
 .threshold-value {
-  font-size: 10px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: #cbd5e1;
 }
@@ -597,7 +601,7 @@ const hasEnabledThresholds = computed(() =>
 }
 
 .enum-hint {
-  font-size: 9px;
+  font-size: 10px;
   color: #94a3b8;
 }
 
@@ -612,7 +616,7 @@ const hasEnabledThresholds = computed(() =>
   grid-template-columns: minmax(90px, 1.2fr) minmax(80px, 3fr) minmax(86px, 1.4fr);
   gap: 8px;
   align-items: center;
-  font-size: 10px;
+  font-size: 11px;
   color: #cbd5e1;
 }
 
@@ -637,6 +641,10 @@ const hasEnabledThresholds = computed(() =>
 @media (max-width: 720px) {
   .metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .threshold-list {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .threshold-row,
