@@ -1812,7 +1812,6 @@ onBeforeUnmount(() => {
         :device-poll-interval-ms="detailPollInterval"
         :has-trend-access="hasTrendAccess"
         :now="statusNow"
-        :range-seconds="trendWindowSeconds"
         :target="detailSelection"
         :threshold="detailThreshold"
       />

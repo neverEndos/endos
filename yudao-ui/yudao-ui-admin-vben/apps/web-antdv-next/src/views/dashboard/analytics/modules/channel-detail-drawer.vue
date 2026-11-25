@@ -42,8 +42,6 @@ const props = defineProps<{
   /** 设备轮询周期，用于展示采样节奏 */
   devicePollIntervalMs?: number;
   hasTrendAccess: boolean;
-  /** 与主趋势图一致的时间窗，保证两处读数口径相同 */
-  rangeSeconds: number;
   target?: ChannelSelection;
   /** 通道阈值矩阵；无 collector:channel:query 权限时为空 */
   threshold?: CollectorApi.ThresholdMatrixChannel;
@@ -58,7 +56,7 @@ const trendError = ref<string>();
 const appliedRangeText = ref('--');
 let querySeq = 0;
 
-/** 区间分析时间窗：默认 24 小时，抽屉内独立于主趋势时间窗 */
+/** 抽屉统一时间窗：大趋势图与区间分析共用（单一数据源），默认 24 小时，独立于主趋势时间窗 */
 const ANALYSIS_WINDOWS = [
   { label: '1 小时', seconds: 60 * 60, value: '1h' },
   { label: '24 小时', seconds: 24 * 60 * 60, value: '24h' },
@@ -114,6 +112,14 @@ const alarmMeta = computed(() => alarmLevelMeta(props.alarm?.level));
 const hasAlarm = computed(() => (props.alarm?.level ?? 0) > 0);
 
 const channelCode = computed(() => `CHANNEL-${channel.value?.id ?? '--'}`);
+
+/** 趋势加载失败提示；保留旧曲线时额外说明，避免用户误读为最新窗口数据 */
+const trendErrorText = computed(() => {
+  if (!trendError.value) return '';
+  return trendSeries.value
+    ? `${trendError.value}；已保留上一次成功加载的曲线`
+    : trendError.value;
+});
 
 /** 四档阈值全部展示：未配置的显示 --，未启用的明确标注，不静默隐藏 */
 const thresholdItems = computed(() => {
@@ -198,8 +204,13 @@ const stats = computed(() => [
 ]);
 
 watch(
-  [open, () => props.target?.channel.id, () => props.rangeSeconds],
-  () => {
+  [open, () => props.target?.channel.id, analysisWindow],
+  ([, channelId], [, previousChannelId]) => {
+    // 切换通道时清空旧曲线：加载失败不能残留其他通道的数据；
+    // 仅切换时间窗时保留旧曲线，失败时仍可回看（见 loadTrend）
+    if (channelId !== previousChannelId) {
+      trendSeries.value = undefined;
+    }
     void loadTrend();
   },
   { immediate: true },
@@ -216,14 +227,13 @@ watch(
 async function loadTrend() {
   querySeq += 1;
   const seq = querySeq;
-  trendSeries.value = undefined;
   trendError.value = undefined;
   if (!open.value || !props.target || !props.hasTrendAccess || isEnum.value) {
     trendLoading.value = false;
     return;
   }
   const to = Date.now();
-  const from = to - props.rangeSeconds * 1000;
+  const from = to - analysisWindowSeconds.value * 1000;
   appliedRangeText.value = `${formatShanghaiMdHm(from)} ~ ${formatShanghaiMdHm(to)}`;
   trendLoading.value = true;
   try {
@@ -243,6 +253,7 @@ async function loadTrend() {
     }
   } catch (error) {
     if (seq !== querySeq) return;
+    // 失败保留旧曲线，由模板在错误提示旁继续渲染 trendSeries
     trendError.value = resolveApiErrorMessage(error, '趋势加载失败');
   } finally {
     if (seq === querySeq) {
@@ -396,16 +407,20 @@ function closeDrawer() {
             <Spin size="small" />
             <span>正在加载趋势…</span>
           </div>
-          <div v-else-if="trendError" class="drawer-note drawer-note--error">
-            {{ trendError }}
-          </div>
-          <LargeTrend
-            v-else-if="trendSeries"
-            :range-seconds="rangeSeconds"
-            :series="trendSeries"
-            :thresholds="enabledThresholdLines"
-          />
-          <div v-else class="drawer-note">该通道没有可用趋势数据。</div>
+          <template v-else>
+            <div v-if="trendError" class="drawer-note drawer-note--error">
+              {{ trendErrorText }}
+            </div>
+            <LargeTrend
+              v-if="trendSeries"
+              :range-seconds="analysisWindowSeconds"
+              :series="trendSeries"
+              :thresholds="enabledThresholdLines"
+            />
+            <div v-else-if="!trendError" class="drawer-note">
+              该通道没有可用趋势数据。
+            </div>
+          </template>
         </div>
       </section>
 
