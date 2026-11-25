@@ -541,6 +541,11 @@ const trendSelectionAppliedFor = ref<number>();
 const trendSelectionSource = ref<'default' | 'restored'>();
 /** 首次读取到 localStorage 的通道选择；只在首次应用时消费一次 */
 let storedTrendChannelsConsumed = false;
+/**
+ * 用户是否显式取消了全部通道：显式清空要尊重（不因通道就绪重新套用默认），
+ * 非用户原因造成的空选择（如 latest 失败后恢复）才允许重试默认/恢复。
+ */
+let trendSelectionClearedByUser = false;
 let trendDebounceTimer: ReturnType<typeof setTimeout> | undefined;
 let trendRefreshTimer: ReturnType<typeof setInterval> | undefined;
 let trendQuerySeq = 0;
@@ -563,12 +568,14 @@ const trendDeviceChannels = computed(() =>
 );
 
 /**
- * 设备通道是否已经完成首次加载：latest 到达或明确失败后才允许自动选择，
- * 避免在 latest 尚未返回、通道列表为空时过早标记“已初始化”。
+ * 设备通道是否允许套用默认/恢复趋势选择：必须已拿到 latest 且通道列表非空。
+ * error 态或空通道列表上 apply 会写入空选择、置位 applied 标记并把空选择
+ * 持久化到 localStorage，导致 latest 恢复后不再重试、重进也无法恢复；
+ * 因此 error 态不就绪，等待 latest 到达后由 watch 重新触发。
  */
 const trendDeviceChannelsReady = computed(() => {
   const card = trendDeviceCard.value;
-  return Boolean(card && (card.latest || card.error));
+  return Boolean(card?.latest && trendDeviceChannels.value.length > 0);
 });
 
 /** 后端为每个请求通道都返回序列，必须看有效点而不是 series 数组长度 */
@@ -710,8 +717,10 @@ function toggleTrendChannel(id: number) {
   const current = trendSelectedIds.value;
   if (current.includes(id)) {
     trendSelectedIds.value = current.filter((item) => item !== id);
+    // 用户逐个取消到空是显式清空动作：允许落盘，且不再自动重试默认选择
+    trendSelectionClearedByUser = trendSelectedIds.value.length === 0;
     syncTrendColors();
-    persistTrendSelection();
+    persistTrendSelection({ allowEmpty: true });
     return;
   }
   if (current.length >= MAX_TREND_CHANNELS) {
@@ -731,6 +740,7 @@ function toggleTrendChannel(id: number) {
     return;
   }
   trendSelectedIds.value = [...current, id];
+  trendSelectionClearedByUser = false;
   syncTrendColors();
   persistTrendSelection();
 }
@@ -780,8 +790,12 @@ function validateStoredTrendChannelIds(
   return [...ids];
 }
 
-function persistTrendSelection() {
+function persistTrendSelection(options?: { allowEmpty?: boolean }) {
   if (typeof window === 'undefined') return;
+  // 空选择默认不落盘：首次 latest 失败或通道为空时若写入 {channelIds: []}，
+  // 会覆盖掉可恢复的默认/上次选择，重进后无法恢复；
+  // 唯一例外是用户显式逐个取消全部通道（allowEmpty=true）。
+  if (trendSelectedIds.value.length === 0 && !options?.allowEmpty) return;
   try {
     window.localStorage.setItem(
       TREND_SELECTION_STORAGE_KEY,
@@ -811,12 +825,13 @@ function pruneTrendSelection() {
 /**
  * 为某台设备应用一次趋势选择：优先恢复 localStorage 中的选择（仅当设备匹配），
  * 否则使用默认选择。应用后立即持久化，作为下一次进入的“上次选择”。
+ * 只有得出非空选择才置位 applied 标记并持久化；空选择直接返回，
+ * 由 watch 在通道变为非空后重试，避免“只 apply 一次”的标记把机会吃掉。
  */
 function applyTrendSelectionForDevice(
   deviceId: number,
   channels: ChannelWithContext[],
 ) {
-  trendSelectionAppliedFor.value = deviceId;
   let ids: number[] = [];
   let source: 'default' | 'restored' | undefined;
   if (
@@ -829,13 +844,19 @@ function applyTrendSelectionForDevice(
     );
     if (ids.length > 0) source = 'restored';
   }
-  storedTrendChannelsConsumed = true;
   if (ids.length === 0) {
     ids = pickDefaultTrendChannelIds(channels, statusNow.value);
     if (ids.length > 0) source = 'default';
   }
+  if (ids.length === 0) {
+    // 空选择不置位、不持久化、不消费 localStorage 恢复机会
+    return;
+  }
+  storedTrendChannelsConsumed = true;
+  trendSelectionAppliedFor.value = deviceId;
   trendSelectedIds.value = ids;
   trendSelectionSource.value = source;
+  trendSelectionClearedByUser = false;
   syncTrendColors();
   if (source === 'restored') {
     // 恢复的用户选择优先于“首个在线设备”的自动跟随
@@ -968,6 +989,7 @@ watch(
     trendError.value = undefined;
     trendSelectionAppliedFor.value = undefined;
     trendSelectionSource.value = undefined;
+    trendSelectionClearedByUser = false;
   },
 );
 
@@ -980,13 +1002,24 @@ watch(
   ([deviceId, channels, ready]) => {
     if (!hasTrendAccess.value || deviceId === undefined) return;
     if (trendSelectionAppliedFor.value !== deviceId) {
-      // 首次进入时等待该设备通道列表加载完成，避免在空列表上做选择
+      // 首次进入时等待该设备 latest 到达且通道非空，避免在空列表上
+      // 应用空选择并置位 applied 标记；latest 失败（error 态）不就绪，
+      // 恢复后本 watch 会再次触发并完成套用
       if (!ready) return;
       applyTrendSelectionForDevice(deviceId, channels);
       return;
     }
     // 已应用过选择的设备：latest 轮询后清理不存在的通道
     pruneTrendSelection();
+    // 选择被非用户原因清空（如 latest 失败后通道一度为空）且通道已恢复时，
+    // 允许重新套用默认/恢复选择；用户显式清空的选择不打扰
+    if (
+      trendSelectedIds.value.length === 0 &&
+      !trendSelectionClearedByUser &&
+      channels.length > 0
+    ) {
+      applyTrendSelectionForDevice(deviceId, channels);
+    }
   },
   { immediate: true },
 );
