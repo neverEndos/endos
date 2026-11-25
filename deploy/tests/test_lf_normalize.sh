@@ -53,7 +53,7 @@ build_fixture() {
   # 非白名单文本：即使含 CRLF 也不得改写（.env 为真实凭据，模板/文档同理）。
   printf 'POSTGRES_PASSWORD=secret\r\nREDIS_PASSWORD=secret\r\n' > "$root/.env"
   printf 'POSTGRES_PASSWORD=CHANGE_ME\r\n' > "$root/.env.example"
-  printf 'BOARD_HOST=192.168.0.101\r\n' > "$root/deploy.env"
+  printf 'BOARD_HOST=192.168.0.31\r\n' > "$root/deploy.env"
   printf '备注文本\r\n第二行\r\n' > "$root/notes.txt"
   printf '# 说明文档\r\n' > "$root/README.md"
   # 二进制样本：含 NUL、高位字节与 0d0a 序列，归一化前后必须逐字节一致。
