@@ -301,10 +301,21 @@ public class CollectorAlarmServiceImpl implements CollectorAlarmService {
                 transitionCount++;
             } else if (decision.level() > 0 && activeAlarm != null) {
                 // 同一级别且同一阈值持续命中：只刷新活动事件，不追加事件行。
-                activeAlarm.setLastSeenAt(sample.getCollectTime());
-                activeAlarm.setOccurrenceCount(activeAlarm.getOccurrenceCount() == null
-                        ? 2 : activeAlarm.getOccurrenceCount() + 1);
-                alarmMapper.updateById(activeAlarm);
+                // 窄更新 + status=0/cleared_at 为空条件，避免把批次开始时读到的旧 status=0
+                // 整行写回，覆盖并发确认写入的 status=1 与确认人/时间。
+                // affected=0 说明该行已被确认或关闭，直接跳过，不回退到整行更新。
+                int occurrenceCount = activeAlarm.getOccurrenceCount() == null
+                        ? 2 : activeAlarm.getOccurrenceCount() + 1;
+                int updated = alarmMapper.update(null, new UpdateWrapper<CollectorAlarmDO>()
+                        .eq("id", activeAlarm.getId())
+                        .eq("status", 0)
+                        .isNull("cleared_at")
+                        .set("last_seen_at", sample.getCollectTime())
+                        .set("occurrence_count", occurrenceCount));
+                if (updated > 0) {
+                    activeAlarm.setLastSeenAt(sample.getCollectTime());
+                    activeAlarm.setOccurrenceCount(occurrenceCount);
+                }
             }
             updateState(state, sample, decision, previousLevel, previousThresholdType, updatedTime);
             saveState(state, insertState);

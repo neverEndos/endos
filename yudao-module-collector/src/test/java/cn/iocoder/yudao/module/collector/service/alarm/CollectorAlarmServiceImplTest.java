@@ -160,11 +160,13 @@ public class CollectorAlarmServiceImplTest {
     }
 
     @Test
-    public void evaluate_refreshesOccurrenceWhileActiveAtSameLevel() {
+    public void evaluate_refreshesOccurrenceWhileActiveAtSameLevelWithNarrowUpdate() {
         when(sampleRawMapper.selectListAfter(any(), any(), any())).thenReturn(List.of(
                 sample(1L, 75D, BASE_TIME),
                 sample(2L, 75D, BASE_TIME.plusSeconds(30)),
                 sample(3L, 75D, BASE_TIME.plusSeconds(60))));
+        // 窄更新命中：允许内存 DO 同步最近出现时间与次数
+        when(alarmMapper.update(isNull(), any())).thenReturn(1);
 
         CollectorAlarmService.EvaluationResult result = service.evaluatePendingSamples();
 
@@ -175,7 +177,40 @@ public class CollectorAlarmServiceImplTest {
         CollectorAlarmDO active = insertCaptor.getValue();
         assertEquals(Integer.valueOf(3), active.getOccurrenceCount());
         assertEquals(BASE_TIME.plusSeconds(60), active.getLastSeenAt());
-        verify(alarmMapper, times(2)).updateById(active);
+
+        // 同级持续命中只允许窄更新 last_seen_at/occurrence_count，且 WHERE 必须含 status/cleared_at。
+        ArgumentCaptor<UpdateWrapper<CollectorAlarmDO>> refreshCaptor =
+                ArgumentCaptor.forClass(UpdateWrapper.class);
+        verify(alarmMapper, times(2)).update(isNull(), refreshCaptor.capture());
+        List<UpdateWrapper<CollectorAlarmDO>> refreshes = refreshCaptor.getAllValues();
+        assertEquals(2, refreshes.size());
+        for (UpdateWrapper<CollectorAlarmDO> refresh : refreshes) {
+            assertNarrowAlarmRefresh(refresh, false);
+        }
+        // 不得回退到整行更新
+        verify(alarmMapper, never()).updateById(any(CollectorAlarmDO.class));
+    }
+
+    @Test
+    public void evaluate_sameLevelRefreshSkipsWhenNarrowUpdateAffectsZeroRows() {
+        when(sampleRawMapper.selectListAfter(any(), any(), any())).thenReturn(List.of(
+                sample(1L, 75D, BASE_TIME),
+                sample(2L, 75D, BASE_TIME.plusSeconds(30))));
+        // 模拟批次开始时事件仍为 status=0，但随后被并发确认：窄更新 affected=0
+        when(alarmMapper.update(isNull(), any())).thenReturn(0);
+
+        CollectorAlarmService.EvaluationResult result = service.evaluatePendingSamples();
+
+        assertEquals(2, result.processedCount());
+        assertEquals(1, result.transitionCount());
+        ArgumentCaptor<CollectorAlarmDO> insertCaptor = ArgumentCaptor.forClass(CollectorAlarmDO.class);
+        verify(alarmMapper, times(1)).insert(insertCaptor.capture());
+        CollectorAlarmDO active = insertCaptor.getValue();
+        // affected=0 时不更新内存 DO，也不发生整行更新
+        assertEquals(Integer.valueOf(1), active.getOccurrenceCount());
+        assertEquals(BASE_TIME, active.getLastSeenAt());
+        verify(alarmMapper, times(1)).update(isNull(), any());
+        verify(alarmMapper, never()).updateById(any(CollectorAlarmDO.class));
     }
 
     @Test
@@ -507,6 +542,14 @@ public class CollectorAlarmServiceImplTest {
         assertFalse(sqlSet.contains("cleared_at"));
         assertTrue(wrapper.getParamNameValuePairs().containsValue(1));
         assertTrue(wrapper.getParamNameValuePairs().containsValue(99L));
+        // WHERE 四重保护一个都不能少：id、status=0、cleared_at IS NULL、event_type != cleared
+        String sqlSegment = wrapper.getSqlSegment();
+        assertTrue(sqlSegment.contains("id"));
+        assertTrue(sqlSegment.contains("status"));
+        assertTrue(sqlSegment.contains("cleared_at IS NULL"));
+        assertTrue(sqlSegment.contains("event_type"));
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(0));
+        assertTrue(wrapper.getParamNameValuePairs().containsValue("cleared"));
         // 主路径不先查后写，也不调用整行 updateById
         verify(alarmMapper, never()).selectById(any());
         verify(alarmMapper, never()).updateById(any(CollectorAlarmDO.class));
@@ -571,6 +614,27 @@ public class CollectorAlarmServiceImplTest {
         assertServiceException(() -> service.acknowledgeAlarm(1L, 99L),
                 ALARM_ACKNOWLEDGE_STATUS_INVALID);
         verify(alarmMapper, never()).updateById(any(CollectorAlarmDO.class));
+    }
+
+    /** 同级持续命中的窄更新：只写最近出现时间/次数，WHERE 必须带 id、status=0、cleared_at IS NULL */
+    private void assertNarrowAlarmRefresh(UpdateWrapper<CollectorAlarmDO> wrapper,
+                                          boolean expectEventTypeCondition) {
+        String sqlSet = wrapper.getSqlSet();
+        assertTrue(sqlSet.contains("last_seen_at"));
+        assertTrue(sqlSet.contains("occurrence_count"));
+        assertFalse(sqlSet.contains("status"));
+        assertFalse(sqlSet.contains("acknowledged_at"));
+        assertFalse(sqlSet.contains("acknowledged_by"));
+        assertFalse(sqlSet.contains("level"));
+        String sqlSegment = wrapper.getSqlSegment();
+        assertTrue(sqlSegment.contains("id"));
+        assertTrue(sqlSegment.contains("status"));
+        assertTrue(sqlSegment.contains("cleared_at IS NULL"));
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(0));
+        if (expectEventTypeCondition) {
+            assertTrue(sqlSegment.contains("event_type"));
+            assertTrue(wrapper.getParamNameValuePairs().containsValue("cleared"));
+        }
     }
 
     private void assertServiceException(Runnable action, cn.iocoder.yudao.framework.common.exception.ErrorCode errorCode) {
