@@ -15,7 +15,7 @@ import { useRoute } from 'vue-router';
 
 import { useAccess } from '@vben/access';
 
-import { App, Spin } from 'antdv-next';
+import { ConfigProvider, Spin } from 'antdv-next';
 
 import {
   getAlarmStateList,
@@ -36,8 +36,13 @@ import {
   computeAlarmLevelStats,
   computeQualityStats,
   distinctTrendUnits,
+  downsampleHistoryPoints,
+  extractValuePoints,
   formatShanghaiHms,
   hasAnyPoint,
+  HISTORY_SEED_WINDOW_SECONDS,
+  historyCapacityFor,
+  isChannelStale,
   isFiniteNumber,
   MAX_TREND_CHANNELS,
   SCREEN_COLORS,
@@ -59,10 +64,62 @@ const POLL_INTERVAL_MS = 10_000;
 const TREND_REFRESH_MS = 60_000;
 const TREND_DEBOUNCE_MS = 250;
 const BACKOFF_DELAYS = [10_000, 20_000, 60_000] as const;
+/** 主趋势选择持久化 key；读取失败或结构非法时静默回退默认选择 */
+const TREND_SELECTION_STORAGE_KEY = 'collector-screen:trend-selection:v1';
+/** sparkline 种子失败后的重试间隔，避免每轮轮询打满趋势接口 */
+const HISTORY_SEED_RETRY_MS = 60_000;
+/** 趋势接口单次最多 8 个通道；按 8 个一组分批，单设备最多 3 个并发 */
+const HISTORY_SEED_CHUNK_SIZE = 8;
+const HISTORY_SEED_CONCURRENCY = 3;
+
+interface StoredTrendSelection {
+  channelIds: number[];
+  deviceId?: number;
+  window?: TrendWindowValue;
+}
+
+/**
+ * 读取上次趋势选择：任何异常（无 localStorage、JSON 损坏、字段类型不符）
+ * 都返回空对象，不向 UI 抛错；结构校验之外还需结合已加载通道再次校验。
+ */
+function readStoredTrendSelection(): StoredTrendSelection {
+  const empty: StoredTrendSelection = { channelIds: [] };
+  if (typeof window === 'undefined') return empty;
+  try {
+    const raw = window.localStorage.getItem(TREND_SELECTION_STORAGE_KEY);
+    if (!raw) return empty;
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object') return empty;
+    const record = parsed as Record<string, unknown>;
+    const deviceId =
+      typeof record.deviceId === 'number' && Number.isFinite(record.deviceId)
+        ? record.deviceId
+        : undefined;
+    const channelIds = Array.isArray(record.channelIds)
+      ? [
+          ...new Set(
+            record.channelIds.filter(
+              (id): id is number =>
+                typeof id === 'number' && Number.isFinite(id),
+            ),
+          ),
+        ]
+      : [];
+    const windowValue =
+      typeof record.window === 'string' &&
+      TREND_WINDOWS.some((item) => item.value === record.window)
+        ? (record.window as TrendWindowValue)
+        : undefined;
+    return { channelIds, deviceId, window: windowValue };
+  } catch {
+    return empty;
+  }
+}
+
+const initialTrendSelection = readStoredTrendSelection();
 
 const route = useRoute();
 const { hasAccessByCodes } = useAccess();
-const { message } = App.useApp();
 /** /screen 为独立无布局大屏；/dashboard/analytics 在 BasicLayout 内复用同一内容 */
 const isStandaloneScreen = computed(() => route.path === '/screen');
 const hasHealthAccess = computed(() =>
@@ -88,6 +145,32 @@ const hasChannelAccess = computed(() =>
 const screenRoot = ref<HTMLElement>();
 const isFullscreen = ref(false);
 const isPolling = ref(false);
+
+/**
+ * 全屏时浏览器只保证 fullscreen 元素内部的绘制可见：
+ * Tooltip / Dropdown / Drawer 等默认 teleport 到 body 的浮层会被全屏元素遮住，
+ * 因此把浮层容器统一切到 screenRoot。非全屏仍回到 body，避免影响页面布局。
+ */
+const overlayContainer = computed<HTMLElement | undefined>(() => {
+  if (isFullscreen.value && screenRoot.value) return screenRoot.value;
+  return typeof document === 'undefined' ? undefined : document.body;
+});
+
+function resolvePopupContainer(): HTMLElement {
+  return overlayContainer.value ?? document.body;
+}
+
+/** 轻量站内提示：不依赖外层 App 的 message 容器，保证全屏下也可见 */
+const notice = ref<{ id: number; text: string }>();
+let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+
+function showNotice(text: string) {
+  notice.value = { id: Date.now(), text };
+  if (noticeTimer !== undefined) clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => {
+    notice.value = undefined;
+  }, 4000);
+}
 
 const devices = ref<CollectorApi.DeviceSimple[]>([]);
 const devicesLoaded = ref(false);
@@ -413,14 +496,18 @@ const hasPartialFailure = computed(
 
 // ---------------- 趋势 ----------------
 
-const trendWindow = ref<TrendWindowValue>('1h');
+const trendWindow = ref<TrendWindowValue>(
+  initialTrendSelection.window ?? '1h',
+);
 const trendWindowSeconds = computed(
   () =>
     TREND_WINDOWS.find((item) => item.value === trendWindow.value)?.seconds ??
     60 * 60,
 );
 
-const trendDeviceId = ref<number>();
+const trendDeviceId = ref<number | undefined>(initialTrendSelection.deviceId);
+/** 用户手动选择设备/通道后不再自动跟随在线状态，避免抢走用户选择 */
+let trendDeviceTouchedByUser = false;
 const trendDevice = computed(() => {
   if (devices.value.length === 0) return undefined;
   return (
@@ -448,11 +535,24 @@ const trendSourceSummary = ref('');
 const trendLoading = ref(false);
 const trendError = ref<string>();
 const trendLastSuccessAt = ref<number>();
-/** 每次进入某设备只自动选中首个数值通道一次，尊重用户清空选择的操作 */
-const trendInitialized = new Set<number>();
+/** 已为哪个设备应用过趋势选择；设备切换时重置 */
+const trendSelectionAppliedFor = ref<number>();
+/** 当前选择来源：用于 SectionHead 区分“恢复上次选择 / 默认选择” */
+const trendSelectionSource = ref<'default' | 'restored'>();
+/** 首次读取到 localStorage 的通道选择；只在首次应用时消费一次 */
+let storedTrendChannelsConsumed = false;
 let trendDebounceTimer: ReturnType<typeof setTimeout> | undefined;
 let trendRefreshTimer: ReturnType<typeof setInterval> | undefined;
 let trendQuerySeq = 0;
+
+/** sparkline 历史种子状态：按设备记录是否成功、最近尝试时间与进行中标记 */
+const historyStaleMap = ref<Record<number, boolean>>({});
+const historySeedAttemptAt = new Map<number, number>();
+const historySeedingDevices = new Set<number>();
+const deviceOnlinePrevious: Record<number, boolean | undefined> = {};
+let historySeedGeneration = 0;
+let historySeedActive = 0;
+const historySeedQueue: Array<() => void> = [];
 
 const trendDeviceChannels = computed(() =>
   allChannels.value.filter(
@@ -461,6 +561,15 @@ const trendDeviceChannels = computed(() =>
       entry.channel.valueKind !== 'enum',
   ),
 );
+
+/**
+ * 设备通道是否已经完成首次加载：latest 到达或明确失败后才允许自动选择，
+ * 避免在 latest 尚未返回、通道列表为空时过早标记“已初始化”。
+ */
+const trendDeviceChannelsReady = computed(() => {
+  const card = trendDeviceCard.value;
+  return Boolean(card && (card.latest || card.error));
+});
 
 /** 后端为每个请求通道都返回序列，必须看有效点而不是 series 数组长度 */
 const trendHasData = computed(() => hasAnyPoint(trendSeries.value));
@@ -478,6 +587,14 @@ const trendStatusTone = computed<'error' | 'muted' | 'ok' | 'warn'>(() => {
   if (trendHasData.value) return 'ok';
   return 'muted';
 });
+/** SectionHead 需要明确区分“已恢复上次选择 / 已使用默认选择” */
+const trendSelectionHint = computed(() =>
+  trendSelectionSource.value === 'restored'
+    ? '已恢复上次选择'
+    : trendSelectionSource.value === 'default'
+      ? '已使用默认选择'
+      : '',
+);
 const trendStatusText = computed(() => {
   if (!hasTrendAccess.value) return '无趋势权限';
   if (!hasDashboardAccess.value) return '缺少看板权限';
@@ -485,12 +602,13 @@ const trendStatusText = computed(() => {
   if (trendError.value) return '查询失败';
   if (trendLoading.value) return '查询中';
   if (trendSelectedIds.value.length === 0) return '待选择通道';
+  const hint = trendSelectionHint.value;
   if (trendHasData.value) {
-    return `${trendSeries.value.length} 通道 · ${trendSourceLabel(
+    return `${hint ? `${hint} · ` : ''}${trendSeries.value.length} 通道 · ${trendSourceLabel(
       trendSourceSummary.value,
     )}`;
   }
-  return `${trendSelectedIds.value.length} 通道 · 无有效数据`;
+  return `${hint ? `${hint} · ` : ''}${trendSelectedIds.value.length} 通道 · 无有效数据`;
 });
 
 // ---------------- 通道详情抽屉 ----------------
@@ -569,7 +687,16 @@ function channelChipTitle(entry: ChannelWithContext): string {
 
 function selectTrendDevice(id: number) {
   if (id === trendDevice.value?.id) return;
+  trendDeviceTouchedByUser = true;
   trendDeviceId.value = id;
+}
+
+function selectTrendWindow(value: TrendWindowValue) {
+  if (value === trendWindow.value) return;
+  trendWindow.value = value;
+  // 切换时间窗时清理已不存在的通道，并按新窗口持久化
+  pruneTrendSelection();
+  persistTrendSelection();
 }
 
 function toggleTrendChannel(id: number) {
@@ -578,14 +705,17 @@ function toggleTrendChannel(id: number) {
     (item) => item.channel.id === id,
   );
   if (!entry) return;
+  // 用户开始调整通道后固定当前设备，避免在线状态变化抢走选择
+  trendDeviceTouchedByUser = true;
   const current = trendSelectedIds.value;
   if (current.includes(id)) {
     trendSelectedIds.value = current.filter((item) => item !== id);
     syncTrendColors();
+    persistTrendSelection();
     return;
   }
   if (current.length >= MAX_TREND_CHANNELS) {
-    message.warning(
+    showNotice(
       `最多同时叠加 ${MAX_TREND_CHANNELS} 个通道，请先取消一个通道`,
     );
     return;
@@ -593,7 +723,7 @@ function toggleTrendChannel(id: number) {
   const units = distinctTrendUnits(trendDeviceChannels.value, current);
   const nextUnit = unitKey(entry.channel.unit);
   if (units.some((unit) => unit !== nextUnit)) {
-    message.warning(
+    showNotice(
       `只能叠加同一单位的通道（当前为 ${
         units[0] ?? '未指定单位'
       }），请先取消其他通道`,
@@ -602,6 +732,116 @@ function toggleTrendChannel(id: number) {
   }
   trendSelectedIds.value = [...current, id];
   syncTrendColors();
+  persistTrendSelection();
+}
+
+/**
+ * 默认选择：优先同一单位下前 2 个新鲜（未陈旧）数值通道；
+ * 若该设备没有新鲜通道，则退化为第一个数值通道所在单位的前 2 个数值通道。
+ * 数量不超过 MAX_TREND_CHANNELS。
+ */
+function pickDefaultTrendChannelIds(
+  channels: ChannelWithContext[],
+  now: number,
+): number[] {
+  if (channels.length === 0) return [];
+  const fresh = channels.filter(
+    (entry) =>
+      !isChannelStale(entry.channel, entry.latest, now) &&
+      isFiniteNumber(entry.channel.valueNum),
+  );
+  const base = fresh.length > 0 ? fresh : channels;
+  const first = base[0];
+  if (!first) return [];
+  const unit = unitKey(first.channel.unit);
+  const sameUnit = base.filter(
+    (entry) => unitKey(entry.channel.unit) === unit,
+  );
+  return sameUnit
+    .slice(0, Math.min(2, MAX_TREND_CHANNELS))
+    .map((entry) => entry.channel.id);
+}
+
+/**
+ * 校验 localStorage 中的通道选择：设备内通道必须全部存在、数量不超过上限、
+ * 且只能来自同一单位；任一条件不满足即整体丢弃，回退默认选择。
+ */
+function validateStoredTrendChannelIds(
+  channels: ChannelWithContext[],
+  ids: readonly number[],
+): number[] {
+  if (ids.length === 0 || ids.length > MAX_TREND_CHANNELS) return [];
+  const entries = ids.map((id) =>
+    channels.find((entry) => entry.channel.id === id),
+  );
+  if (entries.some((entry) => !entry)) return [];
+  const units = new Set(entries.map((entry) => unitKey(entry!.channel.unit)));
+  if (units.size !== 1) return [];
+  return [...ids];
+}
+
+function persistTrendSelection() {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(
+      TREND_SELECTION_STORAGE_KEY,
+      JSON.stringify({
+        channelIds: trendSelectedIds.value,
+        deviceId: trendDevice.value?.id,
+        window: trendWindow.value,
+      }),
+    );
+  } catch {
+    // localStorage 不可用（隐私模式/配额已满）时静默降级，不影响大屏运行
+  }
+}
+
+/** 通道列表变化后清理已不存在的“幽灵”通道选择 */
+function pruneTrendSelection() {
+  const valid = new Set(
+    trendDeviceChannels.value.map((entry) => entry.channel.id),
+  );
+  const next = trendSelectedIds.value.filter((id) => valid.has(id));
+  if (next.length !== trendSelectedIds.value.length) {
+    trendSelectedIds.value = next;
+    syncTrendColors();
+  }
+}
+
+/**
+ * 为某台设备应用一次趋势选择：优先恢复 localStorage 中的选择（仅当设备匹配），
+ * 否则使用默认选择。应用后立即持久化，作为下一次进入的“上次选择”。
+ */
+function applyTrendSelectionForDevice(
+  deviceId: number,
+  channels: ChannelWithContext[],
+) {
+  trendSelectionAppliedFor.value = deviceId;
+  let ids: number[] = [];
+  let source: 'default' | 'restored' | undefined;
+  if (
+    !storedTrendChannelsConsumed &&
+    initialTrendSelection.deviceId === deviceId
+  ) {
+    ids = validateStoredTrendChannelIds(
+      channels,
+      initialTrendSelection.channelIds,
+    );
+    if (ids.length > 0) source = 'restored';
+  }
+  storedTrendChannelsConsumed = true;
+  if (ids.length === 0) {
+    ids = pickDefaultTrendChannelIds(channels, statusNow.value);
+    if (ids.length > 0) source = 'default';
+  }
+  trendSelectedIds.value = ids;
+  trendSelectionSource.value = source;
+  syncTrendColors();
+  if (source === 'restored') {
+    // 恢复的用户选择优先于“首个在线设备”的自动跟随
+    trendDeviceTouchedByUser = true;
+  }
+  persistTrendSelection();
 }
 
 function scheduleTrendQuery(clear: boolean) {
@@ -654,6 +894,8 @@ async function queryTrend(clear: boolean) {
     trendSeries.value = series;
     trendSourceSummary.value = body?.sourceSummary ?? '';
     trendLastSuccessAt.value = Date.now();
+    // 趋势查询成功后补一次 sparkline 种子（已种子的设备内部直接返回）
+    void seedDeviceHistory(device.id);
   } catch (error) {
     if (seq !== trendQuerySeq) return;
     trendError.value = resolveApiErrorMessage(error, '趋势查询失败');
@@ -676,9 +918,41 @@ watch(
       trendDeviceId.value = undefined;
       return;
     }
-    if (list.some((device) => device.id === trendDeviceId.value)) return;
+    // 当前设备仍存在且启用则保留
+    const current = list.find((device) => device.id === trendDeviceId.value);
+    if (current && current.enabled !== 0) return;
+    // 否则尝试恢复上次设备（必须仍存在且启用）
+    const stored = list.find(
+      (device) =>
+        device.id === initialTrendSelection.deviceId && device.enabled !== 0,
+    );
+    if (stored) {
+      trendDeviceId.value = stored.id;
+      return;
+    }
     const first = list[0];
     if (first) trendDeviceId.value = first.id;
+  },
+  { immediate: true },
+);
+
+/**
+ * 默认设备应为首个在线设备：在最新值到达后再校正一次；
+ * 用户手动选择或恢复上次选择后不再自动跟随，避免抢走用户选择。
+ */
+watch(
+  deviceCards,
+  (cards) => {
+    if (trendDeviceTouchedByUser) return;
+    const current = cards.find(
+      (card) => card.device.id === trendDeviceId.value,
+    );
+    if (!current?.latest) return;
+    if (current.latest.device.online) return;
+    const online = cards.find(
+      (card) => card.device.enabled !== 0 && card.latest?.device.online,
+    );
+    if (online) trendDeviceId.value = online.device.id;
   },
   { immediate: true },
 );
@@ -692,31 +966,27 @@ watch(
     trendSeries.value = [];
     trendSourceSummary.value = '';
     trendError.value = undefined;
-    if (id !== undefined) trendInitialized.delete(id);
+    trendSelectionAppliedFor.value = undefined;
+    trendSelectionSource.value = undefined;
   },
 );
 
 watch(
-  trendDeviceChannels,
-  (channels) => {
-    if (!hasTrendAccess.value) return;
-    const deviceId = trendDevice.value?.id;
-    if (deviceId === undefined) return;
-    const validIds = new Set(channels.map((entry) => entry.channel.id));
-    const nextSelected = trendSelectedIds.value.filter((id) =>
-      validIds.has(id),
-    );
-    if (nextSelected.length !== trendSelectedIds.value.length) {
-      trendSelectedIds.value = nextSelected;
-      syncTrendColors();
+  [
+    () => trendDevice.value?.id,
+    trendDeviceChannels,
+    trendDeviceChannelsReady,
+  ],
+  ([deviceId, channels, ready]) => {
+    if (!hasTrendAccess.value || deviceId === undefined) return;
+    if (trendSelectionAppliedFor.value !== deviceId) {
+      // 首次进入时等待该设备通道列表加载完成，避免在空列表上做选择
+      if (!ready) return;
+      applyTrendSelectionForDevice(deviceId, channels);
+      return;
     }
-    if (trendInitialized.has(deviceId)) return;
-    trendInitialized.add(deviceId);
-    const first = channels[0];
-    if (first) {
-      trendSelectedIds.value = [first.channel.id];
-      syncTrendColors();
-    }
+    // 已应用过选择的设备：latest 轮询后清理不存在的通道
+    pruneTrendSelection();
   },
   { immediate: true },
 );
@@ -728,6 +998,174 @@ watch(
   },
   { deep: true },
 );
+
+// ---------------- sparkline 历史种子 ----------------
+
+/** 已完成种子的通道；新出现的通道会再次纳入种子范围 */
+const historySeedDoneChannels = new Set<number>();
+
+function acquireHistorySeedSlot(): Promise<void> {
+  if (historySeedActive < HISTORY_SEED_CONCURRENCY) {
+    historySeedActive += 1;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    historySeedQueue.push(resolve);
+  });
+}
+
+function releaseHistorySeedSlot() {
+  const next = historySeedQueue.shift();
+  if (next) {
+    next();
+    return;
+  }
+  historySeedActive -= 1;
+}
+
+function numericChannelsOf(
+  latest: CollectorApi.DashboardLatest | undefined,
+): CollectorApi.DashboardChannel[] {
+  if (!latest) return [];
+  return latest.sensors
+    .flatMap((sensor) => sensor.channels)
+    .filter((channel) => channel.valueKind !== 'enum');
+}
+
+/**
+ * 用真实历史给 sparkline 做种子：
+ * - 每台设备只补尚未种子的数值通道，按 8 个通道一批、全局并发 ≤3；
+ * - 成功后写入最近 30 分钟真实点并按通道数抽稀到 40–60 点；
+ * - 失败时保留上次成功历史，仅标记 stale，同一设备 60 秒内最多重试一次；
+ * - 组件卸载或结果过期时丢弃，不写入残余数据。
+ */
+async function seedDeviceHistory(deviceId: number) {
+  if (destroyed || document.hidden) return;
+  if (historySeedingDevices.has(deviceId)) return;
+  const latest = latestMap.value[deviceId];
+  const numeric = numericChannelsOf(latest);
+  if (numeric.length === 0) return;
+  const pending = numeric.filter(
+    (channel) => !historySeedDoneChannels.has(channel.id),
+  );
+  if (pending.length === 0) return;
+  const lastAttempt = historySeedAttemptAt.get(deviceId);
+  if (
+    lastAttempt !== undefined &&
+    Date.now() - lastAttempt < HISTORY_SEED_RETRY_MS
+  ) {
+    return;
+  }
+
+  const generation = historySeedGeneration;
+  const capacity = historyCapacityFor(numeric.length);
+  const to = Date.now();
+  const from = to - HISTORY_SEED_WINDOW_SECONDS * 1000;
+  const chunks: CollectorApi.DashboardChannel[][] = [];
+  for (let index = 0; index < pending.length; index += HISTORY_SEED_CHUNK_SIZE) {
+    chunks.push(pending.slice(index, index + HISTORY_SEED_CHUNK_SIZE));
+  }
+
+  historySeedingDevices.add(deviceId);
+  historySeedAttemptAt.set(deviceId, Date.now());
+  try {
+    const results = await Promise.all(
+      chunks.map(async (chunk) => {
+        await acquireHistorySeedSlot();
+        try {
+          const body = await getTrendSeries({
+            channelIds: chunk.map((channel) => channel.id),
+            deviceId,
+            from,
+            granularity: 'auto',
+            includeRaw: false,
+            to,
+          });
+          if (generation !== historySeedGeneration || destroyed) {
+            return { chunk, failed: false, series: [] as CollectorApi.TrendSeries[] };
+          }
+          return {
+            chunk,
+            failed: false,
+            series: (body?.series ?? []).filter(
+              (item) => item.kind !== 'raw',
+            ),
+          };
+        } catch {
+          return {
+            chunk,
+            failed: true,
+            series: [] as CollectorApi.TrendSeries[],
+          };
+        } finally {
+          releaseHistorySeedSlot();
+        }
+      }),
+    );
+    if (generation !== historySeedGeneration || destroyed) return;
+    // 设备已从列表移除（或不再有最新值）时丢弃这批种子结果
+    if (
+      !devices.value.some((device) => device.id === deviceId) ||
+      !latestMap.value[deviceId]
+    ) {
+      return;
+    }
+
+    const nextHistory = { ...historyMap.value };
+    const nextStale = { ...historyStaleMap.value };
+    let historyChanged = false;
+    let staleChanged = false;
+    let failedChunks = 0;
+    for (const result of results) {
+      if (result.failed) {
+        failedChunks += 1;
+        for (const channel of result.chunk) {
+          // 保留上次成功历史，只做视觉弱化
+          nextStale[channel.id] = true;
+        }
+        staleChanged = true;
+        continue;
+      }
+      for (const channel of result.chunk) {
+        historySeedDoneChannels.add(channel.id);
+        if (nextStale[channel.id]) {
+          nextStale[channel.id] = false;
+          staleChanged = true;
+        }
+      }
+      for (const series of result.series) {
+        const points = downsampleHistoryPoints(
+          extractValuePoints(series).sort((left, right) => left.t - right.t),
+          capacity,
+        );
+        if (points.length === 0) continue;
+        nextHistory[series.channelId] = points;
+        historyChanged = true;
+      }
+    }
+    if (historyChanged) historyMap.value = nextHistory;
+    if (staleChanged) historyStaleMap.value = nextStale;
+    // 全部批次成功才视为完成；部分失败留待 60 秒后再补
+    if (failedChunks > 0) {
+      historySeedAttemptAt.set(deviceId, Date.now());
+    }
+  } finally {
+    historySeedingDevices.delete(deviceId);
+  }
+}
+
+/** 设备离线恢复在线后重新取历史，避免陈旧阈值/缺口一直留在卡片上 */
+function resetDeviceHistorySeed(deviceId: number) {
+  const latest = latestMap.value[deviceId];
+  for (const channel of numericChannelsOf(latest)) {
+    historySeedDoneChannels.delete(channel.id);
+  }
+  const nextStale = { ...historyStaleMap.value };
+  for (const channel of numericChannelsOf(latest)) {
+    if (nextStale[channel.id]) nextStale[channel.id] = false;
+  }
+  historyStaleMap.value = nextStale;
+}
 
 // ---------------- 轮询 ----------------
 
@@ -854,11 +1292,15 @@ async function refreshAll() {
           const nextHistory: Record<number, readonly HistoryPoint[]> = {
             ...historyMap.value,
           };
+          const updatedDeviceIds: number[] = [];
           let historyChanged = false;
           devices.value.forEach((device, index) => {
             const result = results[index];
             if (result?.status === 'fulfilled' && result.value) {
               nextLatest[device.id] = result.value;
+              updatedDeviceIds.push(device.id);
+              const numericCount = numericChannelsOf(result.value).length;
+              const capacity = historyCapacityFor(numericCount);
               // 用最新值累积 sparkline，不额外查询历史接口
               for (const sensor of result.value.sensors) {
                 for (const channel of sensor.channels) {
@@ -874,15 +1316,22 @@ async function refreshAll() {
                   const current = nextHistory[channel.id];
                   const last = current?.[current.length - 1];
                   if (last && sampleTime <= last.t) continue;
-                  const appended = appendHistoryPoint(current, {
-                    t: sampleTime,
-                    v: valueNum,
-                  });
+                  const appended = appendHistoryPoint(
+                    current,
+                    { t: sampleTime, v: valueNum },
+                    capacity,
+                  );
                   if (!appended) continue;
                   nextHistory[channel.id] = appended;
                   historyChanged = true;
                 }
               }
+              // 离线→在线时重新取一次历史，补齐离线期间的缺口
+              const onlineNow = result.value.device.online;
+              if (deviceOnlinePrevious[device.id] === false && onlineNow) {
+                resetDeviceHistorySeed(device.id);
+              }
+              deviceOnlinePrevious[device.id] = onlineNow;
             } else {
               nextErrors[device.id] = resolveApiErrorMessage(
                 result?.status === 'rejected' ? result.reason : undefined,
@@ -897,6 +1346,10 @@ async function refreshAll() {
           deviceErrors.value =
             Object.keys(nextErrors).length > 0 ? nextErrors : {};
           if (historyChanged) historyMap.value = nextHistory;
+          // 首屏/恢复在线后用真实历史做 sparkline 种子；已完成的通道内部直接返回
+          for (const deviceId of updatedDeviceIds) {
+            void seedDeviceHistory(deviceId);
+          }
         })(),
       );
     }
@@ -941,7 +1394,7 @@ async function toggleFullscreen() {
       await screenRoot.value.requestFullscreen();
     }
   } catch {
-    message.warning('全屏切换失败，请按 F11 手动切换全屏');
+    showNotice('全屏切换失败，请按 F11 手动切换全屏');
   }
 }
 
@@ -980,10 +1433,13 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   destroyed = true;
+  // 让在途的 sparkline 种子结果失效，避免卸载后写入状态
+  historySeedGeneration += 1;
   clearPollTimer();
   if (clockTimer !== undefined) clearInterval(clockTimer);
   if (trendRefreshTimer !== undefined) clearInterval(trendRefreshTimer);
   if (trendDebounceTimer !== undefined) clearTimeout(trendDebounceTimer);
+  if (noticeTimer !== undefined) clearTimeout(noticeTimer);
   document.removeEventListener('visibilitychange', handleVisibilityChange);
   document.removeEventListener('fullscreenchange', handleFullscreenChange);
   if (document.fullscreenElement) {
@@ -993,13 +1449,15 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div
-    ref="screenRoot"
-    class="screen-root"
-    :class="{ 'screen-root--standalone': isStandaloneScreen }"
-    :style="rootStyle"
-  >
-    <header class="screen-header">
+  <!-- 全屏时把所有 antdv 浮层容器切到 screenRoot，避免 Tooltip/Drawer 被全屏元素遮挡 -->
+  <ConfigProvider :get-popup-container="resolvePopupContainer">
+    <div
+      ref="screenRoot"
+      class="screen-root"
+      :class="{ 'screen-root--standalone': isStandaloneScreen }"
+      :style="rootStyle"
+    >
+      <header class="screen-header">
       <div class="brand">
         <div class="brand-title-row">
           <h1>采集器运行大屏</h1>
@@ -1114,7 +1572,7 @@ onBeforeUnmount(() => {
                   class="tab-btn"
                   :class="{ 'tab-btn--active': trendWindow === item.value }"
                   :aria-pressed="trendWindow === item.value"
-                  @click="trendWindow = item.value"
+                  @click="selectTrendWindow(item.value)"
                 >
                   {{ item.label }}
                 </button>
@@ -1249,6 +1707,7 @@ onBeforeUnmount(() => {
               :has-dashboard="hasDashboardAccess"
               :has-device="hasDeviceAccess"
               :history="historyMap"
+              :history-stale="historyStaleMap"
               :now="statusNow"
               :quality-stats="qualityStats"
               :thresholds="thresholds"
@@ -1279,17 +1738,24 @@ onBeforeUnmount(() => {
       </span>
     </footer>
 
-    <ChannelDetailDrawer
-      v-model:open="detailOpen"
-      :alarm="detailAlarm"
-      :device-poll-interval-ms="detailPollInterval"
-      :has-trend-access="hasTrendAccess"
-      :now="statusNow"
-      :range-seconds="trendWindowSeconds"
-      :target="detailSelection"
-      :threshold="detailThreshold"
-    />
-  </div>
+      <!-- 站内轻提示：不依赖页面级 message，全屏时仍位于 screenRoot 内 -->
+      <div v-if="notice" :key="notice.id" class="screen-toast" role="status">
+        {{ notice.text }}
+      </div>
+
+      <ChannelDetailDrawer
+        v-model:open="detailOpen"
+        :alarm="detailAlarm"
+        :container="overlayContainer"
+        :device-poll-interval-ms="detailPollInterval"
+        :has-trend-access="hasTrendAccess"
+        :now="statusNow"
+        :range-seconds="trendWindowSeconds"
+        :target="detailSelection"
+        :threshold="detailThreshold"
+      />
+    </div>
+  </ConfigProvider>
 </template>
 
 <style scoped>
@@ -1444,6 +1910,24 @@ onBeforeUnmount(() => {
   background: rgb(244 63 94 / 9%);
   border: 1px solid rgb(244 63 94 / 32%);
   border-radius: 6px;
+}
+
+/* 轻提示固定在视口底部；全屏与非全屏都落在 screenRoot 内且不被裁剪 */
+.screen-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  z-index: 1100;
+  max-width: min(560px, calc(100vw - 32px));
+  padding: 7px 14px;
+  font-size: 12px;
+  color: #fde68a;
+  pointer-events: none;
+  background: rgb(7 12 24 / 92%);
+  border: 1px solid rgb(251 191 36 / 42%);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+  transform: translateX(-50%);
 }
 
 .screen-body {

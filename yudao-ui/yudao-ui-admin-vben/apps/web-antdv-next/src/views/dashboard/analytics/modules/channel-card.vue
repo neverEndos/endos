@@ -28,6 +28,8 @@ const props = defineProps<{
   channel: CollectorApi.DashboardChannel;
   device: CollectorApi.DeviceSimple;
   history: readonly HistoryPoint[];
+  /** 历史种子加载失败/过期：曲线弱化，但保留上次成功数据 */
+  historyStale?: boolean;
   /** 通道在传感器分组内的序号，用于 CH-01 样式编号 */
   index: number;
   latest: CollectorApi.DashboardLatest;
@@ -76,7 +78,10 @@ const sparkColor = computed(() => {
 });
 
 const sparkLabel = computed(
-  () => `${props.channel.name} 最近 ${props.history.length} 个采样值的迷你趋势`,
+  () =>
+    `${props.channel.name} 最近 ${props.history.length} 个采样值的迷你趋势${
+      props.historyStale ? '（历史可能不完整）' : ''
+    }`,
 );
 </script>
 
@@ -146,6 +151,7 @@ const sparkLabel = computed(
         :color="sparkColor"
         :label="sparkLabel"
         :points="history"
+        :stale="historyStale"
       />
       <span v-else class="card-enum-hint">枚举通道 · 无数值曲线</span>
 

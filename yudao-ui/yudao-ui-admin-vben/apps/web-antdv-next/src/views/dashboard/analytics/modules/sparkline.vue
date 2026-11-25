@@ -15,16 +15,19 @@ const props = withDefaults(
     /** 供屏幕阅读器说明曲线来源 */
     label: string;
     points: readonly HistoryPoint[];
+    /** 历史种子加载失败或过期时弱化曲线，提示数据可能不完整 */
+    stale?: boolean;
   }>(),
   {
     color: '#2dd4bf',
     height: 28,
+    stale: false,
   },
 );
 
 /**
  * 每个 sparkline 只用一段轻量 SVG 路径，不创建 ECharts 实例；
- * 少于两个采样点时画虚线基线，不伪造趋势。
+ * 少于两个采样点时只展示占位文字，不画一条伪造的短趋势线。
  */
 const geometry = computed(() =>
   sparklineGeometry(
@@ -34,11 +37,16 @@ const geometry = computed(() =>
     3,
   ),
 );
+
+const placeholderText = computed(() =>
+  props.stale ? '历史加载失败' : '暂无历史',
+);
 </script>
 
 <template>
   <svg
     class="sparkline"
+    :class="{ 'sparkline--stale': stale }"
     data-testid="channel-sparkline"
     :aria-label="label"
     :height="height"
@@ -50,7 +58,15 @@ const geometry = computed(() =>
       <path class="spark-area" :d="geometry.area" :style="{ fill: color }" />
       <path class="spark-line" :d="geometry.path" :style="{ stroke: color }" />
     </template>
-    <line v-else class="spark-baseline" x1="2" x2="98" y1="14" y2="14" />
+    <text
+      v-else
+      class="spark-empty"
+      text-anchor="middle"
+      :x="50"
+      :y="height / 2 + 3"
+    >
+      {{ placeholderText }}
+    </text>
   </svg>
 </template>
 
@@ -59,6 +75,10 @@ const geometry = computed(() =>
   display: block;
   width: 100%;
   overflow: visible;
+}
+
+.sparkline--stale {
+  opacity: 0.55;
 }
 
 .spark-area {
@@ -71,10 +91,9 @@ const geometry = computed(() =>
   transition: stroke 0.3s ease;
 }
 
-.spark-baseline {
-  stroke: rgb(148 163 184 / 28%);
-  stroke-width: 1;
-  stroke-dasharray: 3 4;
+.spark-empty {
+  font-size: 9px;
+  fill: rgb(148 163 184 / 65%);
 }
 
 @media (prefers-reduced-motion: reduce) {

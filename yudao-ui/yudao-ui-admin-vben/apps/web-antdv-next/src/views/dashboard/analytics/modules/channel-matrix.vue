@@ -26,6 +26,8 @@ const props = defineProps<{
   hasDashboard: boolean;
   hasDevice: boolean;
   history: Record<number, readonly HistoryPoint[]>;
+  /** 历史种子失败/过期标记：曲线弱化但不清空 */
+  historyStale: Record<number, boolean>;
   now: number;
   qualityStats: QualityStats;
   thresholds: Record<number, CollectorApi.ThresholdMatrixChannel>;
@@ -251,6 +253,7 @@ function handleSelect(
                 :channel="channel"
                 :device="deviceCard.device"
                 :history="history[channel.id] ?? []"
+                :history-stale="historyStale[channel.id] ?? false"
                 :index="channelIndex"
                 :latest="deviceCard.latest"
                 :now="now"

@@ -270,29 +270,70 @@ export function computeAlarmLevelStats(
   return stats;
 }
 
-/** 本地滚动趋势缓冲：轮询最新值即可积累 sparkline，不额外查询历史接口 */
+/** 本地滚动趋势缓冲：首屏用真实历史做种子，轮询只在尾部追加并滑动窗口 */
 export interface HistoryPoint {
   t: number;
   v: number;
 }
 
-export const HISTORY_CAPACITY = 24;
+/** sparkline 默认容量（未按设备通道数自适应时的上限） */
+export const HISTORY_CAPACITY = 60;
+
+/** 种子历史固定取最近 30 分钟，与轮询缓冲拼接成滚动窗口 */
+export const HISTORY_SEED_WINDOW_SECONDS = 30 * 60;
+
+/**
+ * 按设备数值通道数自适应 sparkline 容量：通道越多单卡越窄，
+ * 减少点数以控制种子请求体积与 SVG 路径长度。上限 60、下限 40。
+ */
+export function historyCapacityFor(channelCount: number): number {
+  const count = Math.max(1, Math.floor(channelCount));
+  if (count <= 8) return 60;
+  if (count <= 16) return 50;
+  return 40;
+}
 
 /**
  * 追加一个采样点；只有采样时间前进时才写入，避免同一数据在多次轮询中被重复计入。
- * 返回原数组表示无变化，调用方可跳过响应式替换。
+ * 超出容量时从头部移出，形成滑动窗口。返回原数组表示无变化。
  */
 export function appendHistoryPoint(
   history: readonly HistoryPoint[] | undefined,
   point: HistoryPoint,
+  capacity = HISTORY_CAPACITY,
 ): readonly HistoryPoint[] | undefined {
   const last = history?.[history.length - 1];
-  if (last && last.t === point.t) return history;
+  if (last && point.t <= last.t) return history;
   const next = [...(history ?? []), point];
-  if (next.length > HISTORY_CAPACITY) {
-    next.splice(0, next.length - HISTORY_CAPACITY);
+  if (next.length > capacity) {
+    next.splice(0, next.length - capacity);
   }
   return next;
+}
+
+/**
+ * 等距抽稀真实历史点：保留首尾并均匀取点，不做插值，
+ * 保证 sparkline 仍只展示接口返回的真实采样值。
+ */
+export function downsampleHistoryPoints(
+  points: readonly HistoryPoint[],
+  max: number,
+): HistoryPoint[] {
+  if (points.length === 0 || max <= 0) return [];
+  if (points.length <= max) return [...points];
+  if (max === 1) return [points[points.length - 1]!];
+  const result: HistoryPoint[] = [];
+  const step = (points.length - 1) / (max - 1);
+  for (let index = 0; index < max; index += 1) {
+    const point = points[Math.round(index * step)];
+    if (point) result.push(point);
+  }
+  // 抽稀后末点可能与倒数第二个重合，强制以最新真实点收尾
+  const last = points[points.length - 1]!;
+  if (result[result.length - 1]?.t !== last.t) {
+    result[result.length - 1] = last;
+  }
+  return result;
 }
 
 /** 趋势序列按单位分组时的单位键；空单位归入“未指定单位” */
@@ -373,6 +414,387 @@ export function describeThresholds(
   return lines
     .map((line) => `${line.label} ${formatNumeric(line.value)}`)
     .join(' / ');
+}
+
+/** 参与区间分析的单档阈值；direction 决定越限判定方向 */
+export interface ThresholdRule {
+  color: string;
+  direction: 'high' | 'low';
+  key: string;
+  label: string;
+  value: number;
+}
+
+/** 只提取“已启用且有值”的阈值档位；未启用的档位不参与越限统计 */
+export function enabledThresholdRules(
+  channel?: CollectorApi.ThresholdMatrixChannel | null,
+): ThresholdRule[] {
+  if (!channel) return [];
+  const rules: ThresholdRule[] = [];
+  const push = (
+    value: null | number | undefined,
+    enabled: number | undefined,
+    key: string,
+    label: string,
+    direction: 'high' | 'low',
+    color: string,
+  ) => {
+    if (!enabled || !isFiniteNumber(value)) return;
+    rules.push({ color, direction, key, label, value });
+  };
+  push(
+    channel.thresholdLowError,
+    channel.thresholdLowErrorEnabled,
+    'lowError',
+    '低异常',
+    'low',
+    SCREEN_COLORS.error,
+  );
+  push(
+    channel.thresholdLowWarning,
+    channel.thresholdLowWarningEnabled,
+    'lowWarning',
+    '低预警',
+    'low',
+    SCREEN_COLORS.warning,
+  );
+  push(
+    channel.thresholdHighWarning,
+    channel.thresholdHighWarningEnabled,
+    'highWarning',
+    '高预警',
+    'high',
+    SCREEN_COLORS.warning,
+  );
+  push(
+    channel.thresholdHighError,
+    channel.thresholdHighErrorEnabled,
+    'highError',
+    '高异常',
+    'high',
+    SCREEN_COLORS.error,
+  );
+  return rules;
+}
+
+/** 区间分析使用的有效点：优先桶均值，同时保留桶内 min/max 用于峰谷时刻 */
+interface AnalysisPoint {
+  count?: number;
+  max?: number;
+  min?: number;
+  t: number;
+  v: number;
+}
+
+function validAnalysisPoints(
+  series?: CollectorApi.TrendSeries,
+): AnalysisPoint[] {
+  if (!series) return [];
+  const result: AnalysisPoint[] = [];
+  for (const point of series.points) {
+    const value = isFiniteNumber(point.avg) ? point.avg : point.value;
+    if (!isFiniteNumber(value) || !isFiniteNumber(point.t)) continue;
+    result.push({
+      count: isFiniteNumber(point.count) ? point.count : undefined,
+      max: isFiniteNumber(point.max) ? point.max : undefined,
+      min: isFiniteNumber(point.min) ? point.min : undefined,
+      t: point.t,
+      v: value,
+    });
+  }
+  return result.sort((left, right) => left.t - right.t);
+}
+
+/** 桶宽缺失时按相邻点时间间隔中位数估算，并在 UI 注明“估算” */
+function estimateBucketSeconds(points: readonly AnalysisPoint[]): number {
+  if (points.length < 2) return 1;
+  const deltas: number[] = [];
+  for (let index = 1; index < points.length; index += 1) {
+    const delta = points[index]!.t - points[index - 1]!.t;
+    if (delta > 0) deltas.push(delta);
+  }
+  if (deltas.length === 0) return 1;
+  deltas.sort((left, right) => left - right);
+  const median = deltas[Math.floor(deltas.length / 2)]!;
+  return Math.max(1, Math.round(median / 1000));
+}
+
+export interface IntervalThresholdStat {
+  buckets: number;
+  color: string;
+  direction: 'high' | 'low';
+  key: string;
+  label: string;
+  /** 连续越限区段数；相邻越限桶只算一次进入 */
+  occurrences: number;
+  /** 越限时长占时间窗的比例（0~100） */
+  percent: number;
+  seconds: number;
+  value: number;
+}
+
+export type IntervalTrend = '上升' | '下降' | '平稳' | '样本不足';
+
+export interface IntervalAnalysis {
+  amplitude: number;
+  /** 桶宽（秒），优先取接口返回值 */
+  bucketSeconds: number;
+  /** true 表示桶宽由相邻点间隔估算，不是接口返回 */
+  bucketEstimated: boolean;
+  changeRate?: number;
+  expectedBuckets: number;
+  first: number;
+  last: number;
+  latestVsFirst: number;
+  latestVsFirstPercent?: number;
+  latestVsMean: number;
+  latestVsMeanPercent?: number;
+  maxTime: number;
+  maxValue: number;
+  mean: number;
+  minTime: number;
+  minValue: number;
+  missingRate: number;
+  thresholds: IntervalThresholdStat[];
+  trend: IntervalTrend;
+  validBuckets: number;
+  validSamples?: number;
+  windowSeconds: number;
+}
+
+/**
+ * 区间聚合分析（纯函数）：
+ * - 均值按桶内有效样本数（count）加权，count 缺失时退化为等权；
+ * - 缺测率 = 1 - 有效桶数 / 期望桶数（期望桶数 = ⌈时间窗 / 桶宽⌉）；
+ * - 越限按桶判定，时长 = 越限桶数 × 桶宽；连续越限区段计一次“越限次数”；
+ * - 趋势用首三分之一与末三分之一均值比较，相对差异 ≥5% 才判定上升/下降。
+ */
+export function analyzeInterval(
+  series: CollectorApi.TrendSeries | undefined,
+  from: number,
+  to: number,
+  rules: readonly ThresholdRule[],
+): IntervalAnalysis | undefined {
+  const points = validAnalysisPoints(series);
+  if (points.length === 0) return undefined;
+  const firstPoint = points[0]!;
+  const lastPoint = points[points.length - 1]!;
+  const reportedBucket = isFiniteNumber(series?.bucketSeconds)
+    ? series.bucketSeconds
+    : 0;
+  const bucketEstimated = reportedBucket <= 0;
+  const bucketSeconds = bucketEstimated
+    ? estimateBucketSeconds(points)
+    : reportedBucket;
+  const rawWindowSeconds =
+    isFiniteNumber(from) && isFiniteNumber(to) && to > from
+      ? (to - from) / 1000
+      : (lastPoint.t - firstPoint.t) / 1000 + bucketSeconds;
+  const windowSeconds = Math.max(bucketSeconds, rawWindowSeconds);
+  const expectedBuckets = Math.max(
+    points.length,
+    Math.ceil(windowSeconds / bucketSeconds),
+  );
+  const missingRate = Math.max(
+    0,
+    Math.min(1, 1 - points.length / expectedBuckets),
+  );
+
+  let maxValue = Number.NEGATIVE_INFINITY;
+  let maxTime = firstPoint.t;
+  let minValue = Number.POSITIVE_INFINITY;
+  let minTime = firstPoint.t;
+  let weightedSum = 0;
+  let weightTotal = 0;
+  let validSamples = 0;
+  let hasCount = false;
+  for (const point of points) {
+    const peak = point.max ?? point.v;
+    if (peak > maxValue) {
+      maxValue = peak;
+      maxTime = point.t;
+    }
+    const trough = point.min ?? point.v;
+    if (trough < minValue) {
+      minValue = trough;
+      minTime = point.t;
+    }
+    const weight = isFiniteNumber(point.count) && point.count > 0 ? point.count : 1;
+    if (isFiniteNumber(point.count) && point.count > 0) {
+      validSamples += point.count;
+      hasCount = true;
+    }
+    weightedSum += point.v * weight;
+    weightTotal += weight;
+  }
+  const mean = weightTotal > 0 ? weightedSum / weightTotal : firstPoint.v;
+  const first = firstPoint.v;
+  const last = lastPoint.v;
+  const latestVsMean = last - mean;
+  const latestVsMeanPercent =
+    mean === 0 ? undefined : (latestVsMean / Math.abs(mean)) * 100;
+  const latestVsFirst = last - first;
+  const latestVsFirstPercent =
+    first === 0 ? undefined : (latestVsFirst / Math.abs(first)) * 100;
+
+  // 首/末三分之一均值比较；样本不足 6 个桶时不做趋势判定
+  let trend: IntervalTrend = '样本不足';
+  if (points.length >= 6) {
+    const third = Math.floor(points.length / 3);
+    const head = points.slice(0, third);
+    const tail = points.slice(-third);
+    const headMean =
+      head.reduce((sum, point) => sum + point.v, 0) / head.length;
+    const tailMean =
+      tail.reduce((sum, point) => sum + point.v, 0) / tail.length;
+    const scale = Math.max(Math.abs(headMean), Math.abs(tailMean));
+    const relative = scale > 0 ? (tailMean - headMean) / scale : 0;
+    if (relative >= 0.05) trend = '上升';
+    else if (relative <= -0.05) trend = '下降';
+    else trend = '平稳';
+  }
+
+  const thresholds: IntervalThresholdStat[] = rules.map((rule) => {
+    let buckets = 0;
+    let occurrences = 0;
+    let inRun = false;
+    for (const point of points) {
+      const violated =
+        rule.direction === 'high'
+          ? point.v > rule.value
+          : point.v < rule.value;
+      if (violated) {
+        buckets += 1;
+        if (!inRun) occurrences += 1;
+        inRun = true;
+      } else {
+        inRun = false;
+      }
+    }
+    const seconds = buckets * bucketSeconds;
+    return {
+      buckets,
+      color: rule.color,
+      direction: rule.direction,
+      key: rule.key,
+      label: rule.label,
+      occurrences,
+      percent: windowSeconds > 0 ? (seconds / windowSeconds) * 100 : 0,
+      seconds,
+      value: rule.value,
+    };
+  });
+
+  return {
+    amplitude: maxValue - minValue,
+    bucketEstimated,
+    bucketSeconds,
+    changeRate: latestVsFirstPercent,
+    expectedBuckets,
+    first,
+    last,
+    latestVsFirst,
+    latestVsFirstPercent,
+    latestVsMean,
+    latestVsMeanPercent,
+    maxTime,
+    maxValue,
+    mean,
+    minTime,
+    minValue,
+    missingRate,
+    thresholds,
+    trend,
+    validBuckets: points.length,
+    validSamples: hasCount ? validSamples : undefined,
+    windowSeconds,
+  };
+}
+
+export interface EnumDistributionEntry {
+  code: number;
+  count: number;
+  label: string;
+  percent: number;
+}
+
+export interface EnumIntervalAnalysis {
+  bucketSeconds: number;
+  entries: EnumDistributionEntry[];
+  lastChangeTime?: number;
+  latestCode?: number;
+  total: number;
+}
+
+/**
+ * 枚举通道的区间分布：聚合接口只返回桶均值，无法还原精确文本采样，
+ * 因此按桶均值四舍五入归并为枚举码，并以 count 作为权重近似占比；
+ * 当前枚举值文本仅用于标注最新码，不做逐桶文本映射。
+ */
+export function analyzeEnumInterval(
+  series: CollectorApi.TrendSeries | undefined,
+  channel?: CollectorApi.DashboardChannel,
+): EnumIntervalAnalysis | undefined {
+  const points = validAnalysisPoints(series);
+  if (points.length === 0) return undefined;
+  const bucketSeconds = isFiniteNumber(series?.bucketSeconds)
+    ? series.bucketSeconds
+    : estimateBucketSeconds(points);
+  const weights = new Map<number, number>();
+  let lastChangeTime: number | undefined;
+  let previousCode: number | undefined;
+  for (const point of points) {
+    const code = Math.round(point.v);
+    const weight = isFiniteNumber(point.count) && point.count > 0 ? point.count : 1;
+    weights.set(code, (weights.get(code) ?? 0) + weight);
+    if (previousCode !== undefined && code !== previousCode) {
+      lastChangeTime = point.t;
+    }
+    previousCode = code;
+  }
+  const total = [...weights.values()].reduce((sum, value) => sum + value, 0);
+  if (total <= 0) return undefined;
+  const currentCode = isFiniteNumber(channel?.valueNum)
+    ? Math.round(channel.valueNum)
+    : undefined;
+  const entries: EnumDistributionEntry[] = [...weights.entries()]
+    .map(([code, count]) => ({
+      code,
+      count,
+      label:
+        currentCode === code && channel?.valueText?.trim()
+          ? `${channel.valueText.trim()}（码 ${code}）`
+          : `码 ${code}`,
+      percent: (count / total) * 100,
+    }))
+    .sort((left, right) => right.count - left.count || left.code - right.code);
+  return {
+    bucketSeconds,
+    entries,
+    lastChangeTime,
+    latestCode: currentCode ?? Math.round(points[points.length - 1]!.v),
+    total,
+  };
+}
+
+/** 越限时长等绝对秒数的中文展示；7 天区间可能出现天级时长 */
+export function formatIntervalDuration(totalSeconds: number): string {
+  if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) return '0 秒';
+  const seconds = Math.round(totalSeconds);
+  const days = Math.floor(seconds / 86_400);
+  const hours = Math.floor((seconds % 86_400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  if (days > 0) return `${days} 天 ${hours} 小时`;
+  if (hours > 0) return `${hours} 小时 ${minutes} 分`;
+  if (minutes > 0) return `${minutes} 分 ${secs} 秒`;
+  return `${secs} 秒`;
+}
+
+/** 百分比展示：保留一位小数并去掉末尾 0；非法值展示 -- */
+export function formatPercent(value?: null | number, digits = 1): string {
+  if (!isFiniteNumber(value)) return '--';
+  return `${Number.parseFloat(value.toFixed(digits))}%`;
 }
 
 /** 统一按 Asia/Shanghai 格式化短时间，禁止依赖浏览器本地时区 */
