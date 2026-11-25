@@ -1033,14 +1033,33 @@ function numericChannelsOf(
 }
 
 /**
+ * 判断错误是否为“无趋势权限”：后端权限不足返回 HTTP 200 + body {code: 403}，
+ * 或网关层直接返回 HTTP 403；403 属权限问题，不应污染 sparkline 历史状态。
+ */
+function isTrendPermissionError(error: unknown): boolean {
+  const candidate = error as
+    | undefined
+    | { data?: { code?: number }; response?: { status?: number } };
+  return (
+    candidate?.data?.code === 403 || candidate?.response?.status === 403
+  );
+}
+
+/**
  * 用真实历史给 sparkline 做种子：
+ * - 需要 collector:trend:query 权限；无权限时不发请求、不置 stale、
+ *   不清空轮询累积的历史，保持纯轮询累积（sparkline 仍可展示实时历史）；
  * - 每台设备只补尚未种子的数值通道，按 8 个通道一批、全局并发 ≤3；
  * - 成功后写入最近 30 分钟真实点并按通道数抽稀到 40–60 点；
  * - 失败时保留上次成功历史，仅标记 stale，同一设备 60 秒内最多重试一次；
+ *   403（权限）不标记 stale，避免把权限问题误报为“历史加载失败”；
  * - 组件卸载或结果过期时丢弃，不写入残余数据。
  */
 async function seedDeviceHistory(deviceId: number) {
   if (destroyed || document.hidden) return;
+  // 无趋势权限时直接返回：不发请求（避免每轮轮询产生 403 噪声与全局限流提示），
+  // 保持纯轮询累积，也不把通道标记为 stale
+  if (!hasTrendAccess.value) return;
   if (historySeedingDevices.has(deviceId)) return;
   const latest = latestMap.value[deviceId];
   const numeric = numericChannelsOf(latest);
@@ -1082,19 +1101,26 @@ async function seedDeviceHistory(deviceId: number) {
             to,
           });
           if (generation !== historySeedGeneration || destroyed) {
-            return { chunk, failed: false, series: [] as CollectorApi.TrendSeries[] };
+            return {
+              chunk,
+              failed: false,
+              forbidden: false,
+              series: [] as CollectorApi.TrendSeries[],
+            };
           }
           return {
             chunk,
             failed: false,
+            forbidden: false,
             series: (body?.series ?? []).filter(
               (item) => item.kind !== 'raw',
             ),
           };
-        } catch {
+        } catch (error) {
           return {
             chunk,
             failed: true,
+            forbidden: isTrendPermissionError(error),
             series: [] as CollectorApi.TrendSeries[],
           };
         } finally {
@@ -1119,6 +1145,9 @@ async function seedDeviceHistory(deviceId: number) {
     for (const result of results) {
       if (result.failed) {
         failedChunks += 1;
+        // 403 属权限问题而非数据问题：保留轮询累积历史，不标记 stale，
+        // 避免 sparkline 误显示“历史加载失败”
+        if (result.forbidden) continue;
         for (const channel of result.chunk) {
           // 保留上次成功历史，只做视觉弱化
           nextStale[channel.id] = true;
