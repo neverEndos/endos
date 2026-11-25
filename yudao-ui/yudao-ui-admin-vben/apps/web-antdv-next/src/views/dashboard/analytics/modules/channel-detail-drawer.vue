@@ -18,12 +18,15 @@ import {
   alarmLevelMeta,
   CHANNEL_STATUS_META,
   channelValueText,
+  enabledThresholdRules,
   formatNumeric,
   formatShanghaiMdHm,
   formatShanghaiTime,
+  hasAnyPoint,
   isFiniteNumber,
   thresholdLines,
 } from '../data';
+import IntervalAnalysis from './interval-analysis.vue';
 import LargeTrend from './large-trend.vue';
 
 defineOptions({ name: 'ScreenChannelDetailDrawer' });
@@ -31,6 +34,11 @@ defineOptions({ name: 'ScreenChannelDetailDrawer' });
 const props = defineProps<{
   /** 当前通道的活动报警 */
   alarm?: CollectorApi.AlarmState;
+  /**
+   * Drawer 浮层容器：全屏时由父级传入 screenRoot，非全屏时为 body。
+   * antdv Drawer 默认 teleport 到 body，浏览器全屏下会被全屏元素遮住。
+   */
+  container?: HTMLElement;
   /** 设备轮询周期，用于展示采样节奏 */
   devicePollIntervalMs?: number;
   hasTrendAccess: boolean;
@@ -49,6 +57,22 @@ const trendLoading = ref(false);
 const trendError = ref<string>();
 const appliedRangeText = ref('--');
 let querySeq = 0;
+
+/** 区间分析时间窗：默认 24 小时，抽屉内独立于主趋势时间窗 */
+const ANALYSIS_WINDOWS = [
+  { label: '1 小时', seconds: 60 * 60, value: '1h' },
+  { label: '24 小时', seconds: 24 * 60 * 60, value: '24h' },
+  { label: '7 天', seconds: 7 * 24 * 60 * 60, value: '7d' },
+] as const;
+type AnalysisWindowValue = (typeof ANALYSIS_WINDOWS)[number]['value'];
+const analysisWindow = ref<AnalysisWindowValue>('24h');
+const analysisSeries = ref<CollectorApi.TrendSeries>();
+const analysisLoading = ref(false);
+const analysisError = ref<string>();
+const analysisFrom = ref(0);
+const analysisTo = ref(0);
+const appliedAnalysisRangeText = ref('--');
+let analysisSeq = 0;
 
 const channel = computed(() => props.target?.channel);
 const device = computed(() => props.target?.device);
@@ -123,6 +147,18 @@ const enabledThresholdLines = computed<ThresholdLine[]>(() =>
   thresholdLines(props.threshold),
 );
 
+/** 区间分析只使用“已启用且有值”的阈值档位 */
+const analysisRules = computed(() => enabledThresholdRules(props.threshold));
+const analysisWindowSeconds = computed(
+  () =>
+    ANALYSIS_WINDOWS.find((item) => item.value === analysisWindow.value)
+      ?.seconds ?? 24 * 60 * 60,
+);
+/** 与主趋势一致：后端为每个通道都返回序列，必须看有效点而不是 series 长度 */
+const analysisHasData = computed(() =>
+  hasAnyPoint(analysisSeries.value ? [analysisSeries.value] : []),
+);
+
 const stats = computed(() => [
   { label: '最新值', value: `${valueText.value} ${unitText.value}`.trim() },
   {
@@ -154,6 +190,14 @@ watch(
   [open, () => props.target?.channel.id, () => props.rangeSeconds],
   () => {
     void loadTrend();
+  },
+  { immediate: true },
+);
+
+watch(
+  [open, () => props.target?.channel.id, analysisWindow],
+  () => {
+    void loadAnalysis();
   },
   { immediate: true },
 );
@@ -196,6 +240,52 @@ async function loadTrend() {
   }
 }
 
+/**
+ * 区间分析独立查询：只调用一次 getTrendSeries（单通道），
+ * 枚举通道同样走趋势接口，用于近似分布与切换时间。
+ */
+async function loadAnalysis() {
+  analysisSeq += 1;
+  const seq = analysisSeq;
+  analysisSeries.value = undefined;
+  analysisError.value = undefined;
+  if (!open.value || !props.target || !props.hasTrendAccess) {
+    analysisLoading.value = false;
+    return;
+  }
+  const to = Date.now();
+  const from = to - analysisWindowSeconds.value * 1000;
+  analysisFrom.value = from;
+  analysisTo.value = to;
+  appliedAnalysisRangeText.value = `${formatShanghaiMdHm(
+    from,
+  )} ~ ${formatShanghaiMdHm(to)}`;
+  analysisLoading.value = true;
+  try {
+    const body = await getTrendSeries({
+      channelIds: [props.target.channel.id],
+      deviceId: props.target.device.id,
+      from,
+      granularity: 'auto',
+      includeRaw: false,
+      to,
+    });
+    if (seq !== analysisSeq) return;
+    analysisSeries.value =
+      body?.series.find((item) => item.kind !== 'raw') ?? body?.series[0];
+    if (!analysisSeries.value) {
+      analysisError.value = '区间分析接口未返回该通道的数据';
+    }
+  } catch (error) {
+    if (seq !== analysisSeq) return;
+    analysisError.value = resolveApiErrorMessage(error, '区间分析加载失败');
+  } finally {
+    if (seq === analysisSeq) {
+      analysisLoading.value = false;
+    }
+  }
+}
+
 function closeDrawer() {
   open.value = false;
 }
@@ -205,10 +295,15 @@ function closeDrawer() {
   <Drawer
     v-model:open="open"
     :destroy-on-hidden="true"
+    :get-container="container"
     placement="right"
     root-class="screen-detail-drawer"
     :styles="{
-      body: { background: '#070C18', padding: '14px 18px 20px' },
+      body: {
+        background: '#070C18',
+        overflowY: 'auto',
+        padding: '14px 18px 20px',
+      },
       header: {
         background: '#0B1222',
         borderBottom: '1px solid rgba(72, 104, 158, 0.32)',
@@ -286,6 +381,58 @@ function closeDrawer() {
             :thresholds="enabledThresholdLines"
           />
           <div v-else class="drawer-note">该通道没有可用趋势数据。</div>
+        </div>
+      </section>
+
+      <section class="drawer-section">
+        <div class="drawer-section-head">
+          <span class="drawer-section-title">区间分析 / INTERVAL</span>
+          <span class="drawer-section-sub">{{ appliedAnalysisRangeText }}</span>
+        </div>
+
+        <div class="window-tabs" aria-label="选择区间分析时间窗">
+          <button
+            v-for="item in ANALYSIS_WINDOWS"
+            :key="item.value"
+            type="button"
+            class="window-btn"
+            :class="{ 'window-btn--active': analysisWindow === item.value }"
+            :aria-pressed="analysisWindow === item.value"
+            @click="analysisWindow = item.value"
+          >
+            {{ item.label }}
+          </button>
+        </div>
+
+        <div v-if="!hasTrendAccess" class="drawer-note">
+          当前账号缺少
+          <code>collector:trend:query</code>
+          权限，区间分析不可用。
+        </div>
+        <div v-else-if="analysisLoading" class="analysis-loading">
+          <Spin size="small" />
+          <span>正在加载区间数据…</span>
+        </div>
+        <div v-else-if="analysisError" class="drawer-note drawer-note--error">
+          {{ analysisError }}
+        </div>
+        <div v-else-if="!target" class="drawer-note">未选择通道。</div>
+        <IntervalAnalysis
+          v-else-if="analysisHasData && target"
+          :channel="target.channel"
+          :from="analysisFrom"
+          :rules="analysisRules"
+          :series="analysisSeries"
+          :threshold="threshold"
+          :to="analysisTo"
+          :unit="unitText"
+        />
+        <div v-else class="drawer-note">
+          {{
+            isEnum
+              ? '该枚举通道在分析区间内没有可用数据。'
+              : '该通道在分析区间内没有可用数据，无法计算区间指标。'
+          }}
         </div>
       </section>
 
@@ -518,6 +665,48 @@ function closeDrawer() {
   align-items: center;
   justify-content: center;
   height: 180px;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.window-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.window-btn {
+  padding: 2px 10px;
+  font: inherit;
+  font-size: 10px;
+  color: #64748b;
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid rgb(72 104 158 / 28%);
+  border-radius: 4px;
+}
+
+.window-btn:hover {
+  color: #b7c6dd;
+  border-color: rgb(72 104 158 / 48%);
+}
+
+.window-btn--active {
+  color: #22d3ee;
+  background: rgb(34 211 238 / 8%);
+  border-color: rgb(34 211 238 / 55%);
+}
+
+.window-btn:focus-visible {
+  outline: 1px solid #22d3ee;
+  outline-offset: 2px;
+}
+
+.analysis-loading {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  min-height: 88px;
   font-size: 12px;
   color: #94a3b8;
 }
