@@ -10,7 +10,7 @@ if [ -f "$DEPLOY_ENV_FILE" ]; then
   # shellcheck disable=SC1090
   . "$DEPLOY_ENV_FILE"
 fi
-BOARD_HOST="${BOARD_HOST:-192.168.0.101}"
+BOARD_HOST="${BOARD_HOST:-192.168.0.31}"
 BOARD_USER="${BOARD_USER:-cat}"
 BOARD_PORT="${BOARD_PORT:-22}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_rsa}"

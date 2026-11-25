@@ -17,7 +17,7 @@ release-server.sh —— 开发机构建并发布后端到单板 Compose
 选项：
   --run                 执行发布（防误操作）
   --skip-build          跳过 Maven，复用 yudao-server/target/yudao-server.jar
-  --host <地址>         板端地址，默认取 deploy.env 或 192.168.0.101
+  --host <地址>         板端地址，默认取 deploy.env 或 192.168.0.31
   --user <用户>         SSH 用户，默认 cat
   --port <端口>         SSH 端口，默认 22
   --key <私钥>          SSH 私钥，默认 ~/.ssh/id_rsa

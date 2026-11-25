@@ -36,7 +36,7 @@ PostgreSQL、Redis 与 MinIO 的宿主机端口都只绑定回环地址，开发
 不对局域网暴露。以 Redis 为例（本地 `16379` → 板端 `127.0.0.1:6379`）：
 
 ```bash
-ssh -N -L 16379:127.0.0.1:6379 cat@192.168.0.101
+ssh -N -L 16379:127.0.0.1:6379 cat@192.168.0.31
 # 另开终端：默认使用 db 0，密码取板端 .env 的 REDIS_PASSWORD，不要写入仓库或命令历史
 redis-cli -h 127.0.0.1 -p 16379
 127.0.0.1:16379> AUTH <REDIS_PASSWORD>
@@ -91,19 +91,19 @@ pnpm build:antdv-next
 
 ### 4.1 上传部署文件和私有环境文件
 
-以下示例使用板端 `cat@192.168.0.101`，实际环境按地址和用户替换。在仓库根目录执行，
+以下示例使用板端 `cat@192.168.0.31`，实际环境按地址和用户替换。在仓库根目录执行，
 `deploy/compose-single/.env` 是已填好但未提交的本地文件：
 
 ```bash
 tar --exclude='*.env' --exclude='*.env.local' -czf - deploy sql/postgresql | \
-  ssh cat@192.168.0.101 \
+  ssh cat@192.168.0.31 \
   'rm -rf /tmp/yudao-src && mkdir -p /tmp/yudao-src && tar -xzf - -C /tmp/yudao-src'
-ssh cat@192.168.0.101 'umask 077; cat > /tmp/yudao-compose.env' \
+ssh cat@192.168.0.31 'umask 077; cat > /tmp/yudao-compose.env' \
   < deploy/compose-single/.env
-ssh -t cat@192.168.0.101 \
+ssh -t cat@192.168.0.31 \
   'sudo bash /tmp/yudao-src/deploy/compose-single/scripts/bootstrap-board.sh \
    --run --with-collector --service-user cat --env-file /tmp/yudao-compose.env'
-ssh cat@192.168.0.101 'rm -rf /tmp/yudao-src /tmp/yudao-compose.env'
+ssh cat@192.168.0.31 'rm -rf /tmp/yudao-src /tmp/yudao-compose.env'
 ```
 
 上传归档明确排除 `.env`、`deploy.env` 和 `*.env.local`，但保留 `*.env.example`；
@@ -133,12 +133,12 @@ SQL 目录的文本统一归一化为 LF（systemd 单元在渲染管线中同�
 ```bash
 VERSION=20261116-220000-first
 scp yudao-server/target/yudao-server.jar \
-  cat@192.168.0.101:/tmp/yudao-server-$VERSION.jar
+  cat@192.168.0.31:/tmp/yudao-server-$VERSION.jar
 tar -C yudao-ui/yudao-ui-admin-vben/apps/web-antdv-next/dist -czf - . | \
-  ssh cat@192.168.0.101 "rm -rf /tmp/yudao-web-$VERSION && mkdir -p /tmp/yudao-web-$VERSION && tar -xzf - -C /tmp/yudao-web-$VERSION"
-ssh -t cat@192.168.0.101 "sudo bash /opt/yudao/compose-single/scripts/apply-server.sh \
+  ssh cat@192.168.0.31 "rm -rf /tmp/yudao-web-$VERSION && mkdir -p /tmp/yudao-web-$VERSION && tar -xzf - -C /tmp/yudao-web-$VERSION"
+ssh -t cat@192.168.0.31 "sudo bash /opt/yudao/compose-single/scripts/apply-server.sh \
   --jar /tmp/yudao-server-$VERSION.jar --version $VERSION --stage-only"
-ssh -t cat@192.168.0.101 "sudo bash /opt/yudao/compose-single/scripts/apply-web.sh \
+ssh -t cat@192.168.0.31 "sudo bash /opt/yudao/compose-single/scripts/apply-web.sh \
   --dist /tmp/yudao-web-$VERSION --version $VERSION --stage-only"
 ```
 
@@ -148,9 +148,9 @@ ssh -t cat@192.168.0.101 "sudo bash /opt/yudao/compose-single/scripts/apply-web.
 ### 4.3 启动与检查
 
 ```bash
-ssh -t cat@192.168.0.101 \
+ssh -t cat@192.168.0.31 \
   'cd /opt/yudao/compose-single && sudo docker compose config -q && sudo docker compose up -d'
-ssh cat@192.168.0.101 \
+ssh cat@192.168.0.31 \
   'cd /opt/yudao/compose-single && sudo docker compose ps'
 ```
 
@@ -173,7 +173,7 @@ ssh cat@192.168.0.101 \
 
 ```bash
 curl -X POST -H 'tenant-id: 1' -H 'Authorization: Bearer <管理员Token>' \
-  http://192.168.0.101/admin-api/infra/job/sync
+  http://192.168.0.31/admin-api/infra/job/sync
 ```
 
 确认 `采集报警判定` 任务存在、状态为开启，并在“调度日志”中看到至少一次执行记录；
@@ -205,9 +205,9 @@ sudo /opt/yudao/sql/postgresql/dbctl.sh migrate ruoyi-vue-pro --run
 检查：
 
 ```bash
-curl -i http://192.168.0.101/
+curl -i http://192.168.0.31/
 curl -H 'tenant-id: 1' -H 'Content-Type: application/json' -d '{}' \
-  http://192.168.0.101/admin-api/system/captcha/get
+  http://192.168.0.31/admin-api/system/captcha/get
 # 浏览器使用 admin / admin123 登录（首次登录后按现场要求修改密码）
 cd /opt/yudao/compose-single
 sudo docker compose exec -T postgres psql -U yudao -d ruoyi-vue-pro \
@@ -241,7 +241,7 @@ MinIO bucket 由 `minio-init` 自动创建。最后一条命令可幂等重跑 b
 ```bash
 sudo /opt/yudao/sql/postgresql/dbctl.sh migrate ruoyi-vue-pro --run
 curl -X POST -H 'tenant-id: 1' -H 'Authorization: Bearer <管理员Token>' \
-  http://192.168.0.101/admin-api/infra/job/sync
+  http://192.168.0.31/admin-api/infra/job/sync
 ```
 
 报警事件时间统一使用服务器本地墙钟时间（`Asia/Shanghai`），报警页面的时间范围查询
@@ -311,7 +311,7 @@ MinIO 对象数据不在数据库 dump 内，需另行备份 `/opt/yudao/data/mi
 - endpoint：`http://minio:9000`（仅供服务端容器访问）；
 - bucket/accessKey/accessSecret：来自 `.env`；
 - `enablePathStyleAccess=true`、`enablePublicAccess=false`、`region=us-east-1`；
-- domain：`MINIO_PUBLIC_DOMAIN`，例如 `http://192.168.0.101/minio/yudao`。
+- domain：`MINIO_PUBLIC_DOMAIN`，例如 `http://192.168.0.31/minio/yudao`。
 
 私有 bucket 的预签名 URL 经 Nginx `/minio/` 转发，MinIO API/Console 不需要暴露到局域网。
 Nginx 对 MinIO 使用变量 `proxy_pass` 和 Docker resolver 动态解析，重建 MinIO 后无需重建 web。

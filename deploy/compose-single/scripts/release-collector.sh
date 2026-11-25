@@ -16,7 +16,7 @@ release-collector.sh —— 发布宿主机 systemd collector
 
 选项：
   --run              执行发布
-  --host <地址>      板端地址，默认取 deploy.env 或 192.168.0.101
+  --host <地址>      板端地址，默认取 deploy.env 或 192.168.0.31
   --user <用户>      SSH 与 collector 运行用户，默认 cat
   --port <端口>      SSH 端口，默认 22
   --key <私钥>       SSH 私钥，默认 ~/.ssh/id_rsa

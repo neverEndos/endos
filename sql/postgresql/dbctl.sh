@@ -39,7 +39,7 @@
 #   ./dbctl.sh migrate yudao_board --run         # 之后每次发版执行
 #
 # 环境变量示例：
-#   PGHOST=192.168.0.101 PGPORT=5432 PGUSER=yudao PGPASSWORD=*** ./dbctl.sh status ruoyi-vue-pro
+#   PGHOST=192.168.0.31 PGPORT=5432 PGUSER=yudao PGPASSWORD=*** ./dbctl.sh status ruoyi-vue-pro
 
 set -Eeuo pipefail
 
