@@ -552,6 +552,39 @@ WHERE rm.menu_id = 802 AND rm.deleted = 0
   )
 ON CONFLICT DO NOTHING;
 
+-- ========== 聚合回填依赖的设备/通道查询权限（任意已获得 814 的角色） ==========
+-- 聚合回填页面需要加载设备（781）与通道（783）；只补这两个查询权限，
+-- 不批量授予 780 下其他菜单，也不改变非 814 角色的既有授权。
+INSERT INTO public.system_role_menu (
+    id, role_id, menu_id, creator, updater, deleted
+)
+SELECT nextval('public.system_role_menu_seq'), rm.role_id, 781, '1', '1', 0
+FROM public.system_role_menu rm
+JOIN public.system_role r ON r.id = rm.role_id AND r.deleted = 0
+JOIN public.system_menu aggregate ON aggregate.id = 814 AND aggregate.deleted = 0
+JOIN public.system_menu device_menu ON device_menu.id = 781 AND device_menu.deleted = 0
+WHERE rm.menu_id = 814 AND rm.deleted = 0
+  AND NOT EXISTS (
+      SELECT 1 FROM public.system_role_menu granted
+      WHERE granted.role_id = rm.role_id AND granted.menu_id = 781 AND granted.deleted = 0
+  )
+ON CONFLICT DO NOTHING;
+
+INSERT INTO public.system_role_menu (
+    id, role_id, menu_id, creator, updater, deleted
+)
+SELECT nextval('public.system_role_menu_seq'), rm.role_id, 783, '1', '1', 0
+FROM public.system_role_menu rm
+JOIN public.system_role r ON r.id = rm.role_id AND r.deleted = 0
+JOIN public.system_menu aggregate ON aggregate.id = 814 AND aggregate.deleted = 0
+JOIN public.system_menu channel_menu ON channel_menu.id = 783 AND channel_menu.deleted = 0
+WHERE rm.menu_id = 814 AND rm.deleted = 0
+  AND NOT EXISTS (
+      SELECT 1 FROM public.system_role_menu granted
+      WHERE granted.role_id = rm.role_id AND granted.menu_id = 783 AND granted.deleted = 0
+  )
+ON CONFLICT DO NOTHING;
+
 -- ========== super_admin 授权（仅 role_id = 1，精确匹配本次 collector 菜单） ==========
 -- 806/807/808 随 collector_menu_seed 一并只授予超管；本种子不对任何其他角色批量授予 780 下全部菜单。
 -- 若后续新增「按 780 子菜单批量授权」的角色逻辑，必须排除 808：手动清理会立即删除数据，

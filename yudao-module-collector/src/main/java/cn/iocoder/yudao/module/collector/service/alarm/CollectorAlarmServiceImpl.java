@@ -19,6 +19,7 @@ import cn.iocoder.yudao.module.collector.dal.mysql.channel.CollectorChannelMappe
 import cn.iocoder.yudao.module.collector.dal.mysql.device.CollectorDeviceMapper;
 import cn.iocoder.yudao.module.collector.dal.mysql.sample.CollectorSampleRawMapper;
 import cn.iocoder.yudao.module.collector.dal.mysql.sensor.CollectorSensorMapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -99,6 +100,8 @@ public class CollectorAlarmServiceImpl implements CollectorAlarmService {
             state.setDeviceName(names.deviceName(state.getDeviceId()));
             state.setSensorName(names.sensorName(state.getSensorId()));
             state.setChannelName(names.channelName(state.getChannelId()));
+            // 默认未确认；仅活动事件 status=1 时置为已确认。
+            state.setAcknowledged(Boolean.FALSE);
         });
         // 只为仍有报警级别的通道装配活动事件编号，供前端确认操作使用；通道无活动事件时保持为空。
         Set<Long> positiveChannelIds = result.stream()
@@ -116,6 +119,8 @@ public class CollectorAlarmServiceImpl implements CollectorAlarmService {
                         CollectorAlarmDO activeAlarm = activeAlarmMap.get(state.getChannelId());
                         if (activeAlarm != null) {
                             state.setActiveAlarmId(activeAlarm.getId());
+                            state.setAcknowledged(Integer.valueOf(1).equals(activeAlarm.getStatus()));
+                            state.setAcknowledgedAt(activeAlarm.getAcknowledgedAt());
                         }
                     });
         }
@@ -124,6 +129,20 @@ public class CollectorAlarmServiceImpl implements CollectorAlarmService {
 
     @Override
     public void acknowledgeAlarm(Long id, Long userId) {
+        // 条件更新是唯一写路径：只有仍活动且未清除的事件才能被确认。
+        // 避免“先查后整行更新”与报警引擎并发时把引擎刚写入的 status/cleared_at 覆盖回旧值。
+        int updated = alarmMapper.update(null, new UpdateWrapper<CollectorAlarmDO>()
+                .eq("id", id)
+                .eq("status", 0)
+                .isNull("cleared_at")
+                .ne("event_type", "cleared")
+                .set("status", 1)
+                .set("acknowledged_at", LocalDateTime.now())
+                .set("acknowledged_by", userId));
+        if (updated > 0) {
+            return;
+        }
+        // 条件更新未命中时再查询，仅用于区分错误原因；不在这里执行任何写入。
         CollectorAlarmDO alarm = alarmMapper.selectById(id);
         if (alarm == null) {
             throw exception(ALARM_NOT_EXISTS);
@@ -135,14 +154,8 @@ public class CollectorAlarmServiceImpl implements CollectorAlarmService {
         if (Integer.valueOf(1).equals(alarm.getStatus())) {
             throw exception(ALARM_ALREADY_ACKNOWLEDGED);
         }
-        if (!Integer.valueOf(0).equals(alarm.getStatus())) {
-            throw exception(ALARM_ACKNOWLEDGE_STATUS_INVALID);
-        }
-        // 确认只改状态与确认人/时间，绝不改级别、恢复时间与事件类型。
-        alarm.setStatus(1);
-        alarm.setAcknowledgedAt(LocalDateTime.now());
-        alarm.setAcknowledgedBy(userId);
-        alarmMapper.updateById(alarm);
+        // 已被引擎关闭（status=2 或存在 cleared_at）在条件更新中无法命中，统一返回已结束。
+        throw exception(ALARM_ACKNOWLEDGE_STATUS_INVALID);
     }
 
     /**

@@ -29,6 +29,8 @@ public interface CollectorAlarmConvert {
     @Mapping(target = "sensorName", ignore = true)
     @Mapping(target = "channelName", ignore = true)
     @Mapping(target = "activeAlarmId", ignore = true)
+    @Mapping(target = "acknowledged", ignore = true)
+    @Mapping(target = "acknowledgedAt", ignore = true)
     CollectorAlarmStateRespVO convertState(CollectorAlarmStateDO state);
 
 }

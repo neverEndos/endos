@@ -294,16 +294,19 @@ function confirmSubmit(): Promise<boolean> {
       content: [
         `${AGG_TYPE_LABELS[form.value.aggType]}：${form.value.range[0].format(
           'YYYY-MM-DD HH:mm',
-        )} ~ ${form.value.range[1].format('YYYY-MM-DD HH:mm')}`,
+        )} ~ ${form.value.range[1].format(
+          'YYYY-MM-DD HH:mm',
+        )}（左闭右开，结束时刻本身不包含）`,
         `通道：${
           form.value.channelIds.length > 0
             ? `${form.value.channelIds.length} 个指定通道`
-            : '该设备全部通道'
+            : `该设备全部通道（共 ${totalChannelCount.value} 条）`
         }`,
         form.value.fromRaw ? '将从 raw 原始数据重算' : '将使用下层聚合作源',
         form.value.cascade ? '将按 second→minute→hour→day 级联重建' : '',
+        '回填会覆盖目标区间内已有聚合，结果不可回滚。',
         forceClean
-          ? '强制清空会删除目标区间内无源旧聚合，且不可恢复。'
+          ? '强制清空会按所选时间区间整段清空目标聚合（包含无源旧桶），且不可恢复。'
           : '',
         '',
         '回填为同步执行，板端可能超时；建议缩小范围或分批执行。是否继续？',
@@ -374,7 +377,7 @@ onMounted(() => {
       <div>
         <h2 class="m-0 text-lg font-semibold">聚合回填</h2>
         <div class="mt-1 text-xs opacity-60">
-          按粒度、设备与时间范围同步回填历史聚合；回填只处理有源区间，不会伪造数据。
+          按粒度、设备与时间范围同步回填历史聚合；回填会覆盖目标区间内已有聚合，结果不可回滚。
         </div>
       </div>
 
@@ -434,7 +437,9 @@ onMounted(() => {
               />
             </div>
             <div>
-              <div class="mb-1 text-sm font-medium">时间范围</div>
+              <div class="mb-1 text-sm font-medium">
+                时间范围（左闭右开）
+              </div>
               <DateRangePicker
                 v-model:value="form.range"
                 class="w-full"
@@ -442,6 +447,9 @@ onMounted(() => {
                 show-time
                 :placeholder="['开始时间', '结束时间']"
               />
+              <div class="mt-1 text-xs opacity-60">
+                左闭右开 [开始时间, 结束时间)，结束时刻本身不包含。
+              </div>
             </div>
             <div class="md:col-span-2 xl:col-span-3">
               <div class="mb-1 flex flex-wrap items-center justify-between gap-1">
@@ -499,7 +507,7 @@ onMounted(() => {
             v-if="hasForceCleanAccess && form.forceClean"
             class="mt-2 text-xs text-red-500"
           >
-            强制清空会删除目标区间内无源旧聚合，且不可恢复；提交前会再次确认。
+            强制清空会按所选时间区间整段清空目标聚合（包含无源旧桶），且不可恢复；提交前会再次确认。
           </div>
 
           <div class="mt-3 text-xs opacity-60">{{ rangeHint }}</div>

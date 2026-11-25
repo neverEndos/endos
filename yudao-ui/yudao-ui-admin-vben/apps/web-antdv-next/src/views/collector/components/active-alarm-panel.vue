@@ -145,6 +145,7 @@ function openDetail(alarm: CollectorApi.AlarmState) {
           <Tag :color="getAlarmLevelConfig(alarm.level).color">
             {{ getAlarmLevelConfig(alarm.level).text }}
           </Tag>
+          <Tag v-if="alarm.acknowledged" color="warning">已确认</Tag>
           <span class="channel-name">
             {{ alarm.channelName || `通道 ${alarm.channelId}` }}
           </span>

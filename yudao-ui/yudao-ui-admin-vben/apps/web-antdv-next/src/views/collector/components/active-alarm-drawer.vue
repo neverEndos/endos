@@ -52,6 +52,7 @@ interface DrawerData {
 const alarm = ref<CollectorApi.AlarmState>();
 const readonly = ref(false);
 const acknowledgeLoading = ref(false);
+const ackError = ref<string>();
 
 const levelConfig = computed(() => getAlarmLevelConfig(alarm.value?.level));
 const activeAlarmId = computed(() => alarm.value?.activeAlarmId ?? undefined);
@@ -59,7 +60,8 @@ const canAcknowledge = computed(
   () =>
     hasAckAccess.value &&
     !readonly.value &&
-    (alarm.value?.level ?? 0) > 0,
+    (alarm.value?.level ?? 0) > 0 &&
+    !alarm.value?.acknowledged,
 );
 const acknowledgeDisabledReason = computed(() => {
   if (!activeAlarmId.value) {
@@ -241,13 +243,15 @@ async function handleAcknowledge() {
   const confirmed = await confirmAcknowledge();
   if (!confirmed) return;
   acknowledgeLoading.value = true;
+  ackError.value = undefined;
   try {
     await acknowledgeAlarm(id);
     message.success('报警已确认');
     emit('success');
     await drawerApi.close();
   } catch (error) {
-    message.error(`确认失败：${resolveApiErrorMessage(error)}`);
+    // 不在本地再弹全局同款错误提示：保留抽屉并展示一次可读原因，避免重复弹窗。
+    ackError.value = resolveApiErrorMessage(error, '报警确认失败');
   } finally {
     acknowledgeLoading.value = false;
   }
@@ -261,12 +265,14 @@ const [Drawer, drawerApi] = useVbenDrawer({
     if (!isOpen) {
       alarm.value = undefined;
       readonly.value = false;
+      ackError.value = undefined;
       resetTrend();
       return;
     }
     const data = drawerApi.getData() as DrawerData | undefined;
     alarm.value = data?.alarm;
     readonly.value = Boolean(data?.readonly);
+    ackError.value = undefined;
     resetTrend();
   },
 });
@@ -277,6 +283,7 @@ const [Drawer, drawerApi] = useVbenDrawer({
     <div v-if="alarm" class="mx-4 flex min-w-0 flex-col gap-3">
       <div class="flex flex-wrap items-center gap-2">
         <Tag :color="levelConfig.color">{{ levelConfig.text }}</Tag>
+        <Tag v-if="alarm.acknowledged" color="warning">已确认</Tag>
         <Tag color="blue">
           {{ formatAlarmType(alarm.thresholdType) }}
         </Tag>
@@ -346,7 +353,21 @@ const [Drawer, drawerApi] = useVbenDrawer({
             {{ formatShanghaiTime(alarm.updatedTime) }}
           </span>
         </div>
+        <div v-if="alarm.acknowledged">
+          <span class="text-gray-500">确认时间：</span>
+          <span class="font-medium">
+            {{ formatShanghaiTime(alarm.acknowledgedAt) }}
+          </span>
+        </div>
       </div>
+
+      <Alert
+        v-if="ackError"
+        type="error"
+        show-icon
+        :message="`确认失败：${ackError}`"
+        description="确认弹窗已关闭；可修正问题后再次点击确认，或关闭本抽屉。"
+      />
 
       <div class="flex flex-wrap items-center gap-2 border-t pt-3">
         <Button
@@ -368,6 +389,12 @@ const [Drawer, drawerApi] = useVbenDrawer({
         </span>
         <span v-if="readonly" class="text-xs text-gray-500">
           大屏为只读视图，不能确认报警
+        </span>
+        <span
+          v-else-if="alarm.acknowledged"
+          class="text-xs text-gray-500"
+        >
+          该报警已确认，不能重复确认
         </span>
         <Button
           v-if="hasTrendAccess"

@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.collector.service.alarm;
 
 import cn.iocoder.yudao.framework.common.exception.ServiceException;
+import cn.iocoder.yudao.module.collector.controller.admin.alarm.vo.CollectorAlarmStateRespVO;
 import cn.iocoder.yudao.module.collector.dal.dataobject.alarm.CollectorAlarmCursorDO;
 import cn.iocoder.yudao.module.collector.dal.dataobject.alarm.CollectorAlarmDO;
 import cn.iocoder.yudao.module.collector.dal.dataobject.alarm.CollectorAlarmStateDO;
@@ -13,6 +14,7 @@ import cn.iocoder.yudao.module.collector.dal.mysql.channel.CollectorChannelMappe
 import cn.iocoder.yudao.module.collector.dal.mysql.device.CollectorDeviceMapper;
 import cn.iocoder.yudao.module.collector.dal.mysql.sample.CollectorSampleRawMapper;
 import cn.iocoder.yudao.module.collector.dal.mysql.sensor.CollectorSensorMapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
@@ -32,12 +34,14 @@ import static cn.iocoder.yudao.module.collector.service.alarm.CollectorAlarmEval
 import static cn.iocoder.yudao.module.collector.service.alarm.CollectorAlarmEvaluator.THRESHOLD_HIGH_WARNING;
 import static cn.iocoder.yudao.module.collector.service.alarm.CollectorAlarmEvaluator.THRESHOLD_LOW_ERROR;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -89,6 +93,8 @@ public class CollectorAlarmServiceImplTest {
         when(stateMapper.selectListByPositiveLevel()).thenReturn(List.of());
         when(alarmMapper.insert(any(CollectorAlarmDO.class))).thenReturn(1);
         when(alarmMapper.updateById(any(CollectorAlarmDO.class))).thenReturn(1);
+        // 确认默认走条件更新且未命中；各确认用例再按需覆盖 affected rows。
+        when(alarmMapper.update(isNull(), any())).thenReturn(0);
         when(stateMapper.insert(any(CollectorAlarmStateDO.class))).thenReturn(1);
         when(stateMapper.updateById(any(CollectorAlarmStateDO.class))).thenReturn(1);
         when(cursorMapper.insertIgnore(any())).thenReturn(1);
@@ -447,24 +453,68 @@ public class CollectorAlarmServiceImplTest {
     }
 
     @Test
-    public void acknowledge_setsStatusAndOperatorWithoutChangingLevelOrClearedAt() {
-        CollectorAlarmDO alarm = activeAlarm(3, THRESHOLD_HIGH_ERROR);
-        when(alarmMapper.selectById(1L)).thenReturn(alarm);
+    public void getAlarmStateList_fillsAcknowledgementFromActiveAlarm() {
+        CollectorAlarmStateDO activeState = state(3, THRESHOLD_HIGH_ERROR);
+        CollectorAlarmStateDO normalState = new CollectorAlarmStateDO();
+        normalState.setChannelId(CHANNEL_ID + 1);
+        normalState.setDeviceId(DEVICE_ID);
+        normalState.setSensorId(SENSOR_ID);
+        normalState.setLevel(0);
+        when(stateMapper.selectListByDeviceId(DEVICE_ID))
+                .thenReturn(List.of(activeState, normalState));
 
-        service.acknowledgeAlarm(1L, 99L);
+        CollectorAlarmDO active = activeAlarm(3, THRESHOLD_HIGH_ERROR);
+        active.setStatus(1);
+        active.setAcknowledgedAt(BASE_TIME);
+        active.setAcknowledgedBy(99L);
+        channel.setChannelName("油液温度");
+        when(alarmMapper.selectActiveListByChannelIds(anyCollection()))
+                .thenReturn(List.of(active));
 
-        assertEquals(Integer.valueOf(1), alarm.getStatus());
-        assertNotNull(alarm.getAcknowledgedAt());
-        assertEquals(Long.valueOf(99L), alarm.getAcknowledgedBy());
-        // 确认不改变报警级别、事件类型与恢复时间
-        assertEquals(Integer.valueOf(3), alarm.getLevel());
-        assertEquals("raised", alarm.getEventType());
-        assertNull(alarm.getClearedAt());
-        verify(alarmMapper).updateById(alarm);
+        List<CollectorAlarmStateRespVO> result = service.getAlarmStateList(DEVICE_ID);
+
+        CollectorAlarmStateRespVO activeVo = result.stream()
+                .filter(item -> CHANNEL_ID.equals(item.getChannelId()))
+                .findFirst().orElseThrow();
+        assertEquals(Long.valueOf(1L), activeVo.getActiveAlarmId());
+        assertEquals(Boolean.TRUE, activeVo.getAcknowledged());
+        assertEquals(BASE_TIME, activeVo.getAcknowledgedAt());
+
+        CollectorAlarmStateRespVO normalVo = result.stream()
+                .filter(item -> Long.valueOf(CHANNEL_ID + 1).equals(item.getChannelId()))
+                .findFirst().orElseThrow();
+        assertEquals(Boolean.FALSE, normalVo.getAcknowledged());
+        assertNull(normalVo.getAcknowledgedAt());
     }
 
     @Test
-    public void acknowledge_rejectsMissingAlarm() {
+    public void acknowledge_usesConditionalUpdateWithoutSelectingOrOverwritingWholeRow() {
+        when(alarmMapper.update(isNull(), any())).thenReturn(1);
+
+        service.acknowledgeAlarm(1L, 99L);
+
+        ArgumentCaptor<UpdateWrapper<CollectorAlarmDO>> wrapperCaptor =
+                ArgumentCaptor.forClass(UpdateWrapper.class);
+        verify(alarmMapper).update(isNull(), wrapperCaptor.capture());
+        UpdateWrapper<CollectorAlarmDO> wrapper = wrapperCaptor.getValue();
+        String sqlSet = wrapper.getSqlSet();
+        // 只 set 确认字段；不得整行覆盖 level/eventType/cleared_at
+        assertTrue(sqlSet.contains("status"));
+        assertTrue(sqlSet.contains("acknowledged_at"));
+        assertTrue(sqlSet.contains("acknowledged_by"));
+        assertFalse(sqlSet.contains("level"));
+        assertFalse(sqlSet.contains("event_type"));
+        assertFalse(sqlSet.contains("cleared_at"));
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(1));
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(99L));
+        // 主路径不先查后写，也不调用整行 updateById
+        verify(alarmMapper, never()).selectById(any());
+        verify(alarmMapper, never()).updateById(any(CollectorAlarmDO.class));
+    }
+
+    @Test
+    public void acknowledge_rejectsMissingAlarmWhenConditionalUpdateMisses() {
+        when(alarmMapper.update(isNull(), any())).thenReturn(0);
         when(alarmMapper.selectById(999L)).thenReturn(null);
 
         assertServiceException(() -> service.acknowledgeAlarm(999L, 99L), ALARM_NOT_EXISTS);
@@ -472,9 +522,10 @@ public class CollectorAlarmServiceImplTest {
     }
 
     @Test
-    public void acknowledge_rejectsAlreadyAcknowledgedAlarm() {
+    public void acknowledge_rejectsAlreadyAcknowledgedAlarmAfterConcurrentUpdate() {
         CollectorAlarmDO alarm = activeAlarm(3, THRESHOLD_HIGH_ERROR);
         alarm.setStatus(1);
+        when(alarmMapper.update(isNull(), any())).thenReturn(0);
         when(alarmMapper.selectById(1L)).thenReturn(alarm);
 
         assertServiceException(() -> service.acknowledgeAlarm(1L, 99L), ALARM_ALREADY_ACKNOWLEDGED);
@@ -482,11 +533,12 @@ public class CollectorAlarmServiceImplTest {
     }
 
     @Test
-    public void acknowledge_rejectsClearedEvent() {
+    public void acknowledge_rejectsClearedEventWhenConditionalUpdateMisses() {
         CollectorAlarmDO cleared = activeAlarm(3, THRESHOLD_HIGH_ERROR);
         cleared.setEventType("cleared");
         cleared.setStatus(2);
         cleared.setClearedAt(BASE_TIME);
+        when(alarmMapper.update(isNull(), any())).thenReturn(0);
         when(alarmMapper.selectById(1L)).thenReturn(cleared);
 
         assertServiceException(() -> service.acknowledgeAlarm(1L, 99L),
@@ -495,10 +547,25 @@ public class CollectorAlarmServiceImplTest {
     }
 
     @Test
-    public void acknowledge_rejectsNonActiveStatus() {
+    public void acknowledge_rejectsClosedStatusAfterConcurrentEngineWrite() {
         CollectorAlarmDO alarm = activeAlarm(2, THRESHOLD_HIGH_WARNING);
         alarm.setStatus(2);
         alarm.setClearedAt(BASE_TIME);
+        when(alarmMapper.update(isNull(), any())).thenReturn(0);
+        when(alarmMapper.selectById(1L)).thenReturn(alarm);
+
+        assertServiceException(() -> service.acknowledgeAlarm(1L, 99L),
+                ALARM_ACKNOWLEDGE_STATUS_INVALID);
+        verify(alarmMapper, never()).updateById(any(CollectorAlarmDO.class));
+    }
+
+    @Test
+    public void acknowledge_rejectsClearedAtSetWhileStatusStillZero() {
+        // 模拟引擎在条件更新与诊断查询之间写入 cleared_at 的并发窗口
+        CollectorAlarmDO alarm = activeAlarm(2, THRESHOLD_HIGH_WARNING);
+        alarm.setStatus(0);
+        alarm.setClearedAt(BASE_TIME);
+        when(alarmMapper.update(isNull(), any())).thenReturn(0);
         when(alarmMapper.selectById(1L)).thenReturn(alarm);
 
         assertServiceException(() -> service.acknowledgeAlarm(1L, 99L),

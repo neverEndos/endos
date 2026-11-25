@@ -667,6 +667,10 @@ export namespace CollectorApi {
   export interface AlarmState {
     /** 当前活动报警事件编号；无活动事件时为空，用于确认操作 */
     activeAlarmId?: null | number;
+    /** 当前活动报警是否已确认 */
+    acknowledged?: boolean;
+    /** 当前活动报警确认时间；未确认时为空 */
+    acknowledgedAt?: Date;
     deviceId: number;
     deviceName?: string;
     sensorId: number;

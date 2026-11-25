@@ -2,6 +2,7 @@
 import type { CollectorApi } from '#/api/collector';
 
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { useRoute } from 'vue-router';
 
 import { useAccess } from '@vben/access';
 
@@ -25,8 +26,11 @@ defineOptions({ name: 'CollectorScreen' });
 const POLL_INTERVAL_MS = 10_000;
 const BACKOFF_DELAYS = [10_000, 20_000, 60_000] as const;
 
+const route = useRoute();
 const { hasAccessByCodes } = useAccess();
 const { message } = App.useApp();
+/** /screen 为独立无布局大屏；/dashboard/analytics 在 BasicLayout 内复用同一内容 */
+const isStandaloneScreen = computed(() => route.path === '/screen');
 const hasHealthAccess = computed(() =>
   hasAccessByCodes(['collector:health:query']),
 );
@@ -315,6 +319,11 @@ function handleFullscreenChange() {
   isFullscreen.value = Boolean(document.fullscreenElement);
 }
 
+/** BasicLayout 内提供进入独立大屏的入口，避免把内容页当作整页大屏裁切 */
+function openStandaloneScreen() {
+  window.open('/screen', '_blank', 'noopener,noreferrer');
+}
+
 onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibilityChange);
   document.addEventListener('fullscreenchange', handleFullscreenChange);
@@ -339,7 +348,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="screenRoot" class="screen-root">
+  <div
+    ref="screenRoot"
+    class="screen-root"
+    :class="{ 'screen-root--standalone': isStandaloneScreen }"
+  >
     <header class="screen-header">
       <div class="brand">
         <h1>采集器运行大屏</h1>
@@ -351,6 +364,14 @@ onBeforeUnmount(() => {
           <span class="dot" aria-hidden="true"></span>
           {{ connectionText }}
         </span>
+        <button
+          v-if="!isStandaloneScreen"
+          type="button"
+          class="screen-fullscreen"
+          @click="openStandaloneScreen"
+        >
+          全屏大屏
+        </button>
         <button
           type="button"
           class="screen-fullscreen"
@@ -512,14 +533,21 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  height: 100vh;
+  height: 100%;
+  min-height: 0;
   padding: 18px 22px;
-  overflow: hidden;
+  overflow: auto;
   color: #e5edf8;
   background:
     radial-gradient(circle at 20% 0%, rgb(37 99 235 / 18%), transparent 45%),
     radial-gradient(circle at 90% 10%, rgb(14 165 233 / 12%), transparent 40%),
     #0b1220;
+}
+
+/* 独立 /screen 路由无布局，按视口铺满且不出现整页滚动 */
+.screen-root--standalone {
+  height: 100vh;
+  overflow: hidden;
 }
 
 .screen-header {
