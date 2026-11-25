@@ -35,6 +35,12 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
+import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.ALARM_ACKNOWLEDGE_STATUS_INVALID;
+import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.ALARM_ALREADY_ACKNOWLEDGED;
+import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.ALARM_CLEARED_EVENT_NOT_ACKNOWLEDGEABLE;
+import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.ALARM_NOT_EXISTS;
+
 /**
  * 采集报警引擎：游标扫描、阈值判定、状态机与事件持久化。
  */
@@ -94,7 +100,49 @@ public class CollectorAlarmServiceImpl implements CollectorAlarmService {
             state.setSensorName(names.sensorName(state.getSensorId()));
             state.setChannelName(names.channelName(state.getChannelId()));
         });
+        // 只为仍有报警级别的通道装配活动事件编号，供前端确认操作使用；通道无活动事件时保持为空。
+        Set<Long> positiveChannelIds = result.stream()
+                .filter(state -> state.getLevel() != null && state.getLevel() > 0)
+                .map(CollectorAlarmStateRespVO::getChannelId)
+                .collect(Collectors.toSet());
+        if (!positiveChannelIds.isEmpty()) {
+            Map<Long, CollectorAlarmDO> activeAlarmMap = alarmMapper
+                    .selectActiveListByChannelIds(positiveChannelIds).stream()
+                    .collect(Collectors.toMap(CollectorAlarmDO::getChannelId, Function.identity(),
+                            (left, right) -> left.getId() > right.getId() ? left : right));
+            result.stream()
+                    .filter(state -> state.getLevel() != null && state.getLevel() > 0)
+                    .forEach(state -> {
+                        CollectorAlarmDO activeAlarm = activeAlarmMap.get(state.getChannelId());
+                        if (activeAlarm != null) {
+                            state.setActiveAlarmId(activeAlarm.getId());
+                        }
+                    });
+        }
         return result;
+    }
+
+    @Override
+    public void acknowledgeAlarm(Long id, Long userId) {
+        CollectorAlarmDO alarm = alarmMapper.selectById(id);
+        if (alarm == null) {
+            throw exception(ALARM_NOT_EXISTS);
+        }
+        // 恢复事件表达“已恢复”，与确认语义互斥；已确认再次点击给出明确错误而不是静默成功。
+        if ("cleared".equals(alarm.getEventType())) {
+            throw exception(ALARM_CLEARED_EVENT_NOT_ACKNOWLEDGEABLE);
+        }
+        if (Integer.valueOf(1).equals(alarm.getStatus())) {
+            throw exception(ALARM_ALREADY_ACKNOWLEDGED);
+        }
+        if (!Integer.valueOf(0).equals(alarm.getStatus())) {
+            throw exception(ALARM_ACKNOWLEDGE_STATUS_INVALID);
+        }
+        // 确认只改状态与确认人/时间，绝不改级别、恢复时间与事件类型。
+        alarm.setStatus(1);
+        alarm.setAcknowledgedAt(LocalDateTime.now());
+        alarm.setAcknowledgedBy(userId);
+        alarmMapper.updateById(alarm);
     }
 
     /**

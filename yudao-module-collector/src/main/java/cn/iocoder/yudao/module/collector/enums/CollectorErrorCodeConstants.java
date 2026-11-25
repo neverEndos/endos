@@ -96,4 +96,12 @@ public interface CollectorErrorCodeConstants {
             "导出行数({})超过上限 {} 行，请缩小时间范围或提高聚合分辨率");
     ErrorCode HISTORY_CHANNEL_NOT_EXISTS = new ErrorCode(1_023_010_004, "历史查询通道({})不存在");
 
+    // ========== 报警确认 1-023-011-000 ==========
+    ErrorCode ALARM_NOT_EXISTS = new ErrorCode(1_023_011_000, "报警事件不存在");
+    ErrorCode ALARM_CLEARED_EVENT_NOT_ACKNOWLEDGEABLE = new ErrorCode(1_023_011_001,
+            "恢复事件不允许确认");
+    ErrorCode ALARM_ALREADY_ACKNOWLEDGED = new ErrorCode(1_023_011_002, "该报警已确认");
+    ErrorCode ALARM_ACKNOWLEDGE_STATUS_INVALID = new ErrorCode(1_023_011_003,
+            "该报警已结束，无法确认");
+
 }

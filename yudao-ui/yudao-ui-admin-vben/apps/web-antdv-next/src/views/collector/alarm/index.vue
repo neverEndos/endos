@@ -8,11 +8,12 @@ import { useAccess } from '@vben/access';
 import { Page, useVbenModal } from '@vben/common-ui';
 import { formatDateTime } from '@vben/utils';
 
-import { Tag } from 'antdv-next';
+import { App, Modal, Tag } from 'antdv-next';
 
 import { TableAction, useVbenVxeGrid } from '#/adapter/vxe-table';
-import { getAlarmPage } from '#/api/collector';
+import { acknowledgeAlarm, getAlarmPage } from '#/api/collector';
 
+import { resolveApiErrorMessage } from '../components/utils';
 import {
   formatAlarmEntityName,
   getAlarmEventTypeConfig,
@@ -24,10 +25,18 @@ import {
 import AlarmTrendDialog from './modules/alarm-trend-dialog.vue';
 
 const { hasAccessByCodes } = useAccess();
+const { message } = App.useApp();
 
 /** 查看时刻趋势复用趋势接口权限；无权限时不渲染操作列，避免点击后才 403 */
 const hasTrendAccess = computed(() =>
   hasAccessByCodes(['collector:trend:query']),
+);
+/** 确认按钮独立权限；有任一操作权限时才渲染操作列 */
+const hasAckAccess = computed(() =>
+  hasAccessByCodes(['collector:alarm:acknowledge']),
+);
+const showActionColumn = computed(
+  () => hasTrendAccess.value || hasAckAccess.value,
 );
 
 const [TrendModal, trendModalApi] = useVbenModal({
@@ -40,12 +49,33 @@ function handleViewTrend(row: CollectorApi.Alarm) {
   trendModalApi.setData(row).open();
 }
 
-const [Grid] = useVbenVxeGrid({
+/** 仅活动且非恢复事件可确认；二次确认后调用确认接口并刷新列表 */
+function handleAcknowledge(row: CollectorApi.Alarm) {
+  Modal.confirm({
+    title: '确认该报警？',
+    content:
+      '确认后状态将标记为已确认，但不会清除报警；数值恢复正常后仍由采集器自动恢复。',
+    okText: '确认报警',
+    cancelText: '取消',
+    onOk: async () => {
+      try {
+        await acknowledgeAlarm(row.id);
+        message.success('报警已确认');
+        await gridApi.query();
+      } catch (error) {
+        message.error(`确认失败：${resolveApiErrorMessage(error)}`);
+        throw error;
+      }
+    },
+  });
+}
+
+const [Grid, gridApi] = useVbenVxeGrid({
   formOptions: {
     schema: useGridFormSchema(),
   },
   gridOptions: {
-    columns: useGridColumns(hasTrendAccess.value),
+    columns: useGridColumns(showActionColumn.value),
     height: 'auto',
     keepSource: true,
     proxyConfig: {
@@ -108,6 +138,14 @@ const [Grid] = useVbenVxeGrid({
       <template #actions="{ row }">
         <TableAction
           :actions="[
+            {
+              label: '确认',
+              type: 'link',
+              auth: ['collector:alarm:acknowledge'],
+              ifShow: () =>
+                row.status === 0 && row.eventType !== 'cleared',
+              onClick: handleAcknowledge.bind(null, row),
+            },
             {
               label: '查看时刻趋势',
               type: 'link',

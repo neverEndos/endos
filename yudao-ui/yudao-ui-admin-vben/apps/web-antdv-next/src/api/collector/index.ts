@@ -665,6 +665,8 @@ export namespace CollectorApi {
 
   /** 通道当前报警状态 */
   export interface AlarmState {
+    /** 当前活动报警事件编号；无活动事件时为空，用于确认操作 */
+    activeAlarmId?: null | number;
     deviceId: number;
     deviceName?: string;
     sensorId: number;
@@ -976,6 +978,11 @@ export function getAlarmStateList(params?: { deviceId?: number }) {
     '/collector/alarm/state/list',
     { params },
   );
+}
+
+/** 确认活动报警；仅活动事件可确认，成功后状态置为已确认 */
+export function acknowledgeAlarm(id: number) {
+  return requestClient.post<boolean>(`/collector/alarm/acknowledge?id=${id}`);
 }
 
 // ==================== 最新值看板 ====================

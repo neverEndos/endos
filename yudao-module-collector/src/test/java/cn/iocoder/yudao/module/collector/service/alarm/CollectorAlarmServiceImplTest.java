@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.collector.service.alarm;
 
+import cn.iocoder.yudao.framework.common.exception.ServiceException;
 import cn.iocoder.yudao.module.collector.dal.dataobject.alarm.CollectorAlarmCursorDO;
 import cn.iocoder.yudao.module.collector.dal.dataobject.alarm.CollectorAlarmDO;
 import cn.iocoder.yudao.module.collector.dal.dataobject.alarm.CollectorAlarmStateDO;
@@ -23,6 +24,10 @@ import java.lang.reflect.Field;
 import java.time.LocalDateTime;
 import java.util.List;
 
+import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.ALARM_ACKNOWLEDGE_STATUS_INVALID;
+import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.ALARM_ALREADY_ACKNOWLEDGED;
+import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.ALARM_CLEARED_EVENT_NOT_ACKNOWLEDGEABLE;
+import static cn.iocoder.yudao.module.collector.enums.CollectorErrorCodeConstants.ALARM_NOT_EXISTS;
 import static cn.iocoder.yudao.module.collector.service.alarm.CollectorAlarmEvaluator.THRESHOLD_HIGH_ERROR;
 import static cn.iocoder.yudao.module.collector.service.alarm.CollectorAlarmEvaluator.THRESHOLD_HIGH_WARNING;
 import static cn.iocoder.yudao.module.collector.service.alarm.CollectorAlarmEvaluator.THRESHOLD_LOW_ERROR;
@@ -439,6 +444,77 @@ public class CollectorAlarmServiceImplTest {
         verify(cursorMapper, never()).updateById(any(CollectorAlarmCursorDO.class));
         verify(transactionManager).rollback(any());
         verify(transactionManager, never()).commit(any());
+    }
+
+    @Test
+    public void acknowledge_setsStatusAndOperatorWithoutChangingLevelOrClearedAt() {
+        CollectorAlarmDO alarm = activeAlarm(3, THRESHOLD_HIGH_ERROR);
+        when(alarmMapper.selectById(1L)).thenReturn(alarm);
+
+        service.acknowledgeAlarm(1L, 99L);
+
+        assertEquals(Integer.valueOf(1), alarm.getStatus());
+        assertNotNull(alarm.getAcknowledgedAt());
+        assertEquals(Long.valueOf(99L), alarm.getAcknowledgedBy());
+        // 确认不改变报警级别、事件类型与恢复时间
+        assertEquals(Integer.valueOf(3), alarm.getLevel());
+        assertEquals("raised", alarm.getEventType());
+        assertNull(alarm.getClearedAt());
+        verify(alarmMapper).updateById(alarm);
+    }
+
+    @Test
+    public void acknowledge_rejectsMissingAlarm() {
+        when(alarmMapper.selectById(999L)).thenReturn(null);
+
+        assertServiceException(() -> service.acknowledgeAlarm(999L, 99L), ALARM_NOT_EXISTS);
+        verify(alarmMapper, never()).updateById(any(CollectorAlarmDO.class));
+    }
+
+    @Test
+    public void acknowledge_rejectsAlreadyAcknowledgedAlarm() {
+        CollectorAlarmDO alarm = activeAlarm(3, THRESHOLD_HIGH_ERROR);
+        alarm.setStatus(1);
+        when(alarmMapper.selectById(1L)).thenReturn(alarm);
+
+        assertServiceException(() -> service.acknowledgeAlarm(1L, 99L), ALARM_ALREADY_ACKNOWLEDGED);
+        verify(alarmMapper, never()).updateById(any(CollectorAlarmDO.class));
+    }
+
+    @Test
+    public void acknowledge_rejectsClearedEvent() {
+        CollectorAlarmDO cleared = activeAlarm(3, THRESHOLD_HIGH_ERROR);
+        cleared.setEventType("cleared");
+        cleared.setStatus(2);
+        cleared.setClearedAt(BASE_TIME);
+        when(alarmMapper.selectById(1L)).thenReturn(cleared);
+
+        assertServiceException(() -> service.acknowledgeAlarm(1L, 99L),
+                ALARM_CLEARED_EVENT_NOT_ACKNOWLEDGEABLE);
+        verify(alarmMapper, never()).updateById(any(CollectorAlarmDO.class));
+    }
+
+    @Test
+    public void acknowledge_rejectsNonActiveStatus() {
+        CollectorAlarmDO alarm = activeAlarm(2, THRESHOLD_HIGH_WARNING);
+        alarm.setStatus(2);
+        alarm.setClearedAt(BASE_TIME);
+        when(alarmMapper.selectById(1L)).thenReturn(alarm);
+
+        assertServiceException(() -> service.acknowledgeAlarm(1L, 99L),
+                ALARM_ACKNOWLEDGE_STATUS_INVALID);
+        verify(alarmMapper, never()).updateById(any(CollectorAlarmDO.class));
+    }
+
+    private void assertServiceException(Runnable action, cn.iocoder.yudao.framework.common.exception.ErrorCode errorCode) {
+        ServiceException exception = null;
+        try {
+            action.run();
+        } catch (ServiceException ex) {
+            exception = ex;
+        }
+        assertNotNull("预期抛出 ServiceException", exception);
+        assertEquals(errorCode.getCode(), exception.getCode());
     }
 
     private void inject(String fieldName, Object value) throws Exception {
