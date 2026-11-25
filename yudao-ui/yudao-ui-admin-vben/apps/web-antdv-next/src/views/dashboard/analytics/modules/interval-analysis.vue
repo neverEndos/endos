@@ -6,12 +6,14 @@ import type { CollectorApi } from '#/api/collector';
 import { computed } from 'vue';
 
 import {
-  analyzeEnumInterval,
+  analyzeEnumIntervalFromAggregate,
+  analyzeEnumIntervalFromRaw,
   analyzeInterval,
   formatIntervalDuration,
   formatNumeric,
   formatPercent,
   formatShanghaiMdHm,
+  isFiniteNumber,
 } from '../data';
 
 defineOptions({ name: 'ScreenIntervalAnalysis' });
@@ -21,6 +23,10 @@ const props = withDefaults(
     channel: CollectorApi.DashboardChannel;
     /** 分析窗口起点（epoch millis） */
     from: number;
+    /** 枚举通道的抽样原始点序列（kind=raw）；仅 ≤2 小时窗口由抽屉传入 */
+    rawSeries?: CollectorApi.TrendSeries;
+    /** 原始点叠加降级警告（后端 rawDegraded 时返回） */
+    rawWarning?: string;
     /** 启用的四档阈值；未启用的档位不参与越限统计 */
     rules?: ThresholdRule[];
     series?: CollectorApi.TrendSeries;
@@ -31,6 +37,8 @@ const props = withDefaults(
     unit?: string;
   }>(),
   {
+    rawSeries: undefined,
+    rawWarning: undefined,
     rules: () => [],
     series: undefined,
     threshold: undefined,
@@ -45,9 +53,56 @@ const analysis = computed(() =>
     ? undefined
     : analyzeInterval(props.series, props.from, props.to, props.rules),
 );
-const enumAnalysis = computed(() =>
-  isEnum.value ? analyzeEnumInterval(props.series, props.channel) : undefined,
-);
+/**
+ * 枚举区间分析：优先用抽样原始点还原真实枚举码；
+ * 只有聚合桶时降级为“整桶同码 + 状态变化标记”的可确定信息，
+ * 绝不用桶均值四舍五入伪造枚举码（均值可能对应从未出现过的状态）。
+ */
+const enumAnalysis = computed(() => {
+  if (!isEnum.value) return undefined;
+  return (
+    analyzeEnumIntervalFromRaw(props.rawSeries) ??
+    analyzeEnumIntervalFromAggregate(props.series)
+  );
+});
+/**
+ * 最近码只来自可确定的精确来源（看板最新值的 valueNum/valueText），
+ * 取不到就显示 --，不从趋势序列推断。
+ */
+const latestEnumCode = computed(() => {
+  const value = props.channel.valueNum;
+  return isFiniteNumber(value) && Number.isInteger(value) ? value : undefined;
+});
+const latestEnumText = computed(() => {
+  const code = latestEnumCode.value;
+  if (code === undefined) return '--';
+  const text = props.channel.valueText?.trim();
+  return text ? `${text}（码 ${code}）` : `码 ${code}`;
+});
+const enumChangeText = computed(() => {
+  const value = enumAnalysis.value;
+  if (!value) return '--';
+  if (value.basis === 'raw') {
+    return value.lastChangeTime
+      ? formatShanghaiMdHm(value.lastChangeTime)
+      : '区间内未发生切换';
+  }
+  return value.changeObserved
+    ? '区间内发生过（聚合粒度无法定位时刻）'
+    : '区间内未观察到状态变化';
+});
+const enumBasisNote = computed(() => {
+  const value = enumAnalysis.value;
+  if (!value) return '';
+  if (value.basis === 'raw') {
+    return `分布基于抽样原始点（每约 ${value.bucketSeconds} 秒取最早一个有效样本）的真实枚举码，未做均值近似；占比与切换时刻为抽样口径，实际切换发生在所示时刻之前的一个步长内。`;
+  }
+  const changeNote =
+    value.changeBuckets > 0
+      ? `另有 ${value.changeBuckets} 个桶内发生过状态变化，桶内分布不可还原`
+      : '区间内未观察到状态变化';
+  return `聚合粒度不足以还原枚举分布：仅统计“整桶同码”桶的确定样本占比，${changeNote}；不输出按均值近似的码值。`;
+});
 
 const bucketText = computed(() => {
   if (analysis.value) {
@@ -56,7 +111,9 @@ const bucketText = computed(() => {
     }`;
   }
   if (enumAnalysis.value) {
-    return `${enumAnalysis.value.bucketSeconds} 秒（接口返回或按间隔估算）`;
+    return enumAnalysis.value.basis === 'raw'
+      ? `抽样步长 ${enumAnalysis.value.bucketSeconds} 秒（原始点叠加）`
+      : `${enumAnalysis.value.bucketSeconds} 秒（聚合桶）`;
   }
   return '--';
 });
@@ -222,35 +279,34 @@ const hasEnabledThresholds = computed(() =>
 
 <template>
   <div class="interval-analysis">
-    <div class="bucket-note">
+    <div v-if="!isEnum" class="bucket-note">
       桶宽 {{ bucketText }} · 缺测率按“有效桶 / 期望桶”推导；越限按桶均值判定，
       相邻越限桶按桶宽累计时长。
     </div>
 
-    <!-- 枚举通道：分布 + 最近切换时间 -->
+    <!-- 枚举通道：分布 + 最近切换时间；口径（抽样原始点 / 聚合桶降级）必须写清 -->
     <template v-if="isEnum">
       <div v-if="enumAnalysis" class="enum-block">
+        <div class="bucket-note">
+          桶宽 {{ bucketText }} · 最近码来自看板最新值，不从趋势序列推断。
+        </div>
         <div class="enum-head">
           <span>
             枚举分布 · 最近码
-            <strong>{{ enumAnalysis.latestCode }}</strong>
+            <strong>{{ latestEnumText }}</strong>
+            <small v-if="latestEnumCode === undefined" class="enum-hint">
+              （最新值不可用）
+            </small>
           </span>
-          <span>
-            最近切换
-            {{
-              enumAnalysis.lastChangeTime
-                ? formatShanghaiMdHm(enumAnalysis.lastChangeTime)
-                : '区间内未发生切换'
-            }}
-          </span>
+          <span> 最近切换 {{ enumChangeText }} </span>
         </div>
-        <div class="enum-list">
+        <div v-if="enumAnalysis.entries.length > 0" class="enum-list">
           <div
             v-for="entry in enumAnalysis.entries"
             :key="entry.code"
             class="enum-row"
           >
-            <span class="enum-label">{{ entry.label }}</span>
+            <span class="enum-label">码 {{ entry.code }}</span>
             <svg
               class="bar-svg"
               preserveAspectRatio="none"
@@ -271,9 +327,12 @@ const hasEnabledThresholds = computed(() =>
             </span>
           </div>
         </div>
-        <div class="bucket-note">
-          枚举分布按聚合桶均值四舍五入归并到枚举码，占比以桶内有效样本数加权，
-          属于近似结果（趋势接口不返回逐样本枚举文本）。
+        <div v-else class="interval-empty">
+          区间内没有可确定归属的枚举样本。
+        </div>
+        <div class="bucket-note">{{ enumBasisNote }}</div>
+        <div v-if="rawWarning" class="bucket-note">
+          {{ rawWarning }}；已按聚合桶降级展示。
         </div>
       </div>
       <div v-else class="interval-empty">该枚举通道在分析区间内没有可用数据。</div>
@@ -535,6 +594,11 @@ const hasEnabledThresholds = computed(() =>
 
 .enum-head {
   justify-content: space-between;
+}
+
+.enum-hint {
+  font-size: 9px;
+  color: #94a3b8;
 }
 
 .enum-list {

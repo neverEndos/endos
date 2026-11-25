@@ -711,68 +711,138 @@ export function analyzeInterval(
   };
 }
 
-export interface EnumDistributionEntry {
+export interface EnumCodeShare {
   code: number;
+  /**
+   * 样本数：raw 口径为抽样原始点数；aggregate 口径为“整桶同码”桶的有效样本数
+   * （count 加权，count 缺失时按 1 计）。
+   */
   count: number;
-  label: string;
+  /** 占全部可确定样本的比例（0~100） */
   percent: number;
 }
 
 export interface EnumIntervalAnalysis {
+  /** 统计口径：raw=抽样原始点（真实枚举码）；aggregate=聚合桶（只给可确定信息） */
+  basis: 'aggregate' | 'raw';
+  /** raw 口径为抽样步长（秒），aggregate 口径为聚合桶宽（秒） */
   bucketSeconds: number;
-  entries: EnumDistributionEntry[];
+  /** 桶内发生过状态变化的桶数（仅 aggregate 口径有意义，raw 口径恒为 0） */
+  changeBuckets: number;
+  /** 区间内是否观察到状态变化（raw：相邻抽样点码变化；aggregate：存在 min≠max 的桶） */
+  changeObserved: boolean;
+  entries: EnumCodeShare[];
+  /** 最近一次状态变化时刻（仅 raw 口径可近似给出，受抽样步长限制） */
   lastChangeTime?: number;
-  latestCode?: number;
+  /** 参与统计的样本总数（raw：全部抽样点；aggregate：整桶同码桶的有效样本数） */
   total: number;
 }
 
 /**
- * 枚举通道的区间分布：聚合接口只返回桶均值，无法还原精确文本采样，
- * 因此按桶均值四舍五入归并为枚举码，并以 count 作为权重近似占比；
- * 当前枚举值文本仅用于标注最新码，不做逐桶文本映射。
+ * 从序列中提取整数枚举码样本点：枚举码在 raw 层以数值 value 存储，
+ * 非整数说明不是合法枚举码（异常数据），直接跳过而不是四舍五入伪造一个码。
  */
-export function analyzeEnumInterval(
-  series: CollectorApi.TrendSeries | undefined,
-  channel?: CollectorApi.DashboardChannel,
+function extractEnumSamplePoints(
+  series?: CollectorApi.TrendSeries,
+): Array<{ code: number; t: number }> {
+  if (!series) return [];
+  const points: Array<{ code: number; t: number }> = [];
+  for (const point of series.points) {
+    const value = isFiniteNumber(point.value) ? point.value : point.avg;
+    if (!isFiniteNumber(value) || !Number.isInteger(value)) continue;
+    if (!isFiniteNumber(point.t)) continue;
+    points.push({ code: value, t: point.t });
+  }
+  return points.sort((left, right) => left.t - right.t);
+}
+
+/**
+ * 枚举区间分布（raw 口径）：基于趋势接口的抽样原始点序列（kind=raw，
+ * 每个步长桶取最早一个有效样本）统计真实枚举码，绝不使用桶均值近似。
+ * 占比与最近切换时刻都是抽样口径：实际切换发生在所示时刻之前的一个步长内。
+ */
+export function analyzeEnumIntervalFromRaw(
+  series?: CollectorApi.TrendSeries,
 ): EnumIntervalAnalysis | undefined {
-  const points = validAnalysisPoints(series);
+  const points = extractEnumSamplePoints(series);
   if (points.length === 0) return undefined;
-  const bucketSeconds = isFiniteNumber(series?.bucketSeconds)
-    ? series.bucketSeconds
-    : estimateBucketSeconds(points);
   const weights = new Map<number, number>();
   let lastChangeTime: number | undefined;
   let previousCode: number | undefined;
   for (const point of points) {
-    const code = Math.round(point.v);
-    const weight = isFiniteNumber(point.count) && point.count > 0 ? point.count : 1;
-    weights.set(code, (weights.get(code) ?? 0) + weight);
-    if (previousCode !== undefined && code !== previousCode) {
+    weights.set(point.code, (weights.get(point.code) ?? 0) + 1);
+    if (previousCode !== undefined && point.code !== previousCode) {
       lastChangeTime = point.t;
     }
-    previousCode = code;
+    previousCode = point.code;
   }
-  const total = [...weights.values()].reduce((sum, value) => sum + value, 0);
-  if (total <= 0) return undefined;
-  const currentCode = isFiniteNumber(channel?.valueNum)
-    ? Math.round(channel.valueNum)
-    : undefined;
-  const entries: EnumDistributionEntry[] = [...weights.entries()]
+  const total = points.length;
+  const entries: EnumCodeShare[] = [...weights.entries()]
     .map(([code, count]) => ({
       code,
       count,
-      label:
-        currentCode === code && channel?.valueText?.trim()
-          ? `${channel.valueText.trim()}（码 ${code}）`
-          : `码 ${code}`,
       percent: (count / total) * 100,
     }))
     .sort((left, right) => right.count - left.count || left.code - right.code);
   return {
-    bucketSeconds,
+    basis: 'raw',
+    bucketSeconds: isFiniteNumber(series?.bucketSeconds)
+      ? series.bucketSeconds
+      : 1,
+    changeBuckets: 0,
+    changeObserved: lastChangeTime !== undefined,
     entries,
     lastChangeTime,
-    latestCode: currentCode ?? Math.round(points[points.length - 1]!.v),
+    total,
+  };
+}
+
+/**
+ * 枚举区间分布（aggregate 口径）：聚合桶只保留均值与 min/max，
+ * 均值可能对应从未出现过的码，因此这里只对 min === max 的桶下结论
+ * （整桶有效样本都是同一个码，可确定归入），min ≠ max 的桶只标记
+ * “发生过状态变化”，不伪造码值与分布；最近切换时刻无法从聚合桶定位。
+ */
+export function analyzeEnumIntervalFromAggregate(
+  series?: CollectorApi.TrendSeries,
+): EnumIntervalAnalysis | undefined {
+  const points = validAnalysisPoints(series);
+  if (points.length === 0) return undefined;
+  const weights = new Map<number, number>();
+  let changeBuckets = 0;
+  for (const point of points) {
+    // min/max 是桶内全部有效样本的精确极值：min === max 才能确定整桶同码
+    if (!isFiniteNumber(point.min) || !isFiniteNumber(point.max)) continue;
+    if (point.min !== point.max) {
+      changeBuckets += 1;
+      continue;
+    }
+    if (!Number.isInteger(point.min)) continue;
+    const weight = isFiniteNumber(point.count) && point.count > 0 ? point.count : 1;
+    weights.set(point.min, (weights.get(point.min) ?? 0) + weight);
+  }
+  const total = [...weights.values()].reduce((sum, value) => sum + value, 0);
+  if (total <= 0 && changeBuckets === 0) return undefined;
+  const entries: EnumCodeShare[] =
+    total > 0
+      ? [...weights.entries()]
+          .map(([code, count]) => ({
+            code,
+            count,
+            percent: (count / total) * 100,
+          }))
+          .sort(
+            (left, right) => right.count - left.count || left.code - right.code,
+          )
+      : [];
+  return {
+    basis: 'aggregate',
+    bucketSeconds: isFiniteNumber(series?.bucketSeconds)
+      ? series.bucketSeconds
+      : estimateBucketSeconds(points),
+    changeBuckets,
+    changeObserved: changeBuckets > 0,
+    entries,
     total,
   };
 }

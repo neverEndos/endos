@@ -67,12 +67,19 @@ const ANALYSIS_WINDOWS = [
 type AnalysisWindowValue = (typeof ANALYSIS_WINDOWS)[number]['value'];
 const analysisWindow = ref<AnalysisWindowValue>('24h');
 const analysisSeries = ref<CollectorApi.TrendSeries>();
+/** 枚举通道的抽样原始点序列（kind=raw）；仅 ≤2 小时窗口请求，长窗后端会拒绝 */
+const analysisRawSeries = ref<CollectorApi.TrendSeries>();
+/** 原始点叠加降级（rawDegraded）时的后端警告 */
+const analysisRawWarning = ref<string>();
 const analysisLoading = ref(false);
 const analysisError = ref<string>();
 const analysisFrom = ref(0);
 const analysisTo = ref(0);
 const appliedAnalysisRangeText = ref('--');
 let analysisSeq = 0;
+
+/** 原始点叠加上限：与后端 RAW_OVERLAY_MAX_RANGE_SECONDS（2 小时）一致，超过会被拒绝 */
+const RAW_OVERLAY_MAX_WINDOW_SECONDS = 2 * 60 * 60;
 
 const channel = computed(() => props.target?.channel);
 const device = computed(() => props.target?.device);
@@ -156,7 +163,11 @@ const analysisWindowSeconds = computed(
 );
 /** 与主趋势一致：后端为每个通道都返回序列，必须看有效点而不是 series 长度 */
 const analysisHasData = computed(() =>
-  hasAnyPoint(analysisSeries.value ? [analysisSeries.value] : []),
+  hasAnyPoint(
+    [analysisSeries.value, analysisRawSeries.value].filter(
+      (item): item is CollectorApi.TrendSeries => item !== undefined,
+    ),
+  ),
 );
 
 const stats = computed(() => [
@@ -241,13 +252,17 @@ async function loadTrend() {
 }
 
 /**
- * 区间分析独立查询：只调用一次 getTrendSeries（单通道），
- * 枚举通道同样走趋势接口，用于近似分布与切换时间。
+ * 区间分析独立查询：只调用一次 getTrendSeries（单通道）。
+ * 枚举通道在 ≤2 小时窗口叠加 includeRaw 取抽样原始点（真实枚举码）；
+ * 24h/7d 超过后端原始点叠加范围上限，只能拿聚合桶，由 IntervalAnalysis
+ * 按“整桶同码 + 状态变化标记”降级展示，不做均值近似。
  */
 async function loadAnalysis() {
   analysisSeq += 1;
   const seq = analysisSeq;
   analysisSeries.value = undefined;
+  analysisRawSeries.value = undefined;
+  analysisRawWarning.value = undefined;
   analysisError.value = undefined;
   if (!open.value || !props.target || !props.hasTrendAccess) {
     analysisLoading.value = false;
@@ -260,6 +275,8 @@ async function loadAnalysis() {
   appliedAnalysisRangeText.value = `${formatShanghaiMdHm(
     from,
   )} ~ ${formatShanghaiMdHm(to)}`;
+  const includeRaw =
+    isEnum.value && analysisWindowSeconds.value <= RAW_OVERLAY_MAX_WINDOW_SECONDS;
   analysisLoading.value = true;
   try {
     const body = await getTrendSeries({
@@ -267,13 +284,21 @@ async function loadAnalysis() {
       deviceId: props.target.device.id,
       from,
       granularity: 'auto',
-      includeRaw: false,
+      includeRaw,
       to,
     });
     if (seq !== analysisSeq) return;
     analysisSeries.value =
       body?.series.find((item) => item.kind !== 'raw') ?? body?.series[0];
-    if (!analysisSeries.value) {
+    if (includeRaw) {
+      analysisRawSeries.value = body?.series.find(
+        (item) => item.kind === 'raw',
+      );
+      analysisRawWarning.value = body?.rawDegraded
+        ? (body?.rawWarning ?? '原始点加载失败')
+        : undefined;
+    }
+    if (!analysisSeries.value && !analysisRawSeries.value) {
       analysisError.value = '区间分析接口未返回该通道的数据';
     }
   } catch (error) {
@@ -421,6 +446,8 @@ function closeDrawer() {
           v-else-if="analysisHasData && target"
           :channel="target.channel"
           :from="analysisFrom"
+          :raw-series="analysisRawSeries"
+          :raw-warning="analysisRawWarning"
           :rules="analysisRules"
           :series="analysisSeries"
           :threshold="threshold"
