@@ -2,7 +2,7 @@
 import type { TimeSpan } from '../chart-utils';
 import type { MonitorChannel } from '../use-monitor';
 
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 import {
   formatAgo,
@@ -16,6 +16,8 @@ import {
   RANGE_SPECS,
   scaleDecimals,
   segmentWavePoints,
+  selectHatchSpans,
+  WAVE_HATCH_MIN_WIDTH,
   WAVE_X_TICK_COUNT,
 } from '../chart-utils';
 import { useMonitor } from '../use-monitor';
@@ -55,17 +57,14 @@ interface ChartSeries {
   slot: number;
 }
 
-/** 斜纹断档区（像素坐标）；宽度不足时不出标签 */
+/** 斜纹断档区（像素坐标）；只保留宽度达标的区块，窄断档仅断线 */
 interface HatchGap {
   from: number;
   to: number;
-  label: boolean;
+  width: number;
   x1: number;
   x2: number;
 }
-
-/** 断档区是否宽到需要绘制斜纹与「无数据」标签（SVG 视觉像素） */
-const HATCH_MIN_WIDTH = 32;
 
 const PAD_L = 50;
 const PAD_T = 22;
@@ -76,10 +75,14 @@ const PAD_R = 44;
 const store = useMonitor();
 
 const wrapRef = ref<HTMLElement>();
+const tipRef = ref<HTMLElement>();
 const size = ref({ h: 278, w: 632 });
 const hoverT = ref<null | number>(null);
 const hoverX = ref(0);
+/** tooltip 实测尺寸（首帧估算值接近放大后的真实尺寸），按实际宽高夹取 */
+const tipSize = ref({ h: 84, w: 140 });
 let resizeObserver: ResizeObserver | undefined;
+let tipObserver: ResizeObserver | undefined;
 
 const model = computed(() => {
   const items = store.waveSeries.value;
@@ -99,6 +102,8 @@ const model = computed(() => {
       item.data.bucketSeconds,
       from,
       to,
+      undefined,
+      item.channel.pollIntervalMs,
     );
     return segmented.segments.length > 0
       ? [{ item, segmented, slot: index + 1 }]
@@ -144,19 +149,19 @@ const model = computed(() => {
     };
   });
 
-  // 斜纹区取各序列断档的交集：只有所有曲线都无数据的时段才标注「无数据」
-  const hatchSpans = intersectSpans(series.map((s) => s.gaps));
-  const hatchGaps: HatchGap[] = hatchSpans.map((span) => {
-    const x1 = xOf(span.from);
-    const x2 = xOf(span.to);
-    return {
-      from: span.from,
-      label: x2 - x1 >= HATCH_MIN_WIDTH,
-      to: span.to,
-      x1,
-      x2,
-    };
-  });
+  // 斜纹区取各序列断档的交集：只有所有曲线都无数据的时段才标注「无数据」；
+  // 窄断档只断线不绘制任何斜纹/文字，且最多绘制最宽的若干块，保证元素数有界
+  const hatchGaps: HatchGap[] = selectHatchSpans(
+    intersectSpans(series.map((s) => s.gaps)),
+    (span) => xOf(span.to) - xOf(span.from),
+    WAVE_HATCH_MIN_WIDTH,
+  ).map(({ span, width }) => ({
+    from: span.from,
+    to: span.to,
+    width,
+    x1: xOf(span.from),
+    x2: xOf(span.to),
+  }));
 
   return {
     from,
@@ -312,20 +317,30 @@ const hoverInfo = computed(() => {
       });
   const nowMs = Date.now();
   const title = m.to - t <= m.bucketMs ? '现在' : formatAgo(t, nowMs);
-  const topY = rows.length > 0 ? Math.min(...rows.map((row) => row.y)) - 10 : PAD_T;
-  return { rows, title, topY, x: hoverX.value };
+  const anchorY =
+    rows.length > 0 ? Math.min(...rows.map((row) => row.y)) : PAD_T + m.ih / 2;
+  return { rows, title, anchorY, x: hoverX.value };
 });
 
 const tipStyle = computed(() => {
   const info = hoverInfo.value;
   const m = model.value;
   if (!info || !m) return {};
-  // 夹取基于恒定绘图区：左右各留约半个 tooltip 宽度，避免压住右轴刻度区
-  const tipHalf = 40;
-  const leftBound = PAD_L + tipHalf;
-  const rightBound = Math.max(leftBound, PAD_L + m.iw - tipHalf);
-  const left = Math.min(Math.max(info.x, leftBound), rightBound);
-  return { left: `${left}px`, top: `${Math.max(14, info.topY)}px` };
+  // 按实测宽高夹取：水平限定在绘图区内（不压左右轴区），垂直不出绘图区、不上溢到标题
+  const { h, w } = tipSize.value;
+  const plotLeft = PAD_L;
+  const plotRight = PAD_L + m.iw;
+  const left = Math.min(
+    Math.max(info.x - w / 2, plotLeft),
+    Math.max(plotLeft, plotRight - w),
+  );
+  const above = info.anchorY - 10 - h;
+  const below = info.anchorY + 14;
+  const top = Math.min(
+    Math.max(above >= 2 ? above : below, 2),
+    Math.max(2, size.value.h - h - 2),
+  );
+  return { left: `${left}px`, top: `${top}px` };
 });
 
 function onPointerMove(event: PointerEvent) {
@@ -356,8 +371,26 @@ onMounted(() => {
   resizeObserver.observe(wrap);
 });
 
+// tooltip 出现/内容变化时实测尺寸（首帧先用估算值，实测后立即校正位置）
+watch(
+  tipRef,
+  (el) => {
+    tipObserver?.disconnect();
+    tipObserver = undefined;
+    if (!el) return;
+    const measure = () => {
+      tipSize.value = { h: el.offsetHeight, w: el.offsetWidth };
+    };
+    measure();
+    tipObserver = new ResizeObserver(measure);
+    tipObserver.observe(el);
+  },
+  { flush: 'post' },
+);
+
 onBeforeUnmount(() => {
   resizeObserver?.disconnect();
+  tipObserver?.disconnect();
 });
 </script>
 
@@ -380,6 +413,7 @@ onBeforeUnmount(() => {
     <div
       ref="wrapRef"
       class="chart-wrap"
+      @pointercancel="onPointerLeave"
       @pointerleave="onPointerLeave"
       @pointermove="onPointerMove"
     >
@@ -452,12 +486,11 @@ onBeforeUnmount(() => {
           <rect
             :x="gap.x1"
             :y="PAD_T"
-            :width="Math.max(0, gap.x2 - gap.x1)"
+            :width="gap.width"
             :height="model.ih"
             fill="url(#wave-hatch)"
           />
           <text
-            v-if="gap.label"
             :x="(gap.x1 + gap.x2) / 2"
             :y="PAD_T + model.ih / 2 + 3"
             text-anchor="middle"
@@ -613,7 +646,7 @@ onBeforeUnmount(() => {
       </svg>
       <div v-else class="chart-empty">{{ emptyText }}</div>
 
-      <div v-if="hoverInfo" class="tip" :style="tipStyle">
+      <div v-if="hoverInfo" ref="tipRef" class="tip" :style="tipStyle">
         <div class="tt">{{ hoverInfo.title }}</div>
         <div v-for="(row, i) in hoverInfo.rows" :key="`tv-${i}`" class="vv">
           <i :style="{ background: row.color }"></i>
@@ -729,8 +762,9 @@ onBeforeUnmount(() => {
 .tip {
   position: absolute;
   z-index: 6;
-  padding: 5px 8px;
-  font-size: 9.5px;
+  padding: 9px 13px;
+  font-size: 12px;
+  font-weight: 500;
   line-height: 1.6;
   white-space: nowrap;
   pointer-events: none;
@@ -739,14 +773,14 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   box-shadow: 0 12px 24px -10px #000;
   opacity: 1;
-  transform: translate(-50%, -100%);
   transition: opacity 0.12s;
 }
 
 .tip .tt {
-  margin-bottom: 1px;
+  margin-bottom: 3px;
   color: var(--txt3);
-  font-size: 8.5px;
+  font-size: 11px;
+  font-weight: 500;
   letter-spacing: 0.3px;
 }
 
@@ -754,25 +788,29 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   color: #eaf0f7;
+  font-size: 12px;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
-  gap: 5px;
+  gap: 6px;
 }
 
 .tip .vv i {
   display: inline-block;
-  width: 5px;
-  height: 5px;
-  margin-right: 4px;
+  width: 7px;
+  height: 7px;
+  margin-right: 3px;
   border-radius: 50%;
 }
 
 .tip .vv span {
   color: #7c8a97;
-  font-size: 8.5px;
+  font-size: 10px;
+  font-weight: 500;
 }
 
 .tip .vv.nodata {
   color: #7e8a96;
+  font-weight: 500;
   letter-spacing: 0.3px;
 }
 

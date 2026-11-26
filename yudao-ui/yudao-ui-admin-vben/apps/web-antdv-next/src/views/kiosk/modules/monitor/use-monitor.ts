@@ -41,6 +41,8 @@ export interface MonitorChannel {
   valueKind: string;
   /** 固定色板按排序顺序取色 */
   accent: string;
+  /** 采样周期：通道自身配置优先，缺省回退设备轮询周期；用于断档判定 */
+  pollIntervalMs: null | number;
   valueNum: null | number;
   valueText: null | string;
   quality: null | number;
@@ -170,6 +172,7 @@ export function useMonitorStore(): MonitorStore {
     const flat = (dashboard.value?.sensors ?? []).flatMap(
       (sensor) => sensor.channels,
     );
+    const devicePollMs = dashboard.value?.device.pollIntervalMs ?? null;
     return flat
       .map((channel, index) => {
         const meta = channelMeta.value.get(channel.id);
@@ -181,6 +184,8 @@ export function useMonitorStore(): MonitorStore {
           valueKind: meta?.valueKind ?? channel.valueKind,
           sort: meta?.sort ?? Number.MAX_SAFE_INTEGER,
           order: index,
+          pollIntervalMs:
+            meta?.pollIntervalMs ?? devicePollMs ?? null,
           valueNum: channel.valueNum ?? null,
           valueText: channel.valueText ?? null,
           quality: channel.quality ?? null,
@@ -196,6 +201,7 @@ export function useMonitorStore(): MonitorStore {
         decimalPlaces: channel.decimalPlaces,
         valueKind: channel.valueKind,
         accent: ACCENT_PALETTE[index % ACCENT_PALETTE.length]!,
+        pollIntervalMs: channel.pollIntervalMs,
         valueNum: channel.valueNum,
         valueText: channel.valueText,
         quality: channel.quality,

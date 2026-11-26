@@ -187,8 +187,66 @@ export interface WaveSegmentedData {
 /** 波形显示目标点数（段内抽稀后的大致总数） */
 export const WAVE_TARGET_POINTS = 120;
 
-/** 相邻有效点时间差超过 1.5 个桶宽即判定为断档 */
+/** 相邻有效点时间差超过 1.5 个采样步长（max(桶宽, 采样周期)）即判定为断档 */
 export const WAVE_GAP_BUCKET_RATIO = 1.5;
+
+/** 分段数量上限：超限时合并最短段，避免慢采样通道产生海量细段 */
+export const WAVE_MAX_SEGMENTS = 24;
+
+/** 斜纹断档块数量上限（取最宽的若干块，其余只断线不标注） */
+export const WAVE_MAX_HATCH_GAPS = 8;
+
+/** 绘制斜纹与「无数据」标签的最小像素宽度 */
+export const WAVE_HATCH_MIN_WIDTH = 32;
+
+export interface HatchSpan {
+  span: TimeSpan;
+  width: number;
+}
+
+/**
+ * 选出需要绘制斜纹的断档：宽度达到阈值才绘制（窄断档只断线），
+ * 且最多保留最宽的 maxCount 块，保证 SVG 元素数有界。
+ */
+export function selectHatchSpans(
+  spans: TimeSpan[],
+  widthOf: (span: TimeSpan) => number,
+  minWidth = WAVE_HATCH_MIN_WIDTH,
+  maxCount = WAVE_MAX_HATCH_GAPS,
+): HatchSpan[] {
+  return spans
+    .map((span) => ({ span, width: widthOf(span) }))
+    .filter((hatch) => hatch.width >= minWidth)
+    .sort((a, b) => b.width - a.width)
+    .slice(0, maxCount);
+}
+
+/** 把段数压到上限：反复将时间跨度最短的段合并到相邻段（跨过的断档随之消失） */
+function limitSegments(segments: WavePoint[][], max: number) {
+  let list = segments;
+  while (list.length > max) {
+    let shortest = 0;
+    let shortestSpan = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < list.length; i++) {
+      const segment = list[i]!;
+      const span = segment[segment.length - 1]!.t - segment[0]!.t;
+      if (span < shortestSpan) {
+        shortestSpan = span;
+        shortest = i;
+      }
+    }
+    // 优先并入前一段，首段则并入后一段，保持时间顺序
+    const neighbor = shortest > 0 ? shortest - 1 : shortest + 1;
+    const merged =
+      shortest < neighbor
+        ? [...list[shortest]!, ...list[neighbor]!]
+        : [...list[neighbor]!, ...list[shortest]!];
+    const next = list.filter((_, i) => i !== shortest && i !== neighbor);
+    next.splice(Math.min(shortest, neighbor), 0, merged);
+    list = next;
+  }
+  return list;
+}
 
 /** 段内抽稀：组内取时间中心与平均值；不足 2 点时按单点返回 */
 function downsampleWaveSegment(points: WavePoint[], target: number) {
@@ -210,10 +268,12 @@ function downsampleWaveSegment(points: WavePoint[], target: number) {
 
 /**
  * 趋势桶序列分段 + 抽稀。规则：
- * 1. 相邻有效点时间差 > 1.5×桶宽 → 断档，各段独立；
+ * 1. 相邻有效点时间差 > 1.5×max(桶宽, 采样周期) → 断档，各段独立；
+ *    采样周期取自通道 pollIntervalMs（缺省回退设备轮询周期，再回退桶宽）；
  * 2. 窗口首尾无数据的部分同样计入断档；
  * 3. 段内按时间跨度按比例分配约 target 个点（组内平均），不跨段合并；
- * 4. min/max 取全量有效桶（抽稀前），保证 Y 轴与极值刻度不因抽稀变化。
+ * 4. 段数超过上限时合并最短段（优先并入前一段），保证元素数有界；
+ * 5. min/max 取全量有效桶（抽稀前），保证 Y 轴与极值刻度不因抽稀变化。
  */
 export function segmentWavePoints(
   points: CollectorApi.TrendPoint[] | undefined,
@@ -221,12 +281,21 @@ export function segmentWavePoints(
   from: number,
   to: number,
   target = WAVE_TARGET_POINTS,
+  sampleIntervalMs?: null | number,
 ): WaveSegmentedData {
   const bucketMs =
     Number.isFinite(bucketSeconds) && bucketSeconds > 0
       ? bucketSeconds * 1000
       : 60_000;
-  const threshold = bucketMs * WAVE_GAP_BUCKET_RATIO;
+  // 慢采样通道相邻点间隔天然大于桶宽，阈值需以采样周期为下限
+  const sampleMs =
+    sampleIntervalMs !== null &&
+    sampleIntervalMs !== undefined &&
+    Number.isFinite(sampleIntervalMs) &&
+    sampleIntervalMs > 0
+      ? sampleIntervalMs
+      : 0;
+  const threshold = Math.max(bucketMs, sampleMs) * WAVE_GAP_BUCKET_RATIO;
   const valid: WavePoint[] = (points ?? [])
     .filter(
       (p): p is CollectorApi.TrendPoint & { avg: number } =>
@@ -248,7 +317,7 @@ export function segmentWavePoints(
   }
 
   // 按时间间隔切段
-  const raw: WavePoint[][] = [];
+  let raw: WavePoint[][] = [];
   for (const point of valid) {
     const current = raw[raw.length - 1];
     const prev = current?.[current.length - 1];
@@ -258,6 +327,8 @@ export function segmentWavePoints(
       current.push(point);
     }
   }
+  // 段数超限时合并最短段，避免慢采样/抖动数据产生海量细段与斜纹块
+  raw = limitSegments(raw, WAVE_MAX_SEGMENTS);
 
   // 断档：窗口首尾 + 相邻段之间；起点取上一个桶的结束时刻（桶本身视为有数据）
   const firstT = valid[0]!.t;
@@ -279,13 +350,23 @@ export function segmentWavePoints(
     Math.max(segment[segment.length - 1]!.t - segment[0]!.t, bucketMs),
   );
   const totalSpan = spans.reduce((sum, span) => sum + span, 0);
-  const segments = raw.map((segment, index) => {
-    const alloc = Math.max(
-      1,
-      Math.round((target * spans[index]!) / totalSpan),
-    );
-    return { points: downsampleWaveSegment(segment, alloc) };
-  });
+  const allocs = spans.map((span) => Math.max(1, Math.round((target * span) / totalSpan)));
+  // 大量短段时每段至少 1 点会超出目标总数，从最长段逐步回收，保证总数接近 target
+  let totalAlloc = allocs.reduce((sum, n) => sum + n, 0);
+  while (totalAlloc > target) {
+    let largest = -1;
+    for (let i = 0; i < allocs.length; i++) {
+      if (allocs[i]! > 1 && (largest < 0 || allocs[i]! > allocs[largest]!)) {
+        largest = i;
+      }
+    }
+    if (largest < 0) break;
+    allocs[largest] = allocs[largest]! - 1;
+    totalAlloc--;
+  }
+  const segments = raw.map((segment, index) => ({
+    points: downsampleWaveSegment(segment, allocs[index]!),
+  }));
 
   let min = Number.POSITIVE_INFINITY;
   let max = Number.NEGATIVE_INFINITY;
