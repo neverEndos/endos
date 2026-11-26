@@ -362,18 +362,31 @@ onBeforeUnmount(() => {
 .nav-btn {
   position: relative;
   display: flex;
-  height: 28px;
+  height: 32px;
   align-items: center;
-  padding: 0 9px 0 11px;
+  padding: 0 10px 0 12px;
   color: #d3deea;
-  font-size: 11px;
+  font-size: 12px;
   cursor: pointer;
   user-select: none;
   background: rgb(255 255 255 / 4.5%);
   border: 1px solid rgb(255 255 255 / 10%);
   border-radius: 9px;
-  gap: 7px;
+  gap: 8px;
   transition: 0.18s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 透明热区扩展到 ≥44px 高，不改变视觉高度、不影响相邻长按退出按钮 */
+.nav-btn::before {
+  position: absolute;
+  content: "";
+  inset: -8px -4px;
+}
+
+.nav-btn > svg:not(.chev) {
+  width: 14px;
+  height: 14px;
 }
 
 .nav-btn:hover {
@@ -383,6 +396,8 @@ onBeforeUnmount(() => {
 }
 
 .nav-btn .chev {
+  width: 10px;
+  height: 10px;
   opacity: 0.7;
   transition: 0.2s;
 }
@@ -398,11 +413,12 @@ onBeforeUnmount(() => {
 
 .nav-pop {
   position: absolute;
-  top: 36px;
+  /* 跟随按钮实际高度定位，按钮放大后仍保持 8px 间距 */
+  top: calc(100% + 8px);
   right: 0;
   z-index: 40;
   display: none;
-  width: 176px;
+  width: 200px;
   padding: 6px;
   background: rgb(14 19 25 / 97%);
   border: 1px solid rgb(255 255 255 / 10%);
@@ -425,14 +441,30 @@ onBeforeUnmount(() => {
 }
 
 .nav-it {
+  position: relative;
   display: flex;
+  min-height: 40px;
   align-items: center;
-  padding: 7px 8px;
+  padding: 10px 10px;
+  margin-top: 4px;
   color: #c3cfdd;
-  font-size: 11.5px;
+  font-size: 12.5px;
   cursor: pointer;
   border-radius: 8px;
   gap: 8px;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 透明热区扩到 ≥44px（上下各 2px，与相邻项 4px 间距恰好不重叠） */
+.nav-it::before {
+  position: absolute;
+  content: "";
+  inset: -2px 0;
+}
+
+.nav-it svg {
+  width: 13px;
+  height: 13px;
 }
 
 .nav-it:hover {
