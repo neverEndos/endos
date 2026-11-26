@@ -307,25 +307,26 @@ function handleDashClick() {
 
 .ana-dash {
   display: flex;
-  height: 26px;
+  height: 36px;
   flex: none;
   align-items: center;
   justify-content: center;
-  padding: 0 10px;
+  padding: 0 12px;
   margin-top: 4px;
   overflow: hidden;
   color: #7e8a96;
-  font-size: 9.5px;
+  font-size: 10.5px;
   letter-spacing: 0.3px;
   white-space: nowrap;
   border: 1px dashed rgb(255 255 255 / 16%);
   border-radius: 12px;
   gap: 6px;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .ana-dash i {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
   flex: none;
   border-radius: 50%;
 }
