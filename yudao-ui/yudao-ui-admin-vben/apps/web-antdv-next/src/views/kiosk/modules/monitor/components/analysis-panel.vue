@@ -111,7 +111,7 @@ function handleDashClick() {
           :disabled="store.selectedChannels.value.length < 2"
           @click="store.stepAnalysis(-1)"
         >
-          ‹
+          <span class="glyph">‹</span>
         </button>
         <button
           type="button"
@@ -119,7 +119,7 @@ function handleDashClick() {
           :disabled="store.selectedChannels.value.length < 2"
           @click="store.stepAnalysis(1)"
         >
-          ›
+          <span class="glyph">›</span>
         </button>
       </div>
     </div>
@@ -188,8 +188,8 @@ function handleDashClick() {
   display: flex;
   flex: none;
   align-items: center;
-  gap: 4px;
-  padding-top: 1px;
+  /* 两个箭头热区 40×40，间距 ≥8px，避免误触 */
+  gap: 8px;
 }
 
 .ch-head .pg .idx {
@@ -199,14 +199,28 @@ function handleDashClick() {
   font-variant-numeric: tabular-nums;
 }
 
+/* 热区 40×40：负外边距抵消视觉高度，头部基本不增高；热区外沿为透明区 */
 .ch-head .pg button {
   display: grid;
-  width: 18px;
-  height: 18px;
+  width: 40px;
+  height: 40px;
   padding: 0;
-  color: #b8c6d6;
-  font-size: 10px;
+  margin-block: -10px;
   cursor: pointer;
+  background: transparent;
+  border: 0;
+  place-items: center;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 视觉规格沿用原设计（底色/边框/圆角 5/禁用透明度），仅放大到 24×24 */
+.ch-head .pg button .glyph {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  color: #b8c6d6;
+  font-size: 13px;
+  line-height: 1;
   background: rgb(255 255 255 / 5%);
   border: 1px solid rgb(255 255 255 / 10%);
   border-radius: 5px;
@@ -214,7 +228,7 @@ function handleDashClick() {
   transition: 0.15s;
 }
 
-.ch-head .pg button:hover:not(:disabled) {
+.ch-head .pg button:hover:not(:disabled) .glyph {
   color: #cffbea;
   background: rgb(52 211 153 / 16%);
   border-color: rgb(52 211 153 / 50%);
@@ -222,6 +236,9 @@ function handleDashClick() {
 
 .ch-head .pg button:disabled {
   cursor: default;
+}
+
+.ch-head .pg button:disabled .glyph {
   opacity: 0.3;
 }
 
@@ -290,25 +307,26 @@ function handleDashClick() {
 
 .ana-dash {
   display: flex;
-  height: 26px;
+  height: 36px;
   flex: none;
   align-items: center;
   justify-content: center;
-  padding: 0 10px;
+  padding: 0 12px;
   margin-top: 4px;
   overflow: hidden;
   color: #7e8a96;
-  font-size: 9.5px;
+  font-size: 10.5px;
   letter-spacing: 0.3px;
   white-space: nowrap;
   border: 1px dashed rgb(255 255 255 / 16%);
   border-radius: 12px;
   gap: 6px;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .ana-dash i {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
   flex: none;
   border-radius: 50%;
 }

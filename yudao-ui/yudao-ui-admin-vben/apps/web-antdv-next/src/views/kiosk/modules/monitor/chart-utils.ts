@@ -75,28 +75,26 @@ export interface RangeSpec {
   minutes: number;
   /** 范围按钮与副标题文案 */
   label: string;
-  /** X 轴 5 个刻度文案 */
-  ticks: string[];
 }
+
+/** X 轴刻度数量（首尾含） */
+export const WAVE_X_TICK_COUNT = 5;
 
 export const RANGE_SPECS: Record<TrendRange, RangeSpec> = {
   '1h': {
     key: '1h',
     label: '1 小时',
     minutes: 60,
-    ticks: ['-60min', '-45min', '-30min', '-15min', '现在'],
   },
   '8h': {
     key: '8h',
     label: '8 小时',
     minutes: 480,
-    ticks: ['-8h', '-6h', '-4h', '-2h', '现在'],
   },
   '24h': {
     key: '24h',
     label: '24 小时',
     minutes: 1440,
-    ticks: ['-24h', '-18h', '-12h', '-6h', '现在'],
   },
 };
 
@@ -164,6 +162,283 @@ export function downsample(values: number[], target = 30) {
   return out;
 }
 
+/** 波形有效点（时间 + 平均值），用于分段与抽稀后的绘制 */
+export interface WavePoint {
+  t: number;
+  avg: number;
+}
+
+/** 断档时间跨度（含窗口首尾的空档） */
+export interface TimeSpan {
+  from: number;
+  to: number;
+}
+
+export interface WaveSegmentedData {
+  /** 已抽稀的分段序列，各段独立绘制（不跨段连线/填充） */
+  segments: { points: WavePoint[] }[];
+  /** 断档区间：相邻数据段之间，以及窗口首尾到首/末点 */
+  gaps: TimeSpan[];
+  /** 全量有效桶的极值（不受抽稀影响），供 Y 轴刻度使用 */
+  max: number;
+  min: number;
+}
+
+/** 波形显示目标点数（段内抽稀后的大致总数） */
+export const WAVE_TARGET_POINTS = 120;
+
+/** 相邻有效点时间差超过 1.5 个采样步长（max(桶宽, 采样周期)）即判定为断档 */
+export const WAVE_GAP_BUCKET_RATIO = 1.5;
+
+/** 仅允许合并小于该倍阈值（3×）的小断档；真实长断档禁止跨段合并 */
+export const WAVE_SMALL_GAP_MERGE_FACTOR = 3;
+
+/** 分段数量上限：超限时只合并小断档；大断档保留，宁可段数超限也不抹掉停机 */
+export const WAVE_MAX_SEGMENTS = 24;
+
+/** 斜纹断档块数量上限（取最宽的若干块，其余只断线不标注） */
+export const WAVE_MAX_HATCH_GAPS = 8;
+
+/** 绘制斜纹与「无数据」标签的最小像素宽度 */
+export const WAVE_HATCH_MIN_WIDTH = 32;
+
+export interface HatchSpan {
+  span: TimeSpan;
+  width: number;
+}
+
+/**
+ * 选出需要绘制斜纹的断档：宽度达到阈值才绘制（窄断档只断线），
+ * 且最多保留最宽的 maxCount 块，保证 SVG 元素数有界。
+ */
+export function selectHatchSpans(
+  spans: TimeSpan[],
+  widthOf: (span: TimeSpan) => number,
+  minWidth = WAVE_HATCH_MIN_WIDTH,
+  maxCount = WAVE_MAX_HATCH_GAPS,
+): HatchSpan[] {
+  return spans
+    .map((span) => ({ span, width: widthOf(span) }))
+    .filter((hatch) => hatch.width >= minWidth)
+    .sort((a, b) => b.width - a.width)
+    .slice(0, maxCount);
+}
+
+/** 相邻有效点真实间隔的中位数：对长时间停机鲁棒，用于稳健估计采样周期 */
+function medianInterval(points: WavePoint[]) {
+  // 少于 4 个点时中位数不可靠，返回 0 交由配置值/桶宽兜底
+  if (points.length < 4) return 0;
+  const deltas: number[] = [];
+  for (let i = 1; i < points.length; i++) {
+    deltas.push(points[i]!.t - points[i - 1]!.t);
+  }
+  deltas.sort((a, b) => a - b);
+  const mid = Math.floor(deltas.length / 2);
+  return deltas.length % 2 === 1
+    ? deltas[mid]!
+    : (deltas[mid - 1]! + deltas[mid]!) / 2;
+}
+
+/** 由分段列表计算断档（含窗口首尾）；断档起点取上一个桶的结束时刻 */
+function computeGaps(
+  segments: WavePoint[][],
+  bucketMs: number,
+  from: number,
+  to: number,
+  threshold: number,
+) {
+  const gaps: TimeSpan[] = [];
+  const first = segments[0];
+  const lastSeg = segments[segments.length - 1];
+  if (!first || !lastSeg) return gaps;
+  const firstT = first[0]!.t;
+  const lastT = lastSeg[lastSeg.length - 1]!.t;
+  if (firstT - from > threshold) gaps.push({ from, to: firstT });
+  for (let i = 1; i < segments.length; i++) {
+    const prevEnd = segments[i - 1]![segments[i - 1]!.length - 1]!.t + bucketMs;
+    const nextStart = segments[i]![0]!.t;
+    if (nextStart > prevEnd) gaps.push({ from: prevEnd, to: nextStart });
+  }
+  const trailingFrom = lastT + bucketMs;
+  if (to > trailingFrom && to - lastT > threshold) {
+    gaps.push({ from: trailingFrom, to });
+  }
+  return gaps;
+}
+
+/**
+ * 段数超限时只合并「小断档」两端的分段，且优先合并断档最短的一对；
+ * 若剩余断档都超过合并上限（真实停机），保留超限段数，不抹掉断档。
+ */
+function limitSegments(
+  segments: WavePoint[][],
+  bucketMs: number,
+  threshold: number,
+  max: number,
+) {
+  let list = segments;
+  const mergeLimit = threshold * WAVE_SMALL_GAP_MERGE_FACTOR;
+  while (list.length > max && list.length > 1) {
+    let mergeAt = -1;
+    let smallestGap = Number.POSITIVE_INFINITY;
+    for (let i = 1; i < list.length; i++) {
+      const prevEnd = list[i - 1]![list[i - 1]!.length - 1]!.t + bucketMs;
+      const gap = list[i]![0]!.t - prevEnd;
+      if (gap <= mergeLimit && gap < smallestGap) {
+        smallestGap = gap;
+        mergeAt = i;
+      }
+    }
+    if (mergeAt < 0) break;
+    list.splice(mergeAt - 1, 2, [
+      ...list[mergeAt - 1]!,
+      ...list[mergeAt]!,
+    ]);
+  }
+  return list;
+}
+
+/** 段内抽稀：组内取时间中心与平均值；不足 2 点时按单点返回 */
+function downsampleWaveSegment(points: WavePoint[], target: number) {
+  if (target <= 1) return [points[0]!];
+  if (points.length <= target) return points;
+  const out: WavePoint[] = [];
+  const chunk = points.length / target;
+  for (let i = 0; i < target; i++) {
+    const start = Math.floor(i * chunk);
+    const end = Math.max(start + 1, Math.floor((i + 1) * chunk));
+    const group = points.slice(start, end);
+    out.push({
+      avg: group.reduce((sum, p) => sum + p.avg, 0) / group.length,
+      t: (group[0]!.t + group[group.length - 1]!.t) / 2,
+    });
+  }
+  return out;
+}
+
+/**
+ * 趋势桶序列分段 + 抽稀。规则：
+ * 1. 相邻有效点时间差 > 1.5×max(桶宽, 稳健采样周期) → 断档，各段独立；
+ *    稳健采样周期 = max(通道 pollIntervalMs（缺省回退设备轮询周期）, 相邻点间隔中位数)，
+ *    配置值与实际节奏取较大者，防止采集滞后时把真实停机误判为连续数据；
+ * 2. 窗口首尾无数据的部分同样计入断档；
+ * 3. 段内按时间跨度按比例分配约 target 个点（组内平均），不跨段合并；
+ * 4. 段数超过上限时只合并小断档（< 3×阈值）两端的分段；真实长断档禁止合并，
+ *    宁可段数超限也不抹掉停机；总点数维持约 target；
+ * 5. min/max 取全量有效桶（抽稀前），保证 Y 轴与极值刻度不因抽稀变化。
+ */
+export function segmentWavePoints(
+  points: CollectorApi.TrendPoint[] | undefined,
+  bucketSeconds: number,
+  from: number,
+  to: number,
+  target = WAVE_TARGET_POINTS,
+  sampleIntervalMs?: null | number,
+): WaveSegmentedData {
+  const bucketMs =
+    Number.isFinite(bucketSeconds) && bucketSeconds > 0
+      ? bucketSeconds * 1000
+      : 60_000;
+  // 配置的采样周期（通道 → 设备级），缺失时回退桶宽
+  const configuredSampleMs =
+    sampleIntervalMs !== null &&
+    sampleIntervalMs !== undefined &&
+    Number.isFinite(sampleIntervalMs) &&
+    sampleIntervalMs > 0
+      ? sampleIntervalMs
+      : 0;
+  const valid: WavePoint[] = (points ?? [])
+    .filter(
+      (p): p is CollectorApi.TrendPoint & { avg: number } =>
+        p.avg !== null &&
+        p.avg !== undefined &&
+        Number.isFinite(p.avg) &&
+        p.t >= from &&
+        p.t <= to,
+    )
+    .map((p) => ({ avg: p.avg, t: p.t }))
+    .sort((a, b) => a.t - b.t);
+  if (valid.length === 0) {
+    return {
+      gaps: [{ from, to }],
+      max: Number.NaN,
+      min: Number.NaN,
+      segments: [],
+    };
+  }
+  // 稳健采样周期 = max(配置值, 实际相邻点间隔中位数)：
+  // 采集器滞后/元数据缺失时也能反映真实节奏，同时中位数不受长时间停机影响
+  const sampleMs = Math.max(configuredSampleMs, medianInterval(valid));
+  const threshold = Math.max(bucketMs, sampleMs) * WAVE_GAP_BUCKET_RATIO;
+
+  // 按时间间隔切段
+  let raw: WavePoint[][] = [];
+  for (const point of valid) {
+    const current = raw[raw.length - 1];
+    const prev = current?.[current.length - 1];
+    if (!current || (prev && point.t - prev.t > threshold)) {
+      raw.push([point]);
+    } else {
+      current.push(point);
+    }
+  }
+  // 段数超限时仅合并「小断档」两端的分段；真实长断档保留，宁可段数超限
+  raw = limitSegments(raw, bucketMs, threshold, WAVE_MAX_SEGMENTS);
+
+  // 断档：窗口首尾 + 相邻段之间；起点取上一个桶的结束时刻（桶本身视为有数据）
+  const gaps = computeGaps(raw, bucketMs, from, to, threshold);
+
+  // 按各段时间跨度分配总点数；单点段至少分到 1 个点
+  const spans = raw.map((segment) =>
+    Math.max(segment[segment.length - 1]!.t - segment[0]!.t, bucketMs),
+  );
+  const totalSpan = spans.reduce((sum, span) => sum + span, 0);
+  const allocs = spans.map((span) => Math.max(1, Math.round((target * span) / totalSpan)));
+  // 大量短段时每段至少 1 点会超出目标总数，从最长段逐步回收，保证总数接近 target
+  let totalAlloc = allocs.reduce((sum, n) => sum + n, 0);
+  while (totalAlloc > target) {
+    let largest = -1;
+    for (let i = 0; i < allocs.length; i++) {
+      if (allocs[i]! > 1 && (largest < 0 || allocs[i]! > allocs[largest]!)) {
+        largest = i;
+      }
+    }
+    if (largest < 0) break;
+    allocs[largest] = allocs[largest]! - 1;
+    totalAlloc--;
+  }
+  const segments = raw.map((segment, index) => ({
+    points: downsampleWaveSegment(segment, allocs[index]!),
+  }));
+
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  for (const point of valid) {
+    if (point.avg < min) min = point.avg;
+    if (point.avg > max) max = point.avg;
+  }
+  return { gaps, max, min, segments };
+}
+
+/** 多序列断档取交集：只有所有序列都无数据的时段才是整体「无数据」区 */
+export function intersectSpans(spans: TimeSpan[][]) {
+  const [first, ...rest] = spans;
+  if (!first) return [];
+  let result = first;
+  for (const other of rest) {
+    const next: TimeSpan[] = [];
+    for (const a of result) {
+      for (const b of other) {
+        const from = Math.max(a.from, b.from);
+        const to = Math.min(a.to, b.to);
+        if (to > from) next.push({ from, to });
+      }
+    }
+    result = next;
+  }
+  return result;
+}
+
 const TIME_ZONE = 'Asia/Shanghai';
 
 const timeFormatter = new Intl.DateTimeFormat('en-GB', {
@@ -189,6 +464,23 @@ const dayFormatter = new Intl.DateTimeFormat('en-CA', {
 export function formatClock(ms: number) {
   const d = new Date(ms);
   return { date: dateFormatter.format(d), time: timeFormatter.format(d) };
+}
+
+const hourMinuteFormatter = new Intl.DateTimeFormat('en-GB', {
+  hour: '2-digit',
+  hourCycle: 'h23',
+  minute: '2-digit',
+  timeZone: TIME_ZONE,
+});
+
+/** X 轴刻度：HH:MM（1h/8h 窗口） */
+export function formatAxisTime(ms: number) {
+  return hourMinuteFormatter.format(new Date(ms));
+}
+
+/** X 轴刻度：MM-DD HH:MM（24h 跨天窗口，全部带日期避免歧义） */
+export function formatAxisMoment(ms: number) {
+  return `${dayFormatter.format(new Date(ms))} ${hourMinuteFormatter.format(new Date(ms))}`;
 }
 
 /** 极值时刻：当天 HH:MM:SS，跨天补 MM-DD 前缀 */

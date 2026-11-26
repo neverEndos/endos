@@ -42,7 +42,7 @@ function slotOf(id: number) {
           :disabled="page === 0"
           @click="store.setPage(page - 1)"
         >
-          ‹
+          <span class="glyph">‹</span>
         </button>
         <button
           type="button"
@@ -50,7 +50,7 @@ function slotOf(id: number) {
           :disabled="page >= pageCount - 1"
           @click="store.setPage(page + 1)"
         >
-          ›
+          <span class="glyph">›</span>
         </button>
       </div>
     </div>
@@ -148,8 +148,10 @@ function slotOf(id: number) {
 
 .pager {
   display: flex;
+  height: 20px;
   align-items: center;
-  gap: 5px;
+  /* 两个箭头热区 40×40，间距 ≥8px，避免误触 */
+  gap: 8px;
 }
 
 .pager .idx {
@@ -159,23 +161,38 @@ function slotOf(id: number) {
   letter-spacing: 0.5px;
 }
 
+/* 热区 40×40：用负外边距抵消视觉高度，头部保持 20px、下方不侵入卡片区 */
 .pager button {
   display: grid;
-  width: 20px;
-  height: 20px;
+  width: 40px;
+  height: 40px;
   padding: 0;
-  color: #b8c6d6;
-  font-size: 11px;
-  line-height: 1;
+  margin-block: -16px -4px;
   cursor: pointer;
+  background: transparent;
+  border: 0;
+  place-items: center;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 视觉规格沿用原设计（底色/边框/圆角 6/禁用透明度），仅放大到 24×24 */
+.pager button .glyph {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  color: #b8c6d6;
+  font-size: 13px;
+  line-height: 1;
   background: rgb(255 255 255 / 5%);
   border: 1px solid rgb(255 255 255 / 10%);
   border-radius: 6px;
   place-items: center;
+  /* 热区为避让下方卡片整体上移，图标回正到头部中线 */
+  transform: translateY(5px);
   transition: 0.15s;
 }
 
-.pager button:hover:not(:disabled) {
+.pager button:hover:not(:disabled) .glyph {
   color: #cffbea;
   background: rgb(52 211 153 / 16%);
   border-color: rgb(52 211 153 / 55%);
@@ -183,6 +200,9 @@ function slotOf(id: number) {
 
 .pager button:disabled {
   cursor: default;
+}
+
+.pager button:disabled .glyph {
   opacity: 0.28;
 }
 
