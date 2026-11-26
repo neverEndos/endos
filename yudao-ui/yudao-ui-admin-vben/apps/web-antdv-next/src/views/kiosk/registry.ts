@@ -4,8 +4,6 @@ import { defineAsyncComponent } from 'vue';
 export interface KioskModuleDefinition {
   /** 异步加载的真实模块组件 */
   component: ReturnType<typeof defineAsyncComponent>;
-  /** Shell 内联图标标识 */
-  icon: string;
   /** 深链接与 query 使用的稳定 key */
   key: string;
   /** 导航排序，数值小的在前 */
@@ -18,17 +16,17 @@ export interface KioskModuleDefinition {
 export const kioskModules: KioskModuleDefinition[] = [
   {
     component: defineAsyncComponent(
-      () => import('./modules/devices/index.vue'),
+      () => import('./modules/monitor/index.vue'),
     ),
-    icon: 'devices',
-    key: 'devices',
+    key: 'monitor',
     order: 10,
     permissions: [
       'collector:dashboard:query',
       'collector:device:query',
-      'collector:alarm:query',
+      'collector:trend:query',
+      'collector:channel:query',
     ],
-    title: '设备监视',
+    title: '实时监控',
   },
 ];
 
