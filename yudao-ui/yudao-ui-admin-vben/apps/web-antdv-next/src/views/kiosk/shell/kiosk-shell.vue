@@ -1,390 +1,173 @@
 <script lang="ts" setup>
-import type { KioskModuleDefinition } from '../registry';
-import type { KioskGlobalStatus } from './types';
+import { onBeforeUnmount, onMounted, ref } from 'vue';
 
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+/**
+ * Kiosk 缩放外壳：画布固定 1024×600，按 min(vw/1024, vh/600) 等比缩放居中，
+ * 任何分辨率下无滚动条、无裁切。视觉基准为 docs/kiosk-design/04-半透明科技风.html。
+ */
+const DESIGN_WIDTH = 1024;
+const DESIGN_HEIGHT = 600;
 
-import LongPressExit from '../components/long-press-exit.vue';
+const scale = ref(1);
 
-const props = defineProps<{
-  activeKey?: string;
-  kioskMode: boolean;
-  modules: KioskModuleDefinition[];
-  status: KioskGlobalStatus;
-  title: string;
-}>();
-
-const emit = defineEmits<{
-  select: [key: string];
-}>();
-
-const clockNow = ref(new Date());
-let clockTimer: ReturnType<typeof setInterval> | undefined;
-
-const timeText = computed(() =>
-  new Intl.DateTimeFormat('zh-CN', {
-    day: '2-digit',
-    hour: '2-digit',
-    hour12: false,
-    minute: '2-digit',
-    month: '2-digit',
-    second: '2-digit',
-    timeZone: 'Asia/Shanghai',
-  }).format(clockNow.value),
-);
-
-const connectionText = computed(() => {
-  const labels = {
-    connecting: '连接中',
-    degraded: '部分中断',
-    idle: '未连接',
-    offline: '连接中断',
-    online: '已连接',
-  };
-  return labels[props.status.connection];
-});
-
-const alarmText = computed(() => {
-  if (props.status.activeAlarmCount === null) return '活动报警 --';
-  if (props.status.activeAlarmCount === 0) return '无活动报警';
-  const level = props.status.highestAlarmLevel === 3 ? '异常' : '预警';
-  return `活动报警 ${props.status.activeAlarmCount} · 最高${level}`;
-});
+function updateScale() {
+  scale.value = Math.min(
+    window.innerWidth / DESIGN_WIDTH,
+    window.innerHeight / DESIGN_HEIGHT,
+  );
+}
 
 onMounted(() => {
-  clockTimer = setInterval(() => {
-    if (!document.hidden) clockNow.value = new Date();
-  }, 1000);
+  updateScale();
+  window.addEventListener('resize', updateScale);
 });
 
 onBeforeUnmount(() => {
-  if (clockTimer !== undefined) clearInterval(clockTimer);
+  window.removeEventListener('resize', updateScale);
 });
 </script>
 
 <template>
-  <div class="kiosk-shell">
-    <aside class="kiosk-navigation" aria-label="Kiosk 模块导航">
-      <div class="brand" aria-label="采集器 Kiosk">
-        <span class="brand-mark" aria-hidden="true">K</span>
-        <span>采集终端</span>
-      </div>
-      <nav class="module-list">
-        <button
-          v-for="module in modules"
-          :key="module.key"
-          class="module-button"
-          :class="{ active: module.key === activeKey }"
-          type="button"
-          :aria-current="module.key === activeKey ? 'page' : undefined"
-          @click="emit('select', module.key)"
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <template v-if="module.icon === 'devices'">
-              <rect x="3" y="4" width="18" height="12" rx="2" />
-              <path d="M8 20h8M12 16v4M7 10h2l1.5-3 3 6 1.5-3h2" />
-            </template>
-            <path v-else d="M5 5h14v14H5z" />
-          </svg>
-          <span>{{ module.title }}</span>
-        </button>
-      </nav>
-      <div class="navigation-note">只读监视</div>
-    </aside>
-
-    <div class="kiosk-main">
-      <header class="status-bar">
-        <h1>{{ title }}</h1>
-        <div class="global-status" aria-live="polite">
-          <span class="status-item" :class="`state-${status.connection}`">
-            <span class="status-dot" aria-hidden="true"></span>
-            {{ connectionText }}
-          </span>
-          <span
-            class="status-item"
-            :class="{
-              'has-alarm': (status.activeAlarmCount ?? 0) > 0,
-              'is-stale': status.alarmDataStale,
-            }"
-          >
-            {{ alarmText }}
-            <small v-if="status.alarmDataStale">（旧数据）</small>
-          </span>
-          <time class="clock" :datetime="clockNow.toISOString()">
-            {{ timeText }}
-          </time>
-          <LongPressExit v-if="kioskMode" />
-        </div>
-      </header>
-      <main class="kiosk-content">
-        <slot />
-      </main>
+  <div class="kiosk-viewport">
+    <div
+      class="kiosk-canvas"
+      :style="{ transform: `scale(${scale})` }"
+    >
+      <slot></slot>
     </div>
   </div>
 </template>
 
+<style>
+/* 流光边框的 @property 与关键帧需全局注册，供各子组件 scoped 样式按名引用 */
+@property --flow {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@keyframes kiosk-flow {
+  to {
+    --flow: 360deg;
+  }
+}
+
+@keyframes kiosk-pulse {
+  50% {
+    box-shadow:
+      0 0 0 6px rgb(52 211 153 / 5%),
+      0 0 14px rgb(52 211 153 / 90%);
+  }
+}
+
+@keyframes kiosk-fade {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 玻璃容器：kiosk 各面板共用（前缀避免污染全局） */
+.kiosk-glass {
+  position: relative;
+  background: linear-gradient(180deg, var(--glass1), var(--glass2));
+  border: 1px solid rgb(255 255 255 / 15%);
+  border-radius: 18px;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 5.5%),
+    0 22px 44px -30px rgb(0 0 0 / 95%);
+  backdrop-filter: blur(17px);
+}
+
+/* 环绕流光边框：不占用布局、不遮挡内容 */
+.kiosk-flow::before {
+  position: absolute;
+  padding: 1px;
+  pointer-events: none;
+  content: "";
+  background: conic-gradient(
+    from var(--flow),
+    rgba(111, 240, 190, 0) 0deg,
+    rgba(111, 240, 190, 0.2) 18deg,
+    rgba(111, 240, 190, 1) 42deg,
+    rgba(52, 211, 153, 1) 52deg,
+    rgba(255, 166, 89, 0.85) 78deg,
+    rgba(255, 122, 26, 0.15) 104deg,
+    rgba(111, 240, 190, 0) 150deg,
+    rgba(111, 240, 190, 0) 360deg
+  );
+  border-radius: 19px;
+  inset: -1px;
+  animation: kiosk-flow 6s linear infinite;
+  filter: drop-shadow(0 0 5px rgb(52 211 153 / 55%));
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+</style>
+
 <style scoped>
-.kiosk-shell {
+.kiosk-viewport {
   display: grid;
-  grid-template-columns: 156px minmax(0, 1fr);
   width: 100vw;
   height: 100vh;
   height: 100dvh;
   overflow: hidden;
-  color: #e5edf8;
-  font-family:
-    Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
-  background: #08111f;
-}
-
-.kiosk-navigation {
-  display: flex;
-  min-height: 0;
-  flex-direction: column;
-  padding: 14px 10px;
-  background: #0d1929;
-  border-right: 1px solid #233149;
-}
-
-.brand {
-  display: flex;
-  min-height: 48px;
-  align-items: center;
-  gap: 10px;
-  padding: 0 8px 14px;
-  font-size: 17px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  border-bottom: 1px solid #233149;
-}
-
-.brand-mark {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  color: #082f49;
-  background: #67e8f9;
-  border-radius: 9px;
+  background: #05080d;
   place-items: center;
 }
 
-.module-list {
+.kiosk-canvas {
+  /* 设计 Token（04-半透明科技风 §1），子组件通过 var() 继承使用 */
+  --green: #34d399;
+  --mint: #6ff0be;
+  --orange: #ff7a1a;
+  --amber: #ffa659;
+  --txt: #f1f5ff;
+  --txt2: #8e9aa6;
+  --txt3: #77859a;
+  --glass1: rgb(232 242 255 / 5.8%);
+  --glass2: rgb(232 242 255 / 2.6%);
+
+  position: relative;
   display: flex;
-  min-height: 0;
-  flex: 1;
+  width: 1024px;
+  height: 600px;
+  flex: none;
   flex-direction: column;
-  gap: 10px;
-  padding-top: 16px;
-  overflow-y: auto;
-}
-
-.module-button {
-  display: flex;
-  min-height: 56px;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  color: #a9bad0;
-  font-size: 15px;
-  text-align: left;
-  touch-action: manipulation;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 10px;
-}
-
-.module-button svg {
-  width: 24px;
-  height: 24px;
-  flex: 0 0 24px;
-  fill: none;
-  stroke: currentcolor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.7;
-}
-
-.module-button.active {
-  color: #ecfeff;
-  background: #164e63;
-  border-color: #0e7490;
-}
-
-.module-button:focus-visible,
-.module-button:active {
-  border-color: #67e8f9;
-}
-
-.navigation-note {
-  padding: 12px 8px 0;
-  color: #71839b;
-  font-size: 12px;
-  border-top: 1px solid #233149;
-}
-
-.kiosk-main {
-  display: flex;
-  min-width: 0;
-  min-height: 0;
-  flex-direction: column;
-}
-
-.status-bar {
-  display: flex;
-  min-height: 64px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 14px 8px 20px;
-  background: #0d1929;
-  border-bottom: 1px solid #233149;
-}
-
-.status-bar h1 {
-  flex: 0 0 auto;
-  margin: 0;
   overflow: hidden;
-  font-size: 20px;
-  font-weight: 650;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: #f1f5ff;
+  font-family:
+    Inter, "HarmonyOS Sans SC", "PingFang SC", "Microsoft YaHei", system-ui,
+    sans-serif;
+  background:
+    radial-gradient(820px 520px at 12% -8%, rgb(28 64 58 / 55%), transparent 62%),
+    radial-gradient(720px 520px at 102% 108%, rgb(40 30 60 / 42%), transparent 58%),
+    radial-gradient(600px 400px at 60% 40%, rgb(20 28 36 / 60%), transparent 70%),
+    #070a0f;
+  -webkit-font-smoothing: antialiased;
 }
 
-.global-status {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 14px;
-  font-size: 13px;
-}
-
-.status-item {
-  display: inline-flex;
-  min-height: 44px;
-  align-items: center;
-  color: #a9bad0;
-  white-space: nowrap;
-}
-
-.status-item small {
-  margin-left: 3px;
-  color: #fbbf24;
-}
-
-.status-item.state-online {
-  color: #6ee7b7;
-}
-
-.status-item.state-degraded,
-.status-item.state-offline,
-.status-item.has-alarm {
-  color: #fbbf24;
-}
-
-.status-item.state-offline,
-.status-item.has-alarm {
-  color: #fda4af;
-}
-
-.status-dot {
-  width: 8px;
-  height: 8px;
-  margin-right: 6px;
-  background: currentcolor;
-  border-radius: 50%;
-}
-
-.clock {
-  min-height: 44px;
-  align-content: center;
-  color: #d7e3f4;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.kiosk-content {
-  min-width: 0;
-  min-height: 0;
-  flex: 1;
-  overflow: auto;
-  overscroll-behavior: contain;
-  -webkit-overflow-scrolling: touch;
-}
-
-@media (max-width: 900px) {
-  .kiosk-shell {
-    grid-template-columns: 124px minmax(0, 1fr);
-  }
-
-  .kiosk-navigation {
-    padding-inline: 8px;
-  }
-
-  .brand {
-    gap: 7px;
-    padding-inline: 4px;
-    font-size: 14px;
-  }
-
-  .brand-mark {
-    width: 30px;
-    height: 30px;
-  }
-
-  .module-button {
-    gap: 7px;
-    padding-inline: 9px;
-    font-size: 14px;
-  }
-
-  .status-bar {
-    gap: 7px;
-    padding-left: 14px;
-  }
-
-  .status-bar h1 {
-    font-size: 18px;
-  }
-
-  .global-status {
-    gap: 8px;
-    font-size: 12px;
-  }
-}
-
-@media (max-width: 640px) {
-  .kiosk-shell {
-    grid-template-columns: 88px minmax(0, 1fr);
-  }
-
-  .brand > span:last-child,
-  .navigation-note {
-    display: none;
-  }
-
-  .brand {
-    justify-content: center;
-  }
-
-  .module-button {
-    flex-direction: column;
-    justify-content: center;
-    gap: 2px;
-    font-size: 12px;
-  }
-
-  .status-bar h1 {
-    display: none;
-  }
-
-  .global-status {
-    width: 100%;
-    justify-content: space-between;
-  }
-
-  .clock {
-    font-size: 11px;
-  }
+/* 32×32 网格线，从中心向外淡出 */
+.kiosk-canvas::after {
+  position: absolute;
+  pointer-events: none;
+  content: "";
+  background-image:
+    linear-gradient(rgb(255 255 255 / 1.8%) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(255 255 255 / 1.8%) 1px, transparent 1px);
+  background-size: 32px 32px;
+  inset: 0;
+  mask-image: radial-gradient(circle at 50% 45%, #000 30%, transparent 85%);
 }
 </style>

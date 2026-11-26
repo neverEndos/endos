@@ -1,6 +1,4 @@
 <script lang="ts" setup>
-import type { KioskGlobalStatus } from './shell/types';
-
 import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
@@ -8,7 +6,6 @@ import { useAccessStore } from '@vben/stores';
 
 import { getAccessibleKioskModules } from './registry';
 import KioskShell from './shell/kiosk-shell.vue';
-import { initialKioskGlobalStatus } from './shell/types';
 
 defineOptions({ name: 'KioskIndex' });
 
@@ -17,9 +14,6 @@ const router = useRouter();
 const accessStore = useAccessStore();
 
 const activeKey = ref<string>();
-const moduleStatus = ref<KioskGlobalStatus>({
-  ...initialKioskGlobalStatus,
-});
 
 const accessibleModules = computed(() =>
   getAccessibleKioskModules(accessStore.accessCodes),
@@ -58,35 +52,23 @@ function selectModule(key: string) {
   void router.push({ query: { ...route.query, module: key } });
 }
 
-function handleStatusChange(status: KioskGlobalStatus) {
-  moduleStatus.value = status;
-}
-
 watch(
   [() => route.query.module, () => accessStore.accessCodes],
   () => void resolveRequestedModule(),
   { deep: true, immediate: true },
 );
-
-watch(activeKey, () => {
-  moduleStatus.value = { ...initialKioskGlobalStatus, connection: 'connecting' };
-});
 </script>
 
 <template>
-  <KioskShell
-    :active-key="activeKey"
-    :kiosk-mode="kioskMode"
-    :modules="accessibleModules"
-    :status="moduleStatus"
-    :title="activeModule?.title ?? '采集器 Kiosk'"
-    @select="selectModule"
-  >
+  <KioskShell>
     <component
       :is="activeModule.component"
       v-if="activeModule"
       :key="activeModule.key"
-      @status-change="handleStatusChange"
+      :active-key="activeKey"
+      :kiosk-mode="kioskMode"
+      :modules="accessibleModules"
+      @select="selectModule"
     />
     <section v-else class="forbidden" role="alert">
       <strong>403</strong>
@@ -99,7 +81,8 @@ watch(activeKey, () => {
 <style scoped>
 .forbidden {
   display: grid;
-  min-height: 100%;
+  width: 100%;
+  height: 100%;
   align-content: center;
   justify-items: center;
   padding: 32px;
