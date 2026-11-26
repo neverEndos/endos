@@ -1,22 +1,29 @@
 <script lang="ts" setup>
+import type { TimeSpan } from '../chart-utils';
 import type { MonitorChannel } from '../use-monitor';
 
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 
 import {
   formatAgo,
+  formatAxisMoment,
+  formatAxisTime,
   formatNumber,
+  intersectSpans,
   linePath,
   niceScale,
   RANGE_ORDER,
   RANGE_SPECS,
   scaleDecimals,
+  segmentWavePoints,
+  WAVE_X_TICK_COUNT,
 } from '../chart-utils';
 import { useMonitor } from '../use-monitor';
 
 /**
- * 实时波形：手写 SVG 双 Y 轴平滑曲线 + 十字线 tooltip。
- * slot1 左轴薄荷绿、slot2 右轴琥珀；X 轴按请求窗口的真实时间映射。
+ * 历史趋势：手写 SVG 双 Y 轴平滑曲线 + 十字线 tooltip。
+ * slot1 左轴薄荷绿、slot2 右轴琥珀；X 轴为具体时钟刻度，按请求窗口的真实时间映射。
+ * 无数据时段断线并以斜纹区标注；绘制点抽稀到约 120 点，聚合仍用全量桶。
  */
 defineOptions({ name: 'KioskWaveChart' });
 
@@ -27,17 +34,38 @@ interface ChartPoint {
   y: number;
 }
 
+interface ChartSegment {
+  /** 抽稀后的绘制点 */
+  points: ChartPoint[];
+  /** 该段平滑曲线路径；单点段为空字符串 */
+  line: string;
+  /** 该段渐变填充路径；仅主序列且成线时非空 */
+  area: string;
+}
+
 interface ChartSeries {
   channel: MonitorChannel;
   color: string;
   dec: number;
-  line: string;
-  area: string;
-  points: ChartPoint[];
+  segments: ChartSegment[];
+  /** 断档区（时间），用于判断指针是否落在无数据时段 */
+  gaps: TimeSpan[];
   scale: { hi: number; lo: number; step: number };
   /** 选中槽位（1 起），与卡片徽标/分析面板 Y1、Y2 口径一致 */
   slot: number;
 }
+
+/** 斜纹断档区（像素坐标）；宽度不足时不出标签 */
+interface HatchGap {
+  from: number;
+  to: number;
+  label: boolean;
+  x1: number;
+  x2: number;
+}
+
+/** 断档区是否宽到需要绘制斜纹与「无数据」标签（SVG 视觉像素） */
+const HATCH_MIN_WIDTH = 32;
 
 const PAD_L = 50;
 const PAD_T = 22;
@@ -64,47 +92,69 @@ const model = computed(() => {
   // 避免无数据通道（enum 通道或窗口内无样本）占住 slot 导致 series[1] 访问崩溃
   const drawable = items.flatMap((item, index) => {
     if (!item.data) return [];
-    const valid = item.data.points.filter(
-      (p): p is typeof p & { avg: number } =>
-        p.avg !== null && p.avg !== undefined && p.t >= from && p.t <= to,
+    const segmented = segmentWavePoints(
+      item.data.points,
+      item.data.bucketSeconds,
+      from,
+      to,
     );
-    return valid.length > 0 ? [{ item, slot: index + 1, valid }] : [];
+    return segmented.segments.length > 0
+      ? [{ item, segmented, slot: index + 1 }]
+      : [];
   });
   if (drawable.length === 0) return null;
   const dual = drawable.length > 1;
   const padR = dual ? 44 : 12;
   const iw = W - PAD_L - padR;
   const ih = H - PAD_T - PAD_B;
+  const bucketMs = firstWithData.data.bucketSeconds * 1000;
   const xOf = (t: number) => PAD_L + ((t - from) / (to - from)) * iw;
 
-  const series: ChartSeries[] = drawable.map(({ item, slot, valid }) => {
-    const values = valid.map((p) => p.avg);
-    const scale = niceScale(Math.min(...values), Math.max(...values), 4);
+  const series: ChartSeries[] = drawable.map(({ item, segmented, slot }) => {
+    // Y 轴刻度取全量有效桶极值（segmentWavePoints 未抽稀前的 min/max）
+    const scale = niceScale(segmented.min, segmented.max, 4);
     const yOf = (v: number) =>
       PAD_T + (1 - (v - scale.lo) / (scale.hi - scale.lo)) * ih;
-    const points: ChartPoint[] = valid.map((p) => ({
-      avg: p.avg,
-      t: p.t,
-      x: xOf(p.t),
-      y: yOf(p.avg),
-    }));
-    const line = linePath(points.map((p) => [p.x, p.y]));
-    const last = points[points.length - 1]!;
-    // 单点序列无法成线，仅保留点供十字线/tooltip 使用
-    const area = line
-      ? `${line} L${last.x.toFixed(1)},${(PAD_T + ih).toFixed(1)} L${PAD_L},${(PAD_T + ih).toFixed(1)} Z`
-      : '';
+    const segments: ChartSegment[] = segmented.segments.map((segment) => {
+      const points: ChartPoint[] = segment.points.map((p) => ({
+        avg: p.avg,
+        t: p.t,
+        x: xOf(p.t),
+        y: yOf(p.avg),
+      }));
+      const line = linePath(points.map((p) => [p.x, p.y]));
+      const last = points[points.length - 1]!;
+      // 单点段无法成线，仅保留点供单点绘制与十字线/tooltip 使用
+      const area = line
+        ? `${line} L${last.x.toFixed(1)},${(PAD_T + ih).toFixed(1)} L${points[0]!.x.toFixed(1)},${(PAD_T + ih).toFixed(1)} Z`
+        : '';
+      return { points, line, area };
+    });
     return {
       channel: item.channel,
       color: item.color,
       dec: scaleDecimals(scale.step),
-      line,
-      area,
-      points,
+      gaps: segmented.gaps,
+      segments,
       scale,
       slot,
     };
   });
+
+  // 斜纹区取各序列断档的交集：只有所有曲线都无数据的时段才标注「无数据」
+  const hatchSpans = intersectSpans(series.map((s) => s.gaps));
+  const hatchGaps: HatchGap[] = hatchSpans.map((span) => {
+    const x1 = xOf(span.from);
+    const x2 = xOf(span.to);
+    return {
+      from: span.from,
+      label: x2 - x1 >= HATCH_MIN_WIDTH,
+      to: span.to,
+      x1,
+      x2,
+    };
+  });
+
   return {
     from,
     to,
@@ -113,9 +163,10 @@ const model = computed(() => {
     padR,
     iw,
     ih,
-    bucketMs: firstWithData.data.bucketSeconds * 1000,
+    bucketMs,
     series,
     dual,
+    hatchGaps,
   };
 });
 
@@ -154,19 +205,25 @@ const rightTicks = computed(() => {
   });
 });
 
-/** X 轴 5 个刻度：按请求窗口均布 */
+/** X 轴时钟刻度：按请求窗口均布 5 个具体时间（24h 全部带 MM-DD 避免跨天歧义） */
 const xTicks = computed(() => {
   const m = model.value;
   if (!m) return [];
-  const ticks = RANGE_SPECS[store.range.value].ticks;
-  return ticks.map((label, i) => ({
-    label,
-    x: PAD_L + (m.iw * i) / (ticks.length - 1),
-    anchor: (i === 0 ? 'start' : i === ticks.length - 1 ? 'end' : 'middle') as
-      | 'end'
-      | 'middle'
-      | 'start',
-  }));
+  const formatter =
+    store.range.value === '24h' ? formatAxisMoment : formatAxisTime;
+  return Array.from({ length: WAVE_X_TICK_COUNT }, (_, i) => {
+    const t =
+      m.from + ((m.to - m.from) * i) / (WAVE_X_TICK_COUNT - 1);
+    return {
+      label: formatter(t),
+      x: PAD_L + (m.iw * i) / (WAVE_X_TICK_COUNT - 1),
+      anchor: (i === 0
+        ? 'start'
+        : i === WAVE_X_TICK_COUNT - 1
+          ? 'end'
+          : 'middle') as 'end' | 'middle' | 'start',
+    };
+  });
 });
 
 /** 图例与有数据序列对齐：无数据通道（enum/窗口内无样本）不显示，Y 编号沿用选中槽位 */
@@ -181,18 +238,24 @@ const legendItems = computed(() => {
   }));
 });
 
+/** 底部提示：显示当前窗口的实际起止时钟时间（与 X 轴刻度口径一致，不用倒计时措辞） */
 const axisHint = computed(() => {
-  const label = RANGE_SPECS[store.range.value].label;
   const m = model.value;
   const first = m?.series[0];
   const second = m?.series[1];
   // 左右轴单位之间用全角空格分隔（与原型一致）
   const gap = String.fromCharCode(0x3000);
-  if (first && second) {
-    return `X 轴 · 时间区间（${label}）｜左轴 ${first.channel.unit || '--'}${gap}右轴 ${second.channel.unit || '--'}`;
+  let windowText = `X 轴 · ${RANGE_SPECS[store.range.value].label}窗口`;
+  if (m) {
+    const formatter =
+      store.range.value === '24h' ? formatAxisMoment : formatAxisTime;
+    windowText = `X 轴 · ${formatter(m.from)} → ${formatter(m.to)}`;
   }
-  if (first) return `X 轴 · 时间区间（${label}）｜Y 轴 ${first.channel.unit || '--'}`;
-  return `X 轴 · 时间区间（${label}）`;
+  if (first && second) {
+    return `${windowText}｜左轴 ${first.channel.unit || '--'}${gap}右轴 ${second.channel.unit || '--'}`;
+  }
+  if (first) return `${windowText}｜Y 轴 ${first.channel.unit || '--'}`;
+  return windowText;
 });
 
 const emptyText = computed(() => {
@@ -201,28 +264,52 @@ const emptyText = computed(() => {
   return '暂无趋势数据';
 });
 
-/** 十字线与 tooltip：以主序列最近桶为锚，各曲线取该时刻最近的桶 */
+/** 时间是否落在该序列的断档区 */
+function inGap(gaps: TimeSpan[], t: number) {
+  return gaps.some((gap) => t > gap.from && t < gap.to);
+}
+
+/** 该序列全部分段中距离 t 最近的有效绘制点 */
+function nearestPoint(series: ChartSeries, t: number) {
+  let best: ChartPoint | undefined;
+  for (const segment of series.segments) {
+    for (const point of segment.points) {
+      if (!best || Math.abs(point.t - t) < Math.abs(best.t - t)) best = point;
+    }
+  }
+  return best;
+}
+
+/**
+ * 十字线与 tooltip：横坐标在绘图区内连续取值；
+ * 主序列落在断档区时只显示时间标题 +「无数据」，不再显示数值行。
+ */
 const hoverInfo = computed(() => {
   const m = model.value;
   const t = hoverT.value;
   if (!m || t === null) return null;
-  const rows = m.series.map((s) => {
-    let best = s.points[0]!;
-    for (const p of s.points) {
-      if (Math.abs(p.t - t) < Math.abs(best.t - t)) best = p;
-    }
-    return {
-      color: s.color,
-      value: best.avg,
-      unit: s.channel.unit,
-      dec: s.channel.decimalPlaces,
-      y: best.y,
-    };
-  });
+  const primary = m.series[0]!;
+  const primaryGap = inGap(primary.gaps, t);
+  const rows = primaryGap
+    ? []
+    : m.series.flatMap((s) => {
+        // 该曲线此刻处于断档区 → 不显示数值行
+        if (inGap(s.gaps, t)) return [];
+        const best = nearestPoint(s, t);
+        if (!best) return [];
+        return [
+          {
+            color: s.color,
+            dec: s.channel.decimalPlaces,
+            unit: s.channel.unit,
+            value: best.avg,
+            y: best.y,
+          },
+        ];
+      });
   const nowMs = Date.now();
-  const title =
-    m.to - t <= m.bucketMs ? '现在' : formatAgo(t, nowMs);
-  const topY = Math.min(...rows.map((row) => row.y)) - 10;
+  const title = m.to - t <= m.bucketMs ? '现在' : formatAgo(t, nowMs);
+  const topY = rows.length > 0 ? Math.min(...rows.map((row) => row.y)) - 10 : PAD_T;
   return { rows, title, topY, x: hoverX.value };
 });
 
@@ -231,7 +318,7 @@ const tipStyle = computed(() => {
   const m = model.value;
   if (!info || !m) return {};
   const left = Math.min(Math.max(info.x, 52), m.W - 46);
-  return { left: `${left}px`, top: `${info.topY}px` };
+  return { left: `${left}px`, top: `${Math.max(14, info.topY)}px` };
 });
 
 function onPointerMove(event: PointerEvent) {
@@ -241,13 +328,10 @@ function onPointerMove(event: PointerEvent) {
   const rect = wrap.getBoundingClientRect();
   // 画布被等比缩放，按 viewBox 与渲染尺寸的比例换算回布局坐标
   const px = ((event.clientX - rect.left) * m.W) / rect.width;
-  const pts = m.series[0]!.points;
-  let best = pts[0]!;
-  for (const p of pts) {
-    if (Math.abs(p.x - px) < Math.abs(best.x - px)) best = p;
-  }
-  hoverT.value = best.t;
-  hoverX.value = best.x;
+  // 限制在绘图区内，再换算为连续时间（断档区也需要可悬停）
+  const x = Math.min(Math.max(px, PAD_L), PAD_L + m.iw);
+  hoverX.value = x;
+  hoverT.value = m.from + ((x - PAD_L) / m.iw) * (m.to - m.from);
 }
 
 function onPointerLeave() {
@@ -273,7 +357,7 @@ onBeforeUnmount(() => {
 <template>
   <section class="kiosk-glass wave">
     <div class="wave-head">
-      <h3>实时波形</h3>
+      <h3>历史趋势</h3>
       <div class="legend">
         <span
           v-for="item in legendItems"
@@ -317,12 +401,27 @@ onBeforeUnmount(() => {
               <feMergeNode in="SourceGraphic" />
             </feMerge>
           </filter>
+          <!-- 无数据区斜纹：低亮度 45° 条纹，不抢曲线视觉 -->
+          <pattern
+            id="wave-hatch"
+            width="7"
+            height="7"
+            patternTransform="rotate(45)"
+            patternUnits="userSpaceOnUse"
+          >
+            <rect
+              width="7"
+              height="7"
+              fill="rgba(255,255,255,0.02)"
+            />
+            <rect width="2.4" height="7" fill="rgba(255,255,255,0.05)" />
+          </pattern>
         </defs>
 
         <!-- X 轴竖向网格 -->
         <line
-          v-for="tick in xTicks"
-          :key="`xg-${tick.label}`"
+          v-for="(tick, i) in xTicks"
+          :key="`xg-${i}`"
           :x1="tick.x"
           :y1="PAD_T"
           :x2="tick.x"
@@ -341,6 +440,27 @@ onBeforeUnmount(() => {
           :stroke="`rgba(255,255,255,${tick.last ? 0.12 : 0.05})`"
           stroke-width="1"
         />
+        <!-- 无数据时段：斜纹块 + 「无数据」标注（宽度不足的断档仅断线） -->
+        <g v-for="(gap, i) in model.hatchGaps" :key="`gap-${i}`">
+          <rect
+            :x="gap.x1"
+            :y="PAD_T"
+            :width="Math.max(0, gap.x2 - gap.x1)"
+            :height="model.ih"
+            fill="url(#wave-hatch)"
+          />
+          <text
+            v-if="gap.label"
+            :x="(gap.x1 + gap.x2) / 2"
+            :y="PAD_T + model.ih / 2 + 3"
+            text-anchor="middle"
+            font-size="8.5"
+            fill="#5E6B78"
+            letter-spacing="0.6"
+          >
+            无数据
+          </text>
+        </g>
         <!-- 左轴刻度 -->
         <text
           v-for="(tick, i) in leftTicks"
@@ -377,8 +497,8 @@ onBeforeUnmount(() => {
         </template>
         <!-- X 轴刻度 -->
         <text
-          v-for="tick in xTicks"
-          :key="`xl-${tick.label}`"
+          v-for="(tick, i) in xTicks"
+          :key="`xl-${i}`"
           :x="tick.x"
           :y="model.H - 7"
           :text-anchor="tick.anchor"
@@ -410,26 +530,56 @@ onBeforeUnmount(() => {
           {{ model.series[1]!.channel.unit }}
         </text>
 
-        <!-- 主序列渐变填充 -->
-        <path :d="model.series[0]!.area" fill="url(#wave-fade)" />
-        <!-- 曲线：Y2 在下、Y1 在上 -->
-        <path
-          v-if="model.series[1]"
-          :d="model.series[1]!.line"
-          fill="none"
-          :stroke="model.series[1]!.color"
-          stroke-width="1.7"
-          stroke-linecap="round"
-          filter="url(#wave-glow)"
-        />
-        <path
-          :d="model.series[0]!.line"
-          fill="none"
-          :stroke="model.series[0]!.color"
-          stroke-width="1.9"
-          stroke-linecap="round"
-          filter="url(#wave-glow)"
-        />
+        <!-- 曲线：Y2 在下、Y1 在上；各数据段独立绘制，断档不连线、不填充 -->
+        <template v-if="model.series[1]">
+          <template
+            v-for="(segment, gi) in model.series[1]!.segments"
+            :key="`s2-${gi}`"
+          >
+            <path
+              v-if="segment.line"
+              :d="segment.line"
+              fill="none"
+              :stroke="model.series[1]!.color"
+              stroke-width="1.7"
+              stroke-linecap="round"
+              filter="url(#wave-glow)"
+            />
+            <circle
+              v-else
+              :cx="segment.points[0]!.x"
+              :cy="segment.points[0]!.y"
+              r="2.4"
+              :fill="model.series[1]!.color"
+              stroke="#0A0F14"
+              stroke-width="1.2"
+            />
+          </template>
+        </template>
+        <template
+          v-for="(segment, gi) in model.series[0]!.segments"
+          :key="`s1-${gi}`"
+        >
+          <path v-if="segment.area" :d="segment.area" fill="url(#wave-fade)" />
+          <path
+            v-if="segment.line"
+            :d="segment.line"
+            fill="none"
+            :stroke="model.series[0]!.color"
+            stroke-width="1.9"
+            stroke-linecap="round"
+            filter="url(#wave-glow)"
+          />
+          <circle
+            v-else
+            :cx="segment.points[0]!.x"
+            :cy="segment.points[0]!.y"
+            r="2.6"
+            :fill="model.series[0]!.color"
+            stroke="#0A0F14"
+            stroke-width="1.2"
+          />
+        </template>
 
         <!-- 十字线与高亮点 -->
         <template v-if="hoverInfo">
@@ -462,6 +612,9 @@ onBeforeUnmount(() => {
           <i :style="{ background: row.color }"></i>
           {{ formatNumber(row.value, row.dec) }}
           <span>{{ row.unit }}</span>
+        </div>
+        <div v-if="hoverInfo.rows.length === 0" class="vv nodata">
+          无数据
         </div>
       </div>
     </div>
@@ -608,6 +761,11 @@ onBeforeUnmount(() => {
 .tip .vv span {
   color: #7c8a97;
   font-size: 8.5px;
+}
+
+.tip .vv.nodata {
+  color: #7e8a96;
+  letter-spacing: 0.3px;
 }
 
 .wave-foot {
