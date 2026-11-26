@@ -70,6 +70,8 @@ const HATCH_MIN_WIDTH = 32;
 const PAD_L = 50;
 const PAD_T = 22;
 const PAD_B = 24;
+/** 右侧轴区恒定预留宽度：单选/双选切换时绘图区宽度与 X 轴位置完全不变 */
+const PAD_R = 44;
 
 const store = useMonitor();
 
@@ -104,7 +106,8 @@ const model = computed(() => {
   });
   if (drawable.length === 0) return null;
   const dual = drawable.length > 1;
-  const padR = dual ? 44 : 12;
+  // 右轴区恒定预留：dual 只控制右轴刻度/单位是否绘制，不再影响绘图区宽度
+  const padR = PAD_R;
   const iw = W - PAD_L - padR;
   const ih = H - PAD_T - PAD_B;
   const bucketMs = firstWithData.data.bucketSeconds * 1000;
@@ -317,7 +320,11 @@ const tipStyle = computed(() => {
   const info = hoverInfo.value;
   const m = model.value;
   if (!info || !m) return {};
-  const left = Math.min(Math.max(info.x, 52), m.W - 46);
+  // 夹取基于恒定绘图区：左右各留约半个 tooltip 宽度，避免压住右轴刻度区
+  const tipHalf = 40;
+  const leftBound = PAD_L + tipHalf;
+  const rightBound = Math.max(leftBound, PAD_L + m.iw - tipHalf);
+  const left = Math.min(Math.max(info.x, leftBound), rightBound);
   return { left: `${left}px`, top: `${Math.max(14, info.topY)}px` };
 });
 
@@ -692,7 +699,8 @@ onBeforeUnmount(() => {
 
 .chart-wrap {
   position: relative;
-  min-height: 0;
+  /* 底部范围按钮放大后绘图区仍至少保留 210px 高度 */
+  min-height: 210px;
   flex: 1;
   margin-top: 6px;
   touch-action: none;
@@ -770,36 +778,42 @@ onBeforeUnmount(() => {
 
 .wave-foot {
   display: flex;
-  height: 22px;
+  height: 40px;
   align-items: center;
-  gap: 8px;
-  margin-top: 2px;
+  gap: 10px;
+  margin-top: 4px;
 }
 
 .wave-foot .hint {
+  overflow: hidden;
   color: #6b7887;
   font-size: 8.5px;
   letter-spacing: 0.15px;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .ranges {
   display: flex;
-  gap: 4px;
+  flex: none;
+  gap: 8px;
   margin-left: auto;
 }
 
+/* 范围按钮热区 40px 高、单按钮 ≥64px 宽，三按钮间距 8px */
 .ranges button {
-  height: 18px;
-  padding: 0 8px;
+  min-width: 64px;
+  height: 40px;
+  padding: 0 10px;
   color: #8e9aa6;
-  font-size: 9px;
+  font-size: 10.5px;
   letter-spacing: 0.2px;
   cursor: pointer;
   background: rgb(255 255 255 / 4.5%);
   border: 1px solid rgb(255 255 255 / 9%);
   border-radius: 6px;
   transition: 0.15s;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .ranges button:hover {
