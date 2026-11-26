@@ -35,6 +35,8 @@ interface ChartSeries {
   area: string;
   points: ChartPoint[];
   scale: { hi: number; lo: number; step: number };
+  /** 选中槽位（1 起），与卡片徽标/分析面板 Y1、Y2 口径一致 */
+  slot: number;
 }
 
 const PAD_L = 50;
@@ -58,20 +60,24 @@ const model = computed(() => {
   const { from, to } = firstWithData.data;
   const W = size.value.w;
   const H = size.value.h;
-  const dual = items.length > 1;
+  // 仅保留窗口内有有效样本的序列；双轴判定、右轴单位、图例都以有数据序列为准，
+  // 避免无数据通道（enum 通道或窗口内无样本）占住 slot 导致 series[1] 访问崩溃
+  const drawable = items.flatMap((item, index) => {
+    if (!item.data) return [];
+    const valid = item.data.points.filter(
+      (p): p is typeof p & { avg: number } =>
+        p.avg !== null && p.avg !== undefined && p.t >= from && p.t <= to,
+    );
+    return valid.length > 0 ? [{ item, slot: index + 1, valid }] : [];
+  });
+  if (drawable.length === 0) return null;
+  const dual = drawable.length > 1;
   const padR = dual ? 44 : 12;
   const iw = W - PAD_L - padR;
   const ih = H - PAD_T - PAD_B;
   const xOf = (t: number) => PAD_L + ((t - from) / (to - from)) * iw;
 
-  const series: ChartSeries[] = [];
-  for (const item of items) {
-    if (!item.data) continue;
-    const valid = item.data.points.filter(
-      (p): p is typeof p & { avg: number } =>
-        p.avg !== null && p.avg !== undefined && p.t >= from && p.t <= to,
-    );
-    if (valid.length === 0) continue;
+  const series: ChartSeries[] = drawable.map(({ item, slot, valid }) => {
     const values = valid.map((p) => p.avg);
     const scale = niceScale(Math.min(...values), Math.max(...values), 4);
     const yOf = (v: number) =>
@@ -88,7 +94,7 @@ const model = computed(() => {
     const area = line
       ? `${line} L${last.x.toFixed(1)},${(PAD_T + ih).toFixed(1)} L${PAD_L},${(PAD_T + ih).toFixed(1)} Z`
       : '';
-    series.push({
+    return {
       channel: item.channel,
       color: item.color,
       dec: scaleDecimals(scale.step),
@@ -96,9 +102,9 @@ const model = computed(() => {
       area,
       points,
       scale,
-    });
-  }
-  if (series.length === 0) return null;
+      slot,
+    };
+  });
   return {
     from,
     to,
@@ -163,20 +169,23 @@ const xTicks = computed(() => {
   }));
 });
 
-const legendItems = computed(() =>
-  store.waveSeries.value.map((item, slot) => ({
-    color: item.color,
-    name: item.channel.name,
-    unit: item.channel.unit,
-    slot: slot + 1,
-  })),
-);
+/** 图例与有数据序列对齐：无数据通道（enum/窗口内无样本）不显示，Y 编号沿用选中槽位 */
+const legendItems = computed(() => {
+  const m = model.value;
+  if (!m) return [];
+  return m.series.map((s) => ({
+    color: s.color,
+    name: s.channel.name,
+    unit: s.channel.unit,
+    slot: s.slot,
+  }));
+});
 
 const axisHint = computed(() => {
   const label = RANGE_SPECS[store.range.value].label;
-  const items = store.waveSeries.value;
-  const first = items[0];
-  const second = items[1];
+  const m = model.value;
+  const first = m?.series[0];
+  const second = m?.series[1];
   // 左右轴单位之间用全角空格分隔（与原型一致）
   const gap = String.fromCharCode(0x3000);
   if (first && second) {
