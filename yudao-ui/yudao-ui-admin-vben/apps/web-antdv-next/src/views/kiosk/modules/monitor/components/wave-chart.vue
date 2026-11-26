@@ -80,7 +80,7 @@ const size = ref({ h: 278, w: 632 });
 const hoverT = ref<null | number>(null);
 const hoverX = ref(0);
 /** tooltip 实测尺寸（首帧估算值接近放大后的真实尺寸），按实际宽高夹取 */
-const tipSize = ref({ h: 84, w: 140 });
+const tipSize = ref({ h: 90, w: 150 });
 let resizeObserver: ResizeObserver | undefined;
 let tipObserver: ResizeObserver | undefined;
 
@@ -762,8 +762,8 @@ onBeforeUnmount(() => {
 .tip {
   position: absolute;
   z-index: 6;
-  padding: 9px 13px;
-  font-size: 12px;
+  padding: 10px 14px;
+  font-size: 14px;
   font-weight: 500;
   line-height: 1.6;
   white-space: nowrap;
@@ -779,7 +779,7 @@ onBeforeUnmount(() => {
 .tip .tt {
   margin-bottom: 3px;
   color: var(--txt3);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.3px;
 }
@@ -788,7 +788,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   color: #eaf0f7;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   gap: 6px;
@@ -796,15 +796,15 @@ onBeforeUnmount(() => {
 
 .tip .vv i {
   display: inline-block;
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
   margin-right: 3px;
   border-radius: 50%;
 }
 
 .tip .vv span {
   color: #7c8a97;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
 }
 

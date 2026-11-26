@@ -190,7 +190,10 @@ export const WAVE_TARGET_POINTS = 120;
 /** 相邻有效点时间差超过 1.5 个采样步长（max(桶宽, 采样周期)）即判定为断档 */
 export const WAVE_GAP_BUCKET_RATIO = 1.5;
 
-/** 分段数量上限：超限时合并最短段，避免慢采样通道产生海量细段 */
+/** 仅允许合并小于该倍阈值（3×）的小断档；真实长断档禁止跨段合并 */
+export const WAVE_SMALL_GAP_MERGE_FACTOR = 3;
+
+/** 分段数量上限：超限时只合并小断档；大断档保留，宁可段数超限也不抹掉停机 */
 export const WAVE_MAX_SEGMENTS = 24;
 
 /** 斜纹断档块数量上限（取最宽的若干块，其余只断线不标注） */
@@ -221,29 +224,76 @@ export function selectHatchSpans(
     .slice(0, maxCount);
 }
 
-/** 把段数压到上限：反复将时间跨度最短的段合并到相邻段（跨过的断档随之消失） */
-function limitSegments(segments: WavePoint[][], max: number) {
+/** 相邻有效点真实间隔的中位数：对长时间停机鲁棒，用于稳健估计采样周期 */
+function medianInterval(points: WavePoint[]) {
+  // 少于 4 个点时中位数不可靠，返回 0 交由配置值/桶宽兜底
+  if (points.length < 4) return 0;
+  const deltas: number[] = [];
+  for (let i = 1; i < points.length; i++) {
+    deltas.push(points[i]!.t - points[i - 1]!.t);
+  }
+  deltas.sort((a, b) => a - b);
+  const mid = Math.floor(deltas.length / 2);
+  return deltas.length % 2 === 1
+    ? deltas[mid]!
+    : (deltas[mid - 1]! + deltas[mid]!) / 2;
+}
+
+/** 由分段列表计算断档（含窗口首尾）；断档起点取上一个桶的结束时刻 */
+function computeGaps(
+  segments: WavePoint[][],
+  bucketMs: number,
+  from: number,
+  to: number,
+  threshold: number,
+) {
+  const gaps: TimeSpan[] = [];
+  const first = segments[0];
+  const lastSeg = segments[segments.length - 1];
+  if (!first || !lastSeg) return gaps;
+  const firstT = first[0]!.t;
+  const lastT = lastSeg[lastSeg.length - 1]!.t;
+  if (firstT - from > threshold) gaps.push({ from, to: firstT });
+  for (let i = 1; i < segments.length; i++) {
+    const prevEnd = segments[i - 1]![segments[i - 1]!.length - 1]!.t + bucketMs;
+    const nextStart = segments[i]![0]!.t;
+    if (nextStart > prevEnd) gaps.push({ from: prevEnd, to: nextStart });
+  }
+  const trailingFrom = lastT + bucketMs;
+  if (to > trailingFrom && to - lastT > threshold) {
+    gaps.push({ from: trailingFrom, to });
+  }
+  return gaps;
+}
+
+/**
+ * 段数超限时只合并「小断档」两端的分段，且优先合并断档最短的一对；
+ * 若剩余断档都超过合并上限（真实停机），保留超限段数，不抹掉断档。
+ */
+function limitSegments(
+  segments: WavePoint[][],
+  bucketMs: number,
+  threshold: number,
+  max: number,
+) {
   let list = segments;
-  while (list.length > max) {
-    let shortest = 0;
-    let shortestSpan = Number.POSITIVE_INFINITY;
-    for (let i = 0; i < list.length; i++) {
-      const segment = list[i]!;
-      const span = segment[segment.length - 1]!.t - segment[0]!.t;
-      if (span < shortestSpan) {
-        shortestSpan = span;
-        shortest = i;
+  const mergeLimit = threshold * WAVE_SMALL_GAP_MERGE_FACTOR;
+  while (list.length > max && list.length > 1) {
+    let mergeAt = -1;
+    let smallestGap = Number.POSITIVE_INFINITY;
+    for (let i = 1; i < list.length; i++) {
+      const prevEnd = list[i - 1]![list[i - 1]!.length - 1]!.t + bucketMs;
+      const gap = list[i]![0]!.t - prevEnd;
+      if (gap <= mergeLimit && gap < smallestGap) {
+        smallestGap = gap;
+        mergeAt = i;
       }
     }
-    // 优先并入前一段，首段则并入后一段，保持时间顺序
-    const neighbor = shortest > 0 ? shortest - 1 : shortest + 1;
-    const merged =
-      shortest < neighbor
-        ? [...list[shortest]!, ...list[neighbor]!]
-        : [...list[neighbor]!, ...list[shortest]!];
-    const next = list.filter((_, i) => i !== shortest && i !== neighbor);
-    next.splice(Math.min(shortest, neighbor), 0, merged);
-    list = next;
+    if (mergeAt < 0) break;
+    list.splice(mergeAt - 1, 2, [
+      ...list[mergeAt - 1]!,
+      ...list[mergeAt]!,
+    ]);
   }
   return list;
 }
@@ -268,11 +318,13 @@ function downsampleWaveSegment(points: WavePoint[], target: number) {
 
 /**
  * 趋势桶序列分段 + 抽稀。规则：
- * 1. 相邻有效点时间差 > 1.5×max(桶宽, 采样周期) → 断档，各段独立；
- *    采样周期取自通道 pollIntervalMs（缺省回退设备轮询周期，再回退桶宽）；
+ * 1. 相邻有效点时间差 > 1.5×max(桶宽, 稳健采样周期) → 断档，各段独立；
+ *    稳健采样周期 = max(通道 pollIntervalMs（缺省回退设备轮询周期）, 相邻点间隔中位数)，
+ *    配置值与实际节奏取较大者，防止采集滞后时把真实停机误判为连续数据；
  * 2. 窗口首尾无数据的部分同样计入断档；
  * 3. 段内按时间跨度按比例分配约 target 个点（组内平均），不跨段合并；
- * 4. 段数超过上限时合并最短段（优先并入前一段），保证元素数有界；
+ * 4. 段数超过上限时只合并小断档（< 3×阈值）两端的分段；真实长断档禁止合并，
+ *    宁可段数超限也不抹掉停机；总点数维持约 target；
  * 5. min/max 取全量有效桶（抽稀前），保证 Y 轴与极值刻度不因抽稀变化。
  */
 export function segmentWavePoints(
@@ -287,15 +339,14 @@ export function segmentWavePoints(
     Number.isFinite(bucketSeconds) && bucketSeconds > 0
       ? bucketSeconds * 1000
       : 60_000;
-  // 慢采样通道相邻点间隔天然大于桶宽，阈值需以采样周期为下限
-  const sampleMs =
+  // 配置的采样周期（通道 → 设备级），缺失时回退桶宽
+  const configuredSampleMs =
     sampleIntervalMs !== null &&
     sampleIntervalMs !== undefined &&
     Number.isFinite(sampleIntervalMs) &&
     sampleIntervalMs > 0
       ? sampleIntervalMs
       : 0;
-  const threshold = Math.max(bucketMs, sampleMs) * WAVE_GAP_BUCKET_RATIO;
   const valid: WavePoint[] = (points ?? [])
     .filter(
       (p): p is CollectorApi.TrendPoint & { avg: number } =>
@@ -315,6 +366,10 @@ export function segmentWavePoints(
       segments: [],
     };
   }
+  // 稳健采样周期 = max(配置值, 实际相邻点间隔中位数)：
+  // 采集器滞后/元数据缺失时也能反映真实节奏，同时中位数不受长时间停机影响
+  const sampleMs = Math.max(configuredSampleMs, medianInterval(valid));
+  const threshold = Math.max(bucketMs, sampleMs) * WAVE_GAP_BUCKET_RATIO;
 
   // 按时间间隔切段
   let raw: WavePoint[][] = [];
@@ -327,23 +382,11 @@ export function segmentWavePoints(
       current.push(point);
     }
   }
-  // 段数超限时合并最短段，避免慢采样/抖动数据产生海量细段与斜纹块
-  raw = limitSegments(raw, WAVE_MAX_SEGMENTS);
+  // 段数超限时仅合并「小断档」两端的分段；真实长断档保留，宁可段数超限
+  raw = limitSegments(raw, bucketMs, threshold, WAVE_MAX_SEGMENTS);
 
   // 断档：窗口首尾 + 相邻段之间；起点取上一个桶的结束时刻（桶本身视为有数据）
-  const firstT = valid[0]!.t;
-  const lastT = valid[valid.length - 1]!.t;
-  const gaps: TimeSpan[] = [];
-  if (firstT - from > threshold) gaps.push({ from, to: firstT });
-  for (let i = 1; i < raw.length; i++) {
-    const prevEnd = raw[i - 1]![raw[i - 1]!.length - 1]!.t + bucketMs;
-    const nextStart = raw[i]![0]!.t;
-    if (nextStart > prevEnd) gaps.push({ from: prevEnd, to: nextStart });
-  }
-  const trailingFrom = lastT + bucketMs;
-  if (to > trailingFrom && to - lastT > threshold) {
-    gaps.push({ from: trailingFrom, to });
-  }
+  const gaps = computeGaps(raw, bucketMs, from, to, threshold);
 
   // 按各段时间跨度分配总点数；单点段至少分到 1 个点
   const spans = raw.map((segment) =>
