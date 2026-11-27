@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import type { TimeSpan } from '../chart-utils';
+import type { GapRenderMode, GapRenderSpan, TimeSpan } from '../chart-utils';
 import type { MonitorChannel } from '../use-monitor';
 
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
@@ -12,12 +12,11 @@ import {
   intersectSpans,
   linePath,
   niceScale,
+  planGapRender,
   RANGE_ORDER,
   RANGE_SPECS,
   scaleDecimals,
   segmentWavePoints,
-  selectHatchSpans,
-  WAVE_HATCH_MIN_WIDTH,
   WAVE_X_TICK_COUNT,
 } from '../chart-utils';
 import { useMonitor } from '../use-monitor';
@@ -25,7 +24,8 @@ import { useMonitor } from '../use-monitor';
 /**
  * 历史趋势：手写 SVG 双 Y 轴平滑曲线 + 十字线 tooltip。
  * slot1 左轴薄荷绿、slot2 右轴琥珀；X 轴为具体时钟刻度，按请求窗口的真实时间映射。
- * 无数据时段断线并以斜纹区标注；绘制点抽稀到约 120 点，聚合仍用全量桶。
+ * 断档渲染按窗口混合：1h 用灰色虚线桥接，8h/24h 断线并标注「无数据 + 时长」；
+ * 绘制点抽稀到约 120 点，聚合仍用全量桶。
  */
 defineOptions({ name: 'KioskWaveChart' });
 
@@ -45,6 +45,14 @@ interface ChartSegment {
   area: string;
 }
 
+/** 1h 断档虚线桥：连接两个相邻数据段的端点 */
+interface ChartBridge {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
 interface ChartSeries {
   channel: MonitorChannel;
   color: string;
@@ -52,18 +60,11 @@ interface ChartSeries {
   segments: ChartSegment[];
   /** 断档区（时间），用于判断指针是否落在无数据时段 */
   gaps: TimeSpan[];
+  /** 1h 模式下该序列自身的断档桥接（不含窗口首尾无端点断档） */
+  bridges: ChartBridge[];
   scale: { hi: number; lo: number; step: number };
   /** 选中槽位（1 起），与卡片徽标/分析面板 Y1、Y2 口径一致 */
   slot: number;
-}
-
-/** 斜纹断档区（像素坐标）；只保留宽度达标的区块，窄断档仅断线 */
-interface HatchGap {
-  from: number;
-  to: number;
-  width: number;
-  x1: number;
-  x2: number;
 }
 
 const PAD_L = 50;
@@ -83,6 +84,36 @@ const hoverX = ref(0);
 const tipSize = ref({ h: 90, w: 150 });
 let resizeObserver: ResizeObserver | undefined;
 let tipObserver: ResizeObserver | undefined;
+
+/**
+ * 1h 断档桥：仅桥接两侧都有数据段的断档（首尾断档没有两个端点，不桥接）。
+ * 端点取左段最后一个点与右段第一个点，灰点与虚线与数据曲线端点区分开。
+ */
+function buildBridges(
+  segments: ChartSegment[],
+  spans: GapRenderSpan[],
+): ChartBridge[] {
+  const bridges: ChartBridge[] = [];
+  for (const span of spans) {
+    let rightIndex = -1;
+    for (let i = 0; i < segments.length; i++) {
+      if (segments[i]!.points[0]!.t >= span.to) {
+        rightIndex = i;
+        break;
+      }
+    }
+    if (rightIndex <= 0) continue;
+    const leftPoint = segments[rightIndex - 1]!.points.at(-1)!;
+    const rightPoint = segments[rightIndex]!.points[0]!;
+    bridges.push({
+      x1: leftPoint.x,
+      x2: rightPoint.x,
+      y1: leftPoint.y,
+      y2: rightPoint.y,
+    });
+  }
+  return bridges;
+}
 
 const model = computed(() => {
   const items = store.waveSeries.value;
@@ -138,7 +169,10 @@ const model = computed(() => {
         : '';
       return { points, line, area };
     });
+    // 1h 用虚线桥接各序列自身断档（8h/24h 不生成桥接）
+    const bridgePlan = planGapRender('1h', segmented.gaps, xOf);
     return {
+      bridges: buildBridges(segments, bridgePlan.bridges),
       channel: item.channel,
       color: item.color,
       dec: scaleDecimals(scale.step),
@@ -149,19 +183,17 @@ const model = computed(() => {
     };
   });
 
-  // 斜纹区取各序列断档的交集：只有所有曲线都无数据的时段才标注「无数据」；
-  // 窄断档只断线不绘制任何斜纹/文字，且最多绘制最宽的若干块，保证元素数有界
-  const hatchGaps: HatchGap[] = selectHatchSpans(
-    intersectSpans(series.map((s) => s.gaps)),
-    (span) => xOf(span.to) - xOf(span.from),
-    WAVE_HATCH_MIN_WIDTH,
-  ).map(({ span, width }) => ({
-    from: span.from,
-    to: span.to,
-    width,
-    x1: xOf(span.from),
-    x2: xOf(span.to),
-  }));
+  // 8h/24h 的灰带取各序列断档交集；1h 不画灰带（改为各序列虚线桥）
+  const gapMode: GapRenderMode =
+    store.range.value === '1h' ? 'bridge' : 'band';
+  const gapBands =
+    gapMode === 'band'
+      ? planGapRender(
+          store.range.value,
+          intersectSpans(series.map((s) => s.gaps)),
+          xOf,
+        ).bands
+      : [];
 
   return {
     from,
@@ -174,7 +206,8 @@ const model = computed(() => {
     bucketMs,
     series,
     dual,
-    hatchGaps,
+    gapMode,
+    gapBands,
   };
 });
 
@@ -481,25 +514,41 @@ onBeforeUnmount(() => {
           :stroke="`rgba(255,255,255,${tick.last ? 0.12 : 0.05})`"
           stroke-width="1"
         />
-        <!-- 无数据时段：斜纹块 + 「无数据」标注（宽度不足的断档仅断线） -->
-        <g v-for="(gap, i) in model.hatchGaps" :key="`gap-${i}`">
-          <rect
-            :x="gap.x1"
-            :y="PAD_T"
-            :width="gap.width"
-            :height="model.ih"
-            fill="url(#wave-hatch)"
-          />
-          <text
-            :x="(gap.x1 + gap.x2) / 2"
-            :y="PAD_T + model.ih / 2 + 3"
-            text-anchor="middle"
-            font-size="8.5"
-            fill="#5E6B78"
-            letter-spacing="0.6"
+        <!-- 8h/24h 停机区间：灰带 + 「无数据」与时长（窄断档仅断线，不在此渲染） -->
+        <g v-if="model.gapMode === 'band'">
+          <g
+            v-for="(gap, i) in model.gapBands"
+            :key="`gap-${i}`"
+            pointer-events="none"
           >
-            无数据
-          </text>
+            <rect
+              :x="gap.x1"
+              :y="PAD_T"
+              :width="gap.width"
+              :height="model.ih"
+              fill="url(#wave-hatch)"
+            />
+            <text
+              :x="(gap.x1 + gap.x2) / 2"
+              :y="PAD_T + model.ih / 2 - 4"
+              text-anchor="middle"
+              font-size="8.5"
+              fill="#5E6B78"
+              letter-spacing="0.6"
+            >
+              无数据
+            </text>
+            <text
+              :x="(gap.x1 + gap.x2) / 2"
+              :y="PAD_T + model.ih / 2 + 7"
+              text-anchor="middle"
+              font-size="8.5"
+              fill="#5E6B78"
+              letter-spacing="0.3"
+            >
+              {{ gap.durationText }}
+            </text>
+          </g>
         </g>
         <!-- 左轴刻度 -->
         <text
@@ -620,6 +669,40 @@ onBeforeUnmount(() => {
             stroke-width="1.2"
           />
         </template>
+
+        <!-- 1h 断档：灰色虚线桥接两侧数据端点 + 断点灰点（不发光、不填充） -->
+        <g
+          v-if="model.gapMode === 'bridge'"
+          class="gap-bridges"
+          pointer-events="none"
+        >
+          <template v-for="(s, si) in model.series" :key="`br-${si}`">
+            <template v-for="(bridge, bi) in s.bridges" :key="`br-${si}-${bi}`">
+              <line
+                :x1="bridge.x1"
+                :y1="bridge.y1"
+                :x2="bridge.x2"
+                :y2="bridge.y2"
+                stroke="rgba(255,255,255,.22)"
+                stroke-width="1"
+                stroke-dasharray="3 3"
+                stroke-linecap="round"
+              />
+              <circle
+                :cx="bridge.x1"
+                :cy="bridge.y1"
+                r="2"
+                fill="#8A96A3"
+              />
+              <circle
+                :cx="bridge.x2"
+                :cy="bridge.y2"
+                r="2"
+                fill="#8A96A3"
+              />
+            </template>
+          </template>
+        </g>
 
         <!-- 十字线与高亮点 -->
         <template v-if="hoverInfo">

@@ -224,6 +224,84 @@ export function selectHatchSpans(
     .slice(0, maxCount);
 }
 
+/** 1h 窗口虚线桥数量上限（保留最宽的断档，其余不桥接） */
+export const WAVE_MAX_BRIDGES = 24;
+
+/** 断档渲染模式：1h 用虚线桥接，8h/24h 用灰带 + 时长标注 */
+export type GapRenderMode = 'band' | 'bridge';
+
+export interface GapRenderSpan {
+  from: number;
+  to: number;
+  x1: number;
+  x2: number;
+  width: number;
+}
+
+export interface GapBand extends GapRenderSpan {
+  /** 「无数据」下方的时长文案 */
+  durationText: string;
+}
+
+export interface GapRenderPlan {
+  mode: GapRenderMode;
+  /** 1h：各序列自身断档的桥接区间 */
+  bridges: GapRenderSpan[];
+  /** 8h/24h：多序列断档交集上的灰带与时长 */
+  bands: GapBand[];
+}
+
+/** 断档时长文案：四舍五入到分钟，≥60 分钟用「小时 + 分钟」，整点省略分钟 */
+export function formatGapDuration(ms: number) {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 1) return '不足 1 分钟';
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours} 小时` : `${hours} 小时 ${rest} 分钟`;
+}
+
+/**
+ * 断档渲染决策（集中在一处便于测试）：
+ * - 1h：所有断档桥接（最宽 24 条），不画灰带/文字；
+ * - 8h/24h：仅像素宽 ≥32 的断档画灰带与「无数据 + 时长」（最宽 8 块），其余只断线。
+ */
+export function planGapRender(
+  range: TrendRange,
+  spans: TimeSpan[],
+  mapX: (t: number) => number,
+): GapRenderPlan {
+  if (range === '1h') {
+    const bridges = spans
+      .map((span) => {
+        const x1 = mapX(span.from);
+        const x2 = mapX(span.to);
+        return { from: span.from, to: span.to, width: x2 - x1, x1, x2 };
+      })
+      .filter((bridge) => bridge.width > 0)
+      .sort((a, b) => b.width - a.width)
+      .slice(0, WAVE_MAX_BRIDGES)
+      .sort((a, b) => a.x1 - b.x1);
+    return { bands: [], bridges, mode: 'bridge' };
+  }
+  const bands = selectHatchSpans(
+    spans,
+    (span) => mapX(span.to) - mapX(span.from),
+    WAVE_HATCH_MIN_WIDTH,
+    WAVE_MAX_HATCH_GAPS,
+  )
+    .map(({ span, width }) => ({
+      durationText: formatGapDuration(span.to - span.from),
+      from: span.from,
+      to: span.to,
+      width,
+      x1: mapX(span.from),
+      x2: mapX(span.to),
+    }))
+    .sort((a, b) => a.x1 - b.x1);
+  return { bands, bridges: [], mode: 'band' };
+}
+
 /** 相邻有效点真实间隔的中位数：对长时间停机鲁棒，用于稳健估计采样周期 */
 function medianInterval(points: WavePoint[]) {
   // 少于 4 个点时中位数不可靠，返回 0 交由配置值/桶宽兜底
